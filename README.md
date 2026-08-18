@@ -34,7 +34,8 @@ with real conversations.
 | **Named speakers** via voiceprint enrollment | ✅ |
 | Local LLM agent with tool calling | ✅ |
 | QSPI store-and-forward buffering | ⬜ planned |
-| IMU: pedometer, tap gestures | ⬜ planned |
+| IMU double-tap toggle + RGB status LED | ✅ |
+| IMU: pedometer, activity detection | ⬜ planned |
 | Phone app | ⬜ planned |
 
 ---
@@ -207,6 +208,20 @@ below it. Hangover plus pre-roll is what makes energy VAD usable. Mounting the
 mic at the collar rather than on a desk is worth 10–15 dB and helps far more
 than any code change.
 
+**Rate-limit sensor polling by wall clock, never by loop iterations.** A poll
+written as "every 4th pass through `loop()`" became several hundred bit-banged
+I2C transactions per second once the loop was spinning freely on audio. That
+was enough to drown the LSM6DS3's own tap interrupt — taps were never seen —
+and adding one more poller on top pushed the firmware into crashing at boot,
+where the bootloader caught it and the board went completely dark. Polling on a
+50 ms timer fixed both symptoms at once. The latched interrupt (`LIR`) means a
+slow poll cannot miss an event.
+
+**The IMU supply pin needs high drive.** It is P1.08 and must be configured
+`H0H1`; a plain `pinMode(OUTPUT)` cannot source enough current, so the sensor
+never starts and every I2C probe reads `0xFF`. Nothing in the board variant
+header hints at this.
+
 **The 50 mA charge limit is the BQ25101, not the battery.** If your enclosure
 has room, charge through an external charger rather than the on-board one.
 
@@ -238,8 +253,8 @@ real responsibility.
 - QSPI store-and-forward, so walking out of BLE range does not lose a
   conversation (~17 min of buffer at 16 kbps)
 - Opus encoding for lower power draw
-- IMU features — the LSM6DS3TR-C does step counting, tilt, tap and
-  significant-motion detection in hardware, at almost no CPU or code cost
+- Step counting and activity detection — also hardware features of the
+  LSM6DS3TR-C, at almost no CPU or code cost
 - Rolling long-term memory across conversations
 - Phone app to replace the laptop as the BLE host
 - Enclosure and dock

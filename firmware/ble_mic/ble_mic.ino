@@ -37,6 +37,7 @@
 #include <bluefruit.h>
 #include <PDM.h>
 #include "ima_adpcm.h"
+#include "imu_tap.h"
 
 // ---------------------------------------------------------------- config
 
@@ -103,6 +104,10 @@ static int      preRollLen[PREROLL_FRAMES];
 static int      preRollCount = 0;
 static int      preRollHead  = 0;
 
+static bool     imuReady    = false;
+static bool     tapEnabled  = true;
+static uint32_t lastTapMs   = 0;
+
 // ---------------------------------------------------------------- pdm
 
 void onPDMdata() {
@@ -131,6 +136,22 @@ static inline uint32_t ringAvailable() {
   return (h >= t) ? (h - t) : (RING_SAMPLES - t + h);
 }
 
+// ---------------------------------------------------------------- leds
+
+/* XIAO RGB LED is common-anode: LOW lights a channel. */
+static void setLed(bool r, bool g, bool b) {
+  digitalWrite(LED_RED,   r ? LOW : HIGH);
+  digitalWrite(LED_GREEN, g ? LOW : HIGH);
+  digitalWrite(LED_BLUE,  b ? LOW : HIGH);
+}
+
+/* green = capturing, red = connected but stopped, blue = advertising. */
+static void updateLed() {
+  if (!connected)      setLed(false, false, true);
+  else if (streaming)  setLed(false, true, false);
+  else                 setLed(true, false, false);
+}
+
 // ---------------------------------------------------------------- helpers
 
 static void applyGain(int gain) {
@@ -141,7 +162,7 @@ static void applyGain(int gain) {
 }
 
 static void publishInfo() {
-  uint8_t info[6];
+  uint8_t info[27];
   info[0] = 1;                          // codec: 1 = IMA ADPCM
   info[1] = use16k ? 1 : 0;
   info[2] = FRAME_MS;
@@ -149,6 +170,21 @@ static void publishInfo() {
   info[3] = ns & 0xFF;
   info[4] = (ns >> 8) & 0xFF;
   info[5] = vadEnabled ? 1 : 0;
+  info[6] = imuWhichBus();      // 0 none, 1 = Wire1 17/16, 2 = Wire 4/5
+  info[7] = imuAddress();
+  const uint8_t *pr = imuProbeResults();
+  info[8]  = pr[0];   // bus1 @0x6A
+  info[9]  = pr[1];   // bus1 @0x6B
+  info[10] = pr[2];   // bus2 @0x6A
+  info[11] = pr[3];   // bus2 @0x6B
+  info[12] = imuPowerPolarity();
+  for (int i = 0; i < 5; i++) info[13 + i] = tapDiag(i);
+  uint8_t rb[6]; int16_t az = 0;
+  imuReadback(rb, &az);
+  for (int i = 0; i < 6; i++) info[18 + i] = rb[i];
+  info[24] = (uint8_t)(az & 0xFF);
+  info[25] = (uint8_t)((az >> 8) & 0xFF);
+  info[26] = accelPeakByte();
   infoChar.write(info, sizeof(info));
 }
 
@@ -162,6 +198,7 @@ void ctrl_write_cb(uint16_t handle, BLECharacteristic *chr,
       streaming = data[1] != 0;
       vadHangover = 0;
       preRollCount = 0;
+      updateLed();
       // Stale audio would be sent as if it were live; start from now.
       ringTail = ringHead;
       break;
@@ -177,6 +214,12 @@ void ctrl_write_cb(uint16_t handle, BLECharacteristic *chr,
     case 0x05:
       vadThresh = data[1] * 32;
       break;
+    case 0x06:
+      tapEnabled = data[1] != 0;
+      break;
+    case 0x07:
+      imuSetTapThreshold(data[1]);
+      break;
   }
   publishInfo();
 }
@@ -187,14 +230,14 @@ void connect_cb(uint16_t handle) {
   // 244 bytes of ATT payload covers the largest 16 kHz frame in one packet.
   conn->requestMtuExchange(247);
   conn->requestConnectionParameter(6, 12);   // 7.5–15 ms, units of 1.25 ms
-  digitalWrite(LED_BUILTIN, LOW);            // active low: on
+  updateLed();
 }
 
 void disconnect_cb(uint16_t handle, uint8_t reason) {
   (void)handle; (void)reason;
   connected = false;
   streaming = false;
-  digitalWrite(LED_BUILTIN, HIGH);
+  updateLed();
 }
 
 
@@ -248,8 +291,10 @@ static void flushPreRoll() {
 void setup() {
   Serial.begin(115200);
 
-  pinMode(LED_BUILTIN, OUTPUT);
-  digitalWrite(LED_BUILTIN, HIGH);
+  pinMode(LED_RED, OUTPUT);
+  pinMode(LED_GREEN, OUTPUT);
+  pinMode(LED_BLUE, OUTPUT);
+  setLed(false, false, false);
 
   PDM.onReceive(onPDMdata);
   if (!PDM.begin(1, PDM_RATE)) {
@@ -282,7 +327,7 @@ void setup() {
 
   infoChar.setProperties(CHR_PROPS_READ);
   infoChar.setPermission(SECMODE_OPEN, SECMODE_NO_ACCESS);
-  infoChar.setMaxLen(6);
+  infoChar.setMaxLen(27);
   infoChar.begin();
   publishInfo();
 
@@ -295,12 +340,37 @@ void setup() {
   Bluefruit.Advertising.setFastTimeout(30);
   Bluefruit.Advertising.start(0);
 
+  updateLed();
   Serial.println("XIAO-MIC advertising");
+
+  // Last, deliberately: the radio must come up even if the IMU misbehaves.
+  imuReady = imuTapBegin();
+  publishInfo();               // republish now that IMU status is known
+  Serial.println(imuReady ? "IMU: double-tap armed" : "IMU: not found");
 }
 
 // ---------------------------------------------------------------- loop
 
 void loop() {
+  static uint32_t lastInfoMs = 0;
+  if (millis() - lastInfoMs > 500) { lastInfoMs = millis(); publishInfo(); }
+
+  // Double-tap toggles capture. Debounced in software on top of the sensor's
+  // own timing windows, since one physical tap pair can latch more than once.
+  if (imuReady && tapEnabled && imuDoubleTap()) {
+    uint32_t now = millis();
+    if (now - lastTapMs > 600) {
+      lastTapMs = now;
+      if (connected) {
+        streaming = !streaming;
+        ringTail = ringHead;
+        vadHangover = 0;
+        preRollCount = 0;
+        updateLed();
+      }
+    }
+  }
+
   if (!connected || !streaming) {
     ringTail = ringHead;      // stay live rather than accumulating stale audio
     delay(5);

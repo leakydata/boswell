@@ -125,6 +125,16 @@ async def capture(args):
         codec, is16k, frame_ms, ns_lo, ns_hi, vad = info[:6]
         print(f"  codec={codec} rate={'16k' if is16k else '8k'} "
               f"frame={frame_ms}ms samples={ns_lo | (ns_hi << 8)} vad={vad}")
+        if len(info) >= 8:
+            bus, addr = info[6], info[7]
+            where = {0: "NOT FOUND", 1: "Wire1 (17/16)", 2: "Wire (4/5)"}.get(bus, "?")
+            print(f"  IMU: {where}" + (f" addr=0x{addr:02X}" if bus else ""))
+            if len(info) >= 13:
+                p = info[8:12]
+                print(f"    WHO_AM_I probe  bus1@6A=0x{p[0]:02X} bus1@6B=0x{p[1]:02X} "
+                      f"bus2@6A=0x{p[2]:02X} bus2@6B=0x{p[3]:02X}")
+                print(f"    (0xFF = no ACK / bus idle, 0x00 = stuck low, "
+                      f"0x69/0x6A = IMU)   pwr_pol={info[12]}")
 
         if args.rate16:
             await client.write_gatt_char(CTRL_UUID, bytes([0x02, 1]), response=True)
