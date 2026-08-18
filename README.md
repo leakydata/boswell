@@ -222,6 +222,18 @@ slow poll cannot miss an event.
 never starts and every I2C probe reads `0xFF`. Nothing in the board variant
 header hints at this.
 
+**Tap detection needs the board free to move, not held still.** A device lying
+flat on a desk barely registers taps on its face -- the desk absorbs the
+impulse and the accelerometer sees very little. The same taps delivered to the
+side, or with the board held loosely, trigger reliably. Worn in a case this is
+a non-issue, but it makes a desk the worst possible place to test, and it is
+easy to misread as a broken configuration.
+
+Default tap threshold is 3 (~187 mg). It can be changed live over the control
+characteristic (`0x07 <n>`) without reflashing, so it is worth dialling in on
+the finished enclosure rather than on bare hardware. Going much lower risks a
+bump toggling capture off while worn, which fails silently.
+
 **The 50 mA charge limit is the BQ25101, not the battery.** If your enclosure
 has room, charge through an external charger rather than the on-board one.
 

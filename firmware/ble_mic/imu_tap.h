@@ -212,7 +212,11 @@ static bool imuTapBegin() {
   // LIR (bit0) latches the event until TAP_SRC is read. Without it INT1 only
   // pulses for a few ms, which a 20 ms main loop misses almost every time.
   imuWrite(REG_TAP_CFG,     0x8F);  // interrupts on, tap X/Y/Z, latched
-  imuWrite(REG_TAP_THS_6D,  0x85);  // Seeed demo value: tap threshold 5
+  // Threshold 3 (~187 mg at +/-2 g). Seeed's demo uses 5, but that assumes a
+  // board free to move; 3 is what registered reliably in testing. Lower still
+  // risks a bump toggling capture off while the device is worn, which fails
+  // silently -- the wrong direction to err in.
+  imuWrite(REG_TAP_THS_6D,  0x83);  // D4D_EN | tap threshold 3
   imuWrite(REG_INT_DUR2,    0x7F);  // gap/quiet/shock windows reject bumps
   imuWrite(REG_WAKE_UP_THS, 0x80);  // SINGLE_DOUBLE_TAP: double-tap mode
   imuWrite(REG_MD1_CFG,     0x08);  // route double-tap to INT1
