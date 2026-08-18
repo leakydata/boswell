@@ -129,6 +129,16 @@ async def capture(args):
             bus, addr = info[6], info[7]
             where = {0: "NOT FOUND", 1: "Wire1 (17/16)", 2: "Wire (4/5)"}.get(bus, "?")
             print(f"  IMU: {where}" + (f" addr=0x{addr:02X}" if bus else ""))
+            if len(info) >= 32:
+                ok = info[27]
+                pend = info[28] | (info[29] << 8) | (info[30] << 16)
+                mb = info[31] * 65536 / 1048576.0
+                if ok:
+                    secs = pend / 4500.0     # ~90 B/frame, 50 frames/s
+                    print(f"  QSPI: ready, {mb:.0f} MB · backlog {pend} B "
+                          f"(~{secs:.1f}s of audio)")
+                else:
+                    print("  QSPI: NOT FOUND")
             if len(info) >= 13:
                 p = info[8:12]
                 print(f"    WHO_AM_I probe  bus1@6A=0x{p[0]:02X} bus1@6B=0x{p[1]:02X} "

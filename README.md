@@ -33,7 +33,7 @@ with real conversations.
 | Speaker diarization | ✅ |
 | **Named speakers** via voiceprint enrollment | ✅ |
 | Local LLM agent with tool calling | ✅ |
-| QSPI store-and-forward buffering | ⬜ planned |
+| QSPI store-and-forward buffering | ✅ |
 | IMU double-tap toggle + RGB status LED | ✅ |
 | IMU: pedometer, activity detection | ⬜ planned |
 | Phone app | ⬜ planned |
@@ -103,6 +103,8 @@ Real numbers from real runs, not estimates.
 | VAD airtime reduction | **52.9%** → 15.9 kbps average |
 | Transcription speed | ~20× realtime, Whisper large-v3 on an RTX 4090 |
 | Same-speaker embedding similarity | 0.65 – 0.87 |
+| Flash backlog drain rate | **~4.3× realtime** |
+| Offline buffer capacity | ~7.7 min continuous, more with VAD |
 | Different-speaker similarity | 0.38 – 0.48 |
 
 **8 kHz ADPCM at 32 kbps is enough for accurate transcription.** This was the
@@ -113,6 +115,26 @@ A Bluetooth 5.x adapter is *not* required. It buys headroom for 16 kHz (64 kbps)
 and eventual Opus, but a cheap BT 4.0 dongle dropped nothing.
 
 ---
+
+## Store-and-forward
+
+Capture is *armed*, not *connected*. When the host goes away the device keeps
+recording into the onboard 2 MB flash, and drains the backlog on reconnect
+before resuming live audio, so the conversation arrives in order rather than
+with a hole in it.
+
+Measured over a 20-second outage: 90,990 bytes buffered (20.2 s of audio),
+drained in 4.7 s. The recovered audio is statistically indistinguishable from
+live audio.
+
+Records are `[0xB5][len][payload]` in a circular byte stream. The magic byte
+matters: when the writer laps the reader the oldest sector is dropped, which
+can leave the read pointer mid-record, and scanning for the magic recovers the
+stream instead of emitting garbage.
+
+The status LED reports where audio is going: blue advertising, **magenta
+buffering to flash**, cyan draining the backlog, green streaming live, red
+connected but disarmed.
 
 ## Named speakers
 
@@ -262,8 +284,6 @@ real responsibility.
 
 ## Roadmap
 
-- QSPI store-and-forward, so walking out of BLE range does not lose a
-  conversation (~17 min of buffer at 16 kbps)
 - Opus encoding for lower power draw
 - Step counting and activity detection — also hardware features of the
   LSM6DS3TR-C, at almost no CPU or code cost

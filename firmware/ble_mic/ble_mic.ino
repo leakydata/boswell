@@ -38,6 +38,7 @@
 #include <PDM.h>
 #include "ima_adpcm.h"
 #include "imu_tap.h"
+#include "qspi_store.h"
 
 // ---------------------------------------------------------------- config
 
@@ -108,6 +109,10 @@ static bool     imuReady    = false;
 static bool     tapEnabled  = true;
 static uint32_t lastTapMs   = 0;
 
+static bool     qspiOk      = false;
+static uint8_t  drainBuf[MAX_FRAME_LEN];
+static uint8_t  drainLen    = 0;
+
 // ---------------------------------------------------------------- pdm
 
 void onPDMdata() {
@@ -145,11 +150,18 @@ static void setLed(bool r, bool g, bool b) {
   digitalWrite(LED_BLUE,  b ? LOW : HIGH);
 }
 
-/* green = capturing, red = connected but stopped, blue = advertising. */
+/* Capture is "armed" independently of the link, so the LED has to show both:
+ *   blue     advertising, not armed
+ *   magenta  armed with no host -- buffering to flash
+ *   cyan     connected, draining the backlog
+ *   green    connected, streaming live
+ *   red      connected, not armed
+ */
 static void updateLed() {
-  if (!connected)      setLed(false, false, true);
-  else if (streaming)  setLed(false, true, false);
-  else                 setLed(true, false, false);
+  if (!connected)                     setLed(streaming, false, true);
+  else if (!streaming)                setLed(true, false, false);
+  else if (qspiOk && qspiPendingBytes()) setLed(false, true, true);
+  else                                setLed(false, true, false);
 }
 
 // ---------------------------------------------------------------- helpers
@@ -162,7 +174,7 @@ static void applyGain(int gain) {
 }
 
 static void publishInfo() {
-  uint8_t info[27];
+  uint8_t info[32];
   info[0] = 1;                          // codec: 1 = IMA ADPCM
   info[1] = use16k ? 1 : 0;
   info[2] = FRAME_MS;
@@ -185,6 +197,12 @@ static void publishInfo() {
   info[24] = (uint8_t)(az & 0xFF);
   info[25] = (uint8_t)((az >> 8) & 0xFF);
   info[26] = accelPeakByte();
+  info[27] = qspiOk ? 1 : 0;
+  uint32_t pend = qspiOk ? qspiPendingBytes() : 0;
+  info[28] = (uint8_t)(pend & 0xFF);
+  info[29] = (uint8_t)((pend >> 8) & 0xFF);
+  info[30] = (uint8_t)((pend >> 16) & 0xFF);
+  info[31] = (uint8_t)(qspiOk ? (qspiSizeBytes() >> 16) : 0);   // MiB-ish
   infoChar.write(info, sizeof(info));
 }
 
@@ -236,14 +254,15 @@ void connect_cb(uint16_t handle) {
 void disconnect_cb(uint16_t handle, uint8_t reason) {
   (void)handle; (void)reason;
   connected = false;
-  streaming = false;
+  // Deliberately does NOT disarm: staying armed across a dropped link is the
+  // whole point of store-and-forward. Frames now go to flash instead.
   updateLed();
 }
 
 
 // ---------------------------------------------------------------- framing
 
-static void sendFrame(const int16_t *samples, int n, uint16_t sq, bool voiced) {
+static uint16_t buildFrame(const int16_t *samples, int n, uint16_t sq, bool voiced) {
   AdpcmState st = { samples[0], 0 };
   int16_t predictor0 = (int16_t)st.predictor;
   uint8_t index0     = (uint8_t)st.index;
@@ -264,7 +283,27 @@ static void sendFrame(const int16_t *samples, int n, uint16_t sq, bool voiced) {
   frameBuf[6] = n & 0xFF;
   frameBuf[7] = (n >> 8) & 0xFF;
 
-  audioChar.notify(frameBuf, HEADER_LEN + n / 2);
+  return (uint16_t)(HEADER_LEN + n / 2);
+}
+
+/* Live to the host when there is one, otherwise into flash. */
+static void emitFrame(const int16_t *samples, int n, uint16_t sq, bool voiced) {
+  uint16_t len = buildFrame(samples, n, sq, voiced);
+  if (connected) audioChar.notify(frameBuf, len);
+  else if (qspiOk) qspiPush(frameBuf, (uint8_t)len);
+}
+
+/* Push buffered frames out a few at a time so draining never starves the
+ * radio. A frame that fails to queue is kept, not dropped. */
+static void drainBacklog() {
+  for (int i = 0; i < 4; i++) {
+    if (drainLen == 0) {
+      drainLen = qspiPop(drainBuf, sizeof(drainBuf));
+      if (drainLen == 0) return;
+    }
+    if (audioChar.notify(drainBuf, drainLen)) drainLen = 0;
+    else return;
+  }
 }
 
 static void stashPreRoll(const int16_t *samples, int n, uint16_t sq) {
@@ -281,7 +320,7 @@ static void flushPreRoll() {
   int start = (preRollHead - preRollCount + PREROLL_FRAMES) % PREROLL_FRAMES;
   for (int i = 0; i < preRollCount; i++) {
     int idx = (start + i) % PREROLL_FRAMES;
-    sendFrame(preRoll[idx], preRollLen[idx], preRollSeq[idx], true);
+    emitFrame(preRoll[idx], preRollLen[idx], preRollSeq[idx], true);
   }
   preRollCount = 0;
 }
@@ -309,6 +348,7 @@ void setup() {
   Bluefruit.begin(1, 0);
   Bluefruit.setTxPower(4);
   Bluefruit.setName("XIAO-MIC");
+  Bluefruit.autoConnLed(false);   // we drive the RGB LED ourselves
   Bluefruit.Periph.setConnectCallback(connect_cb);
   Bluefruit.Periph.setDisconnectCallback(disconnect_cb);
 
@@ -327,7 +367,7 @@ void setup() {
 
   infoChar.setProperties(CHR_PROPS_READ);
   infoChar.setPermission(SECMODE_OPEN, SECMODE_NO_ACCESS);
-  infoChar.setMaxLen(27);
+  infoChar.setMaxLen(32);
   infoChar.begin();
   publishInfo();
 
@@ -344,6 +384,9 @@ void setup() {
   Serial.println("XIAO-MIC advertising");
 
   // Last, deliberately: the radio must come up even if the IMU misbehaves.
+  qspiOk = qspiBegin();
+  Serial.println(qspiOk ? "QSPI: store-and-forward ready" : "QSPI: not found");
+
   imuReady = imuTapBegin();
   publishInfo();               // republish now that IMU status is known
   Serial.println(imuReady ? "IMU: double-tap armed" : "IMU: not found");
@@ -361,19 +404,24 @@ void loop() {
     uint32_t now = millis();
     if (now - lastTapMs > 600) {
       lastTapMs = now;
-      if (connected) {
-        streaming = !streaming;
-        ringTail = ringHead;
-        vadHangover = 0;
-        preRollCount = 0;
-        updateLed();
-      }
+      streaming = !streaming;          // arm/disarm, connected or not
+      ringTail = ringHead;
+      vadHangover = 0;
+      preRollCount = 0;
+      updateLed();
     }
   }
 
-  if (!connected || !streaming) {
+  if (!streaming) {
     ringTail = ringHead;      // stay live rather than accumulating stale audio
     delay(5);
+    return;
+  }
+
+  // Clear the backlog before resuming live audio, so the host receives the
+  // conversation in order rather than with a hole in the middle.
+  if (connected && qspiOk && (qspiPendingBytes() || drainLen)) {
+    drainBacklog();
     return;
   }
 
@@ -430,6 +478,6 @@ void loop() {
     }
   }
 
-  sendFrame(frameSamples, outSamples, seq, voiced);
+  emitFrame(frameSamples, outSamples, seq, voiced);
   seq++;
 }
