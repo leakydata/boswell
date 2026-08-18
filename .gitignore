@@ -1,0 +1,21 @@
+# secrets
+.env
+
+# recordings, transcripts, and voiceprints of real people — never commit
+data/
+
+# build outputs
+build/
+build_ble/
+*.uf2
+*.hex
+*.bin
+*.elf
+*.map
+*.zip
+
+# local tooling
+.venv/
+toolshim/
+__pycache__/
+*.pyc
