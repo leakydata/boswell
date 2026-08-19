@@ -132,6 +132,25 @@ audio{width:100%;margin:6px 0 14px}
 .who:hover{border-color:var(--accent)}
 .spk{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px}
 .empty{color:var(--muted);font-size:14.5px;padding:22px 0;text-align:center}
+
+/* naming sheet -- replaces prompt(), which mobile browsers block */
+#namer{position:fixed;left:0;right:0;bottom:0;z-index:50;background:var(--surface);
+  border-top:1px solid var(--rule);border-radius:14px 14px 0 0;
+  padding:18px 16px calc(18px + env(safe-area-inset-bottom));
+  box-shadow:0 -8px 32px #0003;transform:translateY(110%);transition:transform .2s ease}
+#namer.open{transform:none}
+#namer h3{margin:0 0 4px;font-size:17px;font-weight:600}
+#namer .hint{font-family:var(--mono);font-size:12px;color:var(--muted);margin-bottom:14px}
+#namer input[type=text]{width:100%;font-family:var(--sans);font-size:17px;padding:13px;
+  border-radius:8px;border:1px solid var(--rule);background:var(--paper);color:var(--ink);
+  margin-bottom:10px}
+#namer input:focus{outline:2px solid var(--accent);outline-offset:-1px;border-color:var(--accent)}
+.quick{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:12px}
+.quick button{flex:0 0 auto;min-height:38px;padding:7px 14px;font-size:14px;border-radius:18px}
+#scrim{position:fixed;inset:0;background:#0006;z-index:49;opacity:0;pointer-events:none;
+  transition:opacity .2s}
+#scrim.open{opacity:1;pointer-events:auto}
+#namerErr{color:var(--bad);font-family:var(--mono);font-size:12px;min-height:16px}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
 </style>
 </head>
@@ -218,6 +237,20 @@ audio{width:100%;margin:6px 0 14px}
         <button class="pri" id="bTranscribe">Transcribe</button>
       </div>
     </div>
+  </div>
+</div>
+
+<div id="scrim"></div>
+<div id="namer" role="dialog" aria-modal="true" aria-labelledby="namerT">
+  <h3 id="namerT">Who is this?</h3>
+  <div class="hint" id="namerSub"></div>
+  <div class="quick" id="namerQuick"></div>
+  <input type="text" id="namerInput" placeholder="Type a name" autocomplete="off"
+         autocapitalize="words" enterkeyhint="done">
+  <div id="namerErr"></div>
+  <div class="btns" style="margin-top:10px">
+    <button id="namerCancel">Cancel</button>
+    <button class="pri" id="namerSave">Save name</button>
   </div>
 </div>
 
@@ -346,8 +379,12 @@ async function renderTranscript(name){
   for (const id of ids){
     const chip = document.createElement("span");
     const known = named[id] && named[id].name;
+    const score = named[id] ? named[id].score : 0;
     chip.className = "who" + (known ? " named" : "");
-    chip.textContent = known ? `${named[id].name} · tap to rename` : `${id} · tap to name`;
+    // Showing the score makes a near-miss legible instead of mysterious.
+    chip.textContent = known
+      ? `${named[id].name} · ${score.toFixed(2)} · tap to rename`
+      : `${id} · best ${score ? score.toFixed(2) : "—"} · tap to name`;
     chip.onclick = () => nameSpeaker(name, id, known || "");
     $("dSpeakers").appendChild(chip);
   }
@@ -364,16 +401,73 @@ async function renderTranscript(name){
   }
 }
 
+/* prompt() is blocked or silently ignored by most mobile browsers, so the
+   naming flow is an in-page sheet instead. */
+let namerCtx = null;
+
 async function nameSpeaker(clip, speaker, existing){
-  const name = prompt(`Who is ${speaker}?`, existing);
-  if (!name) return;
-  const r = await fetch("/api/label", {
-    method:"POST", headers:{"Content-Type":"application/json"},
-    body: JSON.stringify({clip, speaker, name})
-  });
-  if (r.ok){ log(`labelled ${speaker} as ${name}`); await renderTranscript(clip); }
-  else { const e = await r.json().catch(()=>({})); alert(e.detail || "could not save that name"); }
+  namerCtx = {clip, speaker};
+  $("namerT").textContent = existing ? `Rename ${existing}?` : "Who is speaking?";
+  $("namerSub").textContent = `${speaker} · ${clip}`;
+  $("namerInput").value = existing || "";
+  $("namerErr").textContent = "";
+
+  const q = $("namerQuick");
+  q.innerHTML = "";
+  try{
+    const people = await (await fetch("/api/speakers")).json();
+    for (const p of people){
+      const b = document.createElement("button");
+      b.textContent = `${p.name} (${p.samples})`;
+      b.onclick = () => { $("namerInput").value = p.name; saveName(); };
+      q.appendChild(b);
+    }
+  }catch(e){}
+
+  $("scrim").classList.add("open");
+  $("namer").classList.add("open");
+  setTimeout(() => $("namerInput").focus(), 220);
 }
+
+function closeNamer(){
+  $("scrim").classList.remove("open");
+  $("namer").classList.remove("open");
+  namerCtx = null;
+}
+
+async function saveName(){
+  if (!namerCtx) return;
+  const name = $("namerInput").value.trim();
+  if (!name){ $("namerErr").textContent = "Enter a name first"; return; }
+  $("namerSave").disabled = true;
+  try{
+    const r = await fetch("/api/label", {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({clip: namerCtx.clip, speaker: namerCtx.speaker, name})
+    });
+    const body = await r.json().catch(() => ({}));
+    if (r.ok){
+      log(`labelled ${namerCtx.speaker} as ${name} (${body.samples} sample(s))`);
+      const clip = namerCtx.clip;
+      closeNamer();
+      await renderTranscript(clip);
+    } else {
+      $("namerErr").textContent = body.detail || "Could not save that name";
+    }
+  }catch(e){
+    $("namerErr").textContent = "Network error — is the server still running?";
+  }finally{
+    $("namerSave").disabled = false;
+  }
+}
+
+$("namerSave").onclick = saveName;
+$("namerCancel").onclick = closeNamer;
+$("scrim").onclick = closeNamer;
+$("namerInput").addEventListener("keydown", e => {
+  if (e.key === "Enter"){ e.preventDefault(); saveName(); }
+  if (e.key === "Escape") closeNamer();
+});
 
 $("bAll").onclick = async () => {
   const r = await (await fetch("/api/transcribe_all", {method:"POST"})).json();
