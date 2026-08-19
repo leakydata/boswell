@@ -144,6 +144,33 @@ static void connected(struct bt_conn *conn, uint8_t err)
      * subscribes, which means discovery has finished. */
 }
 
+/* Advertising has to be restarted by hand after a disconnect.
+ *
+ * Without this the board went quiet the moment a host dropped: not connected
+ * and not advertising, so nothing could ever reach it again until it was
+ * power-cycled. Everything captured from then on went to flash, which is why
+ * almost every clip arrived as recovered audio rather than live.
+ *
+ * Done from a work item rather than inside the callback, because the
+ * connection is not fully torn down at that point and starting an advertiser
+ * there can be rejected. */
+static void adv_restart_fn(struct k_work *work)
+{
+    ARG_UNUSED(work);
+    int err = bt_le_adv_start(&adv_param, adv, ARRAY_SIZE(adv),
+                              scan_rsp, ARRAY_SIZE(scan_rsp));
+    if (err == -EALREADY) {
+        return;
+    }
+    if (err) {
+        LOG_ERR("re-advertising failed (%d); retrying", err);
+        k_work_reschedule(k_work_delayable_from_work(work), K_MSEC(500));
+        return;
+    }
+    LOG_INF("advertising again");
+}
+static K_WORK_DELAYABLE_DEFINE(adv_restart, adv_restart_fn);
+
 static void disconnected(struct bt_conn *conn, uint8_t reason)
 {
     ARG_UNUSED(conn);
@@ -153,6 +180,7 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
         current_conn = NULL;
     }
     notify_enabled = false;
+    k_work_reschedule(&adv_restart, K_MSEC(100));
     /* Deliberately stays armed: capture continuing across a dropped link is
      * the whole point of the flash buffer. */
 }

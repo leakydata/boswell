@@ -132,12 +132,13 @@ static inline void watchdog_feed(void)
  * UF2 mode instead of jumping to the application. Setting that and resetting
  * makes flashing scriptable again.
  */
-#define DFU_MAGIC_UF2 0x57
+#define DFU_MAGIC_UF2 0x57      /* mass-storage / serial DFU */
+#define DFU_MAGIC_OTA 0xA8      /* the bootloader's own BLE DFU */
 
-static void reboot_to_bootloader(void)
+static void reboot_to_bootloader(uint8_t magic)
 {
-    LOG_INF("rebooting into the bootloader");
-    nrf_power_gpregret_set(NRF_POWER, 0, DFU_MAGIC_UF2);
+    LOG_INF("rebooting into the bootloader (magic 0x%02x)", magic);
+    nrf_power_gpregret_set(NRF_POWER, 0, magic);
     k_sleep(K_MSEC(100));
     sys_reboot(SYS_REBOOT_COLD);
 }
@@ -147,7 +148,17 @@ static int cmd_dfu(const struct shell *sh, size_t argc, char **argv)
 {
     ARG_UNUSED(argc); ARG_UNUSED(argv);
     shell_print(sh, "rebooting into the bootloader");
-    reboot_to_bootloader();
+    reboot_to_bootloader(DFU_MAGIC_UF2);
+    return 0;
+}
+
+/* Reboots into the bootloader's Bluetooth DFU mode instead of mass storage,
+ * which is what makes updating without a cable possible at all. */
+static int cmd_ota(const struct shell *sh, size_t argc, char **argv)
+{
+    ARG_UNUSED(argc); ARG_UNUSED(argv);
+    shell_print(sh, "rebooting into BLE DFU");
+    reboot_to_bootloader(DFU_MAGIC_OTA);
     return 0;
 }
 
@@ -252,6 +263,7 @@ static int cmd_status(const struct shell *sh, size_t argc, char **argv)
 
 SHELL_STATIC_SUBCMD_SET_CREATE(boswell_cmds,
     SHELL_CMD(dfu, NULL, "Reboot into the bootloader for flashing", cmd_dfu),
+    SHELL_CMD(ota, NULL, "Reboot into the bootloader's BLE DFU mode", cmd_ota),
     SHELL_CMD(status, NULL, "Show capture state", cmd_status),
     SHELL_CMD(reboot, NULL, "Restart the firmware", cmd_reboot),
     SHELL_CMD(stream, NULL, "Arm/disarm capture (on|off)", cmd_stream),
@@ -287,8 +299,11 @@ static void on_ctrl(uint8_t op, uint8_t arg)
         break;
     case CTRL_MIC_SAVE:     g_state.mic_power_save = arg ? 1 : 0; break;
     case CTRL_DFU:
-        if (arg == 0x5A) {          /* deliberately awkward, not a stray write */
-            reboot_to_bootloader();
+        /* Deliberately awkward arguments, not a stray write. */
+        if (arg == 0x5A) {
+            reboot_to_bootloader(DFU_MAGIC_UF2);
+        } else if (arg == 0xA5) {
+            reboot_to_bootloader(DFU_MAGIC_OTA);
         }
         break;
     default: break;

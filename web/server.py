@@ -91,6 +91,7 @@ class Device:
         self._recovered: list[np.ndarray] = []
         self._recovered_at = 0.0
         self._recovered_start = None
+        self._recovered_tms = None
         # Mapping between the device's uptime clock and wall time.
         self._clock_host = None
         self._clock_dev = 0
@@ -128,14 +129,30 @@ class Device:
         self._recovered = []
         self.state["recovered_seconds"] = 0.0
         os.makedirs(DATA, exist_ok=True)
-        # Name it for when it was spoken, not when it reached us.
-        when = int(self._recovered_start or time.time())
+        # Name it for when it was spoken, not when it reached us. The device
+        # clock is converted here rather than on arrival, because the anchor
+        # to our clock may only have been established after the first live
+        # frame -- which can come well after the backlog started replaying.
+        when = None
+        if self._recovered_tms is not None and self._clock_host is not None:
+            when = self._clock_host - (self._clock_dev - self._recovered_tms) / 1000.0
+        if when is None:
+            when = self._recovered_start or time.time()
+        when = int(when)
         self._recovered_start = None
+        self._recovered_tms = None
         path = os.path.join(DATA, f"recovered_{when}.wav")
         sf.write(path, audio, self.state["rate"], subtype="PCM_16")
         # Set the file's mtime too, since the UI orders and dates by it.
+        #
+        # It has to be the END of the audio, not the start. A live clip's
+        # mtime is the moment it was saved, which is when its audio finished,
+        # and everything downstream derives a start as mtime minus duration.
+        # Stamping a recovered clip with its start put it a whole clip-length
+        # too early and interleaved it wrongly with the live clips around it.
+        end = when + len(audio) / float(self.state["rate"] or 1)
         try:
-            os.utime(path, (when, when))
+            os.utime(path, (end, end))
         except OSError:
             pass
         return path
@@ -198,9 +215,14 @@ class Device:
         if flags & 0x08:                     # recovered from device flash
             self._recovered.append(pcm)
             self._recovered_at = time.time()
-            if self._clock_host is not None:
-                when = self._clock_host - (self._clock_dev - t_ms) / 1000.0
-                self._recovered_start = min(self._recovered_start or when, when)
+            # Keep the device's own timestamp and convert it later. A host
+            # that connects to a device with a backlog already queued sees
+            # replayed frames before any live one, so at this point there may
+            # be no anchor between the two clocks yet -- and falling back to
+            # "now" stamps recovered audio with the moment it drained, which
+            # is exactly the error this is meant to avoid.
+            self._recovered_tms = (t_ms if self._recovered_tms is None
+                                   else min(self._recovered_tms, t_ms))
             self.state["recovered_seconds"] = round(
                 sum(len(p) for p in self._recovered) / self.state["rate"], 1)
             return

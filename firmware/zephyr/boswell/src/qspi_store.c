@@ -56,9 +56,34 @@ static void writer_fn(void *a, void *b, void *cc);
 static qspi_drain_fn drain_cb;
 static qspi_ready_fn ready_cb;
 
+/* Reads `len` bytes from a monotonic position, splitting the request when it
+ * crosses the end of the device.
+ *
+ * The payload read handled the wrap and the two-byte header read did not, so
+ * once the reader reached the last byte of flash every header read failed
+ * ("read error: address or size exceeds expected values. Addr: 0x1fffff
+ * size 2") and the drain stopped for good: the backlog sat at nearly a
+ * megabyte and the device buffered everything from then on. */
+static int read_wrapped(int64_t pos, uint8_t *dst, uint32_t len);
+
 static uint32_t addr_of(int64_t pos)
 {
     return capacity ? (uint32_t)(pos % capacity) : 0;
+}
+
+static int read_wrapped(int64_t pos, uint8_t *dst, uint32_t len)
+{
+    uint32_t at    = addr_of(pos);
+    uint32_t first = capacity - at;
+
+    if (first >= len) {
+        return flash_read(flash_dev, at, dst, len);
+    }
+    int err = flash_read(flash_dev, at, dst, first);
+    if (err) {
+        return err;
+    }
+    return flash_read(flash_dev, 0, dst + first, len - first);
 }
 
 /* Erase ahead of the write pointer, one sector at a time.
@@ -255,7 +280,7 @@ int qspi_store_pop(uint8_t *out, uint8_t max_len)
     while (r_pos + 2 <= w_pos) {
         uint8_t hdr[2];
 
-        if (flash_read(flash_dev, addr_of(r_pos), hdr, sizeof(hdr)) != 0) {
+        if (read_wrapped(r_pos, hdr, sizeof(hdr)) != 0) {
             break;
         }
         if (hdr[0] != QSPI_MAGIC || hdr[1] == 0 || hdr[1] > QSPI_MAX_PAYLOAD) {
@@ -269,18 +294,8 @@ int qspi_store_pop(uint8_t *out, uint8_t max_len)
         if (len > max_len) {               /* caller's buffer is too small */
             break;
         }
-        /* A record can straddle the wrap, so read it in two pieces. */
-        uint32_t at    = addr_of(r_pos + 2);
-        uint32_t first = capacity - at;
-        if (first >= len) {
-            if (flash_read(flash_dev, at, out, len) != 0) {
-                break;
-            }
-        } else {
-            if (flash_read(flash_dev, at, out, first) != 0 ||
-                flash_read(flash_dev, 0, out + first, len - first) != 0) {
-                break;
-            }
+        if (read_wrapped(r_pos + 2, out, len) != 0) {
+            break;
         }
         r_pos += 2 + len;
         result = len;
