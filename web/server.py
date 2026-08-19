@@ -262,6 +262,50 @@ async def index():
     return FileResponse(os.path.join(HERE, "static", "index.html"))
 
 
+ENVELOPES = os.path.join(DATA, "envelopes")
+
+
+@app.get("/api/envelope/{name}")
+async def api_envelope(name: str):
+    """Per-frame loudness for the waveform view. Cached: the arithmetic is
+    cheap but re-reading a WAV on every scrub is not."""
+    if "/" in name or not name.endswith(".wav"):
+        raise HTTPException(400, "bad name")
+    path = os.path.join(DATA, name)
+    if not os.path.exists(path):
+        raise HTTPException(404, "no such clip")
+
+    os.makedirs(ENVELOPES, exist_ok=True)
+    cache = os.path.join(ENVELOPES, name + ".json")
+    if os.path.exists(cache) and os.path.getmtime(cache) >= os.path.getmtime(path):
+        return JSONResponse(json.load(open(cache)))
+
+    audio, rate = sf.read(path, dtype="int16")
+    if audio.ndim > 1:
+        audio = audio[:, 0]
+    n = max(1, int(rate * 0.02))                     # 20 ms, same as the firmware
+    usable = len(audio) // n * n
+    if usable == 0:
+        out = {"env": [], "seconds": 0.0, "peak": 0}
+    else:
+        frames = audio[:usable].astype(np.float64).reshape(-1, n)
+        rms = np.sqrt((frames ** 2).mean(axis=1))
+        # Reduce to something a phone can draw without janking.
+        target = 400
+        k = max(1, len(rms) // target)
+        rms = rms[: len(rms) // k * k].reshape(-1, k).max(axis=1)
+        # Normalise against a high percentile, not the max: one clipping
+        # transient (a tap on the case) would otherwise scale every voice
+        # down to a flat line. Values above the reference clamp to 1.
+        ref = float(np.percentile(rms, 95)) or float(rms.max()) or 1.0
+        ref = max(ref, 1.0)
+        out = {"env": [round(min(1.0, float(v) / ref), 3) for v in rms],
+               "seconds": round(len(audio) / rate, 2),
+               "peak": int(np.abs(audio).max())}
+    json.dump(out, open(cache, "w"))
+    return JSONResponse(out)
+
+
 @app.post("/api/transcribe_all")
 async def api_transcribe_all():
     """Queue every clip that has no transcript yet."""

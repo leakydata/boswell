@@ -118,7 +118,12 @@ nav.tabs button[aria-selected=true]{background:var(--surface);color:var(--ink);
 .tag.error{background:color-mix(in srgb,var(--bad) 16%,transparent);color:var(--bad)}
 
 /* transcript */
-audio{width:100%;margin:6px 0 14px}
+audio{width:100%;margin:6px 0 10px}
+.wave{position:relative;background:var(--sunk);border:1px solid var(--rule);
+  border-radius:6px;overflow:hidden;margin-bottom:14px;cursor:pointer}
+.wave canvas{display:block;width:100%;height:76px}
+.wavelegend{display:flex;gap:16px;padding:7px 10px;border-top:1px solid var(--rule);
+  font-family:var(--mono);font-size:11px;color:var(--muted)}
 .seg{display:flex;gap:10px;padding:9px 0;border-bottom:1px solid var(--rule);font-size:15px}
 .seg:last-child{border:none}
 .seg .t{font-family:var(--mono);font-size:11.5px;color:var(--faint);flex:none;
@@ -230,6 +235,14 @@ audio{width:100%;margin:6px 0 14px}
     <div class="card" id="detail" hidden>
       <h2 id="dTitle">Transcript</h2>
       <audio id="player" controls preload="none"></audio>
+      <div class="wave" id="wave">
+        <canvas id="wcanvas"></canvas>
+        <div class="wavelegend">
+          <span class="key"><span class="sw" style="width:10px;height:10px;border-radius:2px;background:var(--accent);display:inline-block"></span> speech</span>
+          <span class="key"><span class="sw" style="width:10px;height:10px;border-radius:2px;background:var(--faint);display:inline-block"></span> quiet</span>
+          <span id="winfo"></span>
+        </div>
+      </div>
       <div class="spk" id="dSpeakers"></div>
       <div id="dSegs"></div>
       <div class="btns" style="margin-top:16px">
@@ -359,10 +372,75 @@ async function openClip(name){
   $("detail").hidden = false;
   $("dTitle").textContent = name;
   $("player").src = "/api/audio/" + encodeURIComponent(name);
+  loadWave(name);
   $("dSegs").innerHTML = '<div class="empty">loading…</div>';
   $("dSpeakers").innerHTML = "";
   await renderTranscript(name);
 }
+
+/* ---- waveform ---- */
+let waveData = null, waveSegs = [], waveDur = 0;
+
+function cssVar(n){ return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
+
+function drawWave(){
+  const cv = $("wcanvas");
+  if (!cv || !waveData) return;
+  const dpr = window.devicePixelRatio || 1;
+  const w = cv.clientWidth, h = cv.clientHeight || 76;
+  cv.width = w * dpr; cv.height = h * dpr;
+  const g = cv.getContext("2d");
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, w, h);
+
+  const env = waveData.env, n = env.length;
+  if (!n) return;
+  const bw = w / n, mid = h / 2, pad = 5;
+
+  // A bar is "speech" if a transcript segment covers its moment. Falls back to
+  // a loudness cut when the clip has not been transcribed yet.
+  const speechAt = t => waveSegs.some(s => t >= s.start && t <= s.end);
+  const hasSegs = waveSegs.length > 0;
+
+  for (let i = 0; i < n; i++){
+    const t = (i / n) * waveDur;
+    const voiced = hasSegs ? speechAt(t) : env[i] > 0.28;
+    g.fillStyle = voiced ? cssVar("--accent") : cssVar("--faint");
+    g.globalAlpha = voiced ? 0.95 : 0.4;
+    const bh = Math.max(1, env[i] * (mid - pad));
+    g.fillRect(i * bw, mid - bh, Math.max(1, bw - 0.5), bh * 2);
+  }
+  g.globalAlpha = 1;
+
+  const p = $("player");
+  if (p && waveDur && p.currentTime){
+    const x = (p.currentTime / waveDur) * w;
+    g.strokeStyle = cssVar("--bad"); g.lineWidth = 1.5;
+    g.beginPath(); g.moveTo(x, 0); g.lineTo(x, h); g.stroke();
+  }
+}
+
+async function loadWave(name){
+  waveData = null; waveSegs = []; waveDur = 0;
+  $("winfo").textContent = "";
+  try{
+    const d = await (await fetch("/api/envelope/" + encodeURIComponent(name))).json();
+    waveData = d; waveDur = d.seconds || 0;
+    $("winfo").textContent = `${waveDur.toFixed(1)}s · peak ${Math.round(d.peak/32767*100)}%`;
+    drawWave();
+  }catch(e){}
+}
+
+$("wave").onclick = e => {
+  if (!waveDur) return;
+  const r = $("wcanvas").getBoundingClientRect();
+  const p = $("player");
+  p.currentTime = Math.max(0, Math.min(waveDur, ((e.clientX - r.left) / r.width) * waveDur));
+  p.play();
+};
+$("player").addEventListener("timeupdate", drawWave);
+$("player").addEventListener("seeked", drawWave);
+addEventListener("resize", drawWave);
 
 async function renderTranscript(name){
   const r = await fetch("/api/transcript/" + encodeURIComponent(name));
@@ -371,6 +449,8 @@ async function renderTranscript(name){
     return;
   }
   const t = await r.json();
+  waveSegs = t.segments.map(s => ({start: s.start, end: s.end}));
+  drawWave();
   const named = t.speakers || {};
   const label = s => (named[s] && named[s].name) ? named[s].name : s;
 
