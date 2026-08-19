@@ -634,7 +634,16 @@ Naming works at two levels, because misattribution has two different causes:
 
 ## Roadmap
 
-- Opus encoding for lower power draw
+- Opus encoding for lower power draw. Attempted and abandoned for now:
+  libopus vendors into the Arduino build (132 C files, flattened because only
+  `src/` is on the include path, with a forced config header replacing
+  autotools), and it compiles — but it expects an allocator the Arduino build
+  never supplies, so `opus_alloc` is an implicit declaration and the encoder
+  does not end up in the binary at all. The reported 34 kB against the
+  60–100 kB a real encoder occupies gives it away. Finishing it means
+  supplying the allocator, then validating audio quality, CPU headroom at
+  64 MHz and RAM budget on hardware. Worth doing deliberately rather than
+  shipping 51,000 unvalidated lines into working firmware.
 - Step counting and activity detection — also hardware features of the
   LSM6DS3TR-C, at almost no CPU or code cost
 - Rolling long-term memory across conversations
