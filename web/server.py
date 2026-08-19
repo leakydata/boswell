@@ -21,14 +21,16 @@ from contextlib import asynccontextmanager
 
 import numpy as np
 import soundfile as sf
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "host"))
 from ble_capture import (AUDIO_UUID, CTRL_UUID, INFO_UUID, DEVICE_NAME,
                          HEADER_LEN, decode_block)
 from bleak import BleakClient, BleakScanner
+
+import pipeline
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.join(HERE, "..", "data")
@@ -199,6 +201,33 @@ class Device:
 
 
 device = Device()
+worker = pipeline.Worker(notify=lambda kind, **kw: device.event(kind, **kw))
+
+
+def clip_info(name):
+    path = os.path.join(DATA, name)
+    try:
+        info = sf.info(path)
+        dur = round(info.duration, 1)
+    except Exception:
+        dur = 0.0
+    tp = pipeline.transcript_path(name)
+    status = "none"
+    preview, speakers = "", []
+    if os.path.exists(tp):
+        status = "done"
+        try:
+            t = json.load(open(tp))
+            segs = t.get("segments", [])
+            preview = " ".join(x["text"] for x in segs)[:180]
+            speakers = sorted({x["speaker"] for x in segs if x.get("speaker")})
+        except Exception:
+            status = "error"
+    if worker.busy == name:
+        status = "running"
+    return {"name": name, "seconds": dur,
+            "modified": os.path.getmtime(path),
+            "status": status, "preview": preview, "speakers": speakers}
 
 
 @asynccontextmanager
@@ -215,6 +244,73 @@ app.mount("/static", StaticFiles(directory=os.path.join(HERE, "static")), name="
 @app.get("/")
 async def index():
     return FileResponse(os.path.join(HERE, "static", "index.html"))
+
+
+@app.get("/api/clips")
+async def api_clips():
+    os.makedirs(DATA, exist_ok=True)
+    names = sorted((f for f in os.listdir(DATA) if f.endswith(".wav")),
+                   key=lambda f: os.path.getmtime(os.path.join(DATA, f)),
+                   reverse=True)
+    return [clip_info(n) for n in names[:100]]
+
+
+@app.get("/api/audio/{name}")
+async def api_audio(name: str):
+    if "/" in name or not name.endswith(".wav"):
+        raise HTTPException(400, "bad name")
+    path = os.path.join(DATA, name)
+    if not os.path.exists(path):
+        raise HTTPException(404, "no such clip")
+    return FileResponse(path, media_type="audio/wav")
+
+
+@app.post("/api/transcribe/{name}")
+async def api_transcribe(name: str):
+    if "/" in name or not os.path.exists(os.path.join(DATA, name)):
+        raise HTTPException(404, "no such clip")
+    worker.submit(name)
+    return {"queued": name}
+
+
+@app.get("/api/transcript/{name}")
+async def api_transcript(name: str):
+    tp = pipeline.transcript_path(name)
+    if not os.path.exists(tp):
+        raise HTTPException(404, "not transcribed yet")
+    return JSONResponse(json.load(open(tp)))
+
+
+@app.get("/api/speakers")
+async def api_speakers():
+    meta = {}
+    if os.path.exists(pipeline.SPEAKER_META):
+        meta = json.load(open(pipeline.SPEAKER_META))
+    return [{"name": k, "samples": v.get("count", 1)} for k, v in sorted(meta.items())]
+
+
+@app.post("/api/label")
+async def api_label(body: dict):
+    """Name a diarized speaker. Enrolment is a running mean, not training."""
+    clip, spk, name = body.get("clip"), body.get("speaker"), (body.get("name") or "").strip()
+    if not (clip and spk and name):
+        raise HTTPException(400, "need clip, speaker and name")
+    tp = pipeline.transcript_path(clip)
+    if not os.path.exists(tp):
+        raise HTTPException(404, "clip not transcribed")
+    t = json.load(open(tp))
+    vec = (t.get("embeddings") or {}).get(spk)
+    if vec is None:
+        raise HTTPException(400, f"no voiceprint stored for {spk}")
+    count = pipeline.save_speaker(name, vec)
+
+    # Re-resolve names in this transcript so the UI updates immediately.
+    emb = {k: __import__("numpy").asarray(v)
+           for k, v in (t.get("embeddings") or {}).items()}
+    t["speakers"] = pipeline.identify(emb)
+    json.dump(t, open(tp, "w"), indent=2)
+    device.event("log", text=f"labelled {spk} as {name} ({count} sample(s))")
+    return {"name": name, "samples": count, "speakers": t["speakers"]}
 
 
 @app.websocket("/ws")

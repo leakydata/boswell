@@ -90,6 +90,48 @@ input[type=range]{flex:1;accent-color:var(--accent);height:34px}
 #log li{padding:4px 0;border-bottom:1px solid var(--rule)}
 #log li:last-child{border:none}
 .err{color:var(--bad);font-family:var(--mono);font-size:12.5px;margin-top:10px}
+
+/* tabs */
+nav.tabs{display:flex;gap:4px;margin-bottom:18px;background:var(--sunk);
+  padding:4px;border-radius:8px}
+nav.tabs button{flex:1;min-height:42px;padding:9px;border:none;background:transparent;
+  border-radius:6px;font-weight:600;font-size:14.5px;color:var(--muted)}
+nav.tabs button[aria-selected=true]{background:var(--surface);color:var(--ink);
+  box-shadow:0 1px 3px #0002}
+.view[hidden]{display:none}
+
+/* clip list */
+.clip{display:flex;gap:12px;align-items:center;width:100%;text-align:left;
+  padding:13px 12px;background:var(--surface);border:1px solid var(--rule);
+  border-radius:8px;margin-bottom:8px;min-height:auto}
+.clip:hover{border-color:var(--accent)}
+.clip .ci{flex:1;min-width:0}
+.clip .cn{font-family:var(--mono);font-size:12px;color:var(--muted)}
+.clip .cp{font-size:14px;margin-top:3px;overflow:hidden;text-overflow:ellipsis;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+.clip .cd{font-family:var(--mono);font-size:12px;color:var(--faint);flex:none}
+.tag{font-family:var(--mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase;
+  padding:2px 7px;border-radius:3px;font-weight:600;flex:none}
+.tag.none{background:var(--sunk);color:var(--faint)}
+.tag.done{background:color-mix(in srgb,var(--ok) 16%,transparent);color:var(--ok)}
+.tag.running{background:color-mix(in srgb,var(--warn) 18%,transparent);color:var(--warn)}
+.tag.error{background:color-mix(in srgb,var(--bad) 16%,transparent);color:var(--bad)}
+
+/* transcript */
+audio{width:100%;margin:6px 0 14px}
+.seg{display:flex;gap:10px;padding:9px 0;border-bottom:1px solid var(--rule);font-size:15px}
+.seg:last-child{border:none}
+.seg .t{font-family:var(--mono);font-size:11.5px;color:var(--faint);flex:none;
+  width:44px;padding-top:3px;font-variant-numeric:tabular-nums;cursor:pointer}
+.seg .t:hover{color:var(--accent)}
+.who{font-family:var(--mono);font-size:11px;font-weight:600;padding:1px 7px;
+  border-radius:3px;background:var(--sunk);color:var(--muted);cursor:pointer;
+  white-space:nowrap;border:1px solid transparent}
+.who.named{background:color-mix(in srgb,var(--accent) 15%,transparent);color:var(--accent);
+  border-color:color-mix(in srgb,var(--accent) 35%,transparent)}
+.who:hover{border-color:var(--accent)}
+.spk{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px}
+.empty{color:var(--muted);font-size:14.5px;padding:22px 0;text-align:center}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
 </style>
 </head>
@@ -100,6 +142,12 @@ input[type=range]{flex:1;accent-color:var(--accent);height:34px}
     <span class="ver" id="ver">disconnected</span>
   </header>
 
+  <nav class="tabs" role="tablist">
+    <button id="tabDev" role="tab" aria-selected="true">Device</button>
+    <button id="tabRec" role="tab" aria-selected="false">Recordings</button>
+  </nav>
+
+  <div class="view" id="viewDev">
   <div class="grid">
     <div class="card">
       <h2>Device</h2>
@@ -146,6 +194,24 @@ input[type=range]{flex:1;accent-color:var(--accent);height:34px}
     <div class="card span2">
       <h2>Activity</h2>
       <ul id="log"><li>waiting for connection…</li></ul>
+    </div>
+  </div>
+  </div>
+
+  <div class="view" id="viewRec" hidden>
+    <div class="card" id="clipList" style="border:none;background:transparent;padding:0">
+      <div class="empty">loading…</div>
+    </div>
+
+    <div class="card" id="detail" hidden>
+      <h2 id="dTitle">Transcript</h2>
+      <audio id="player" controls preload="none"></audio>
+      <div class="spk" id="dSpeakers"></div>
+      <div id="dSegs"></div>
+      <div class="btns" style="margin-top:16px">
+        <button id="bBack">Back to list</button>
+        <button class="pri" id="bTranscribe">Transcribe</button>
+      </div>
     </div>
   </div>
 </div>
@@ -201,11 +267,115 @@ function connect(){
     const m = JSON.parse(e.data);
     if (m.type === "state") paint(m);
     else if (m.type === "log") log(m.text);
-    else if (m.type === "clip") log("clip written: " + m.path);
+    else if (m.type === "clip"){ log("clip written: " + m.path);
+      if (!$("viewRec").hidden && $("detail").hidden) loadClips(); }
+    else if (m.type === "job"){
+      log(`transcription ${m.status}: ${m.clip}` + (m.error ? " — " + m.error : ""));
+      if (m.status === "done"){
+        if (current === m.clip) renderTranscript(m.clip);
+        if (!$("viewRec").hidden && $("detail").hidden) loadClips();
+      }
+    }
   };
   ws.onclose = () => { log("server connection lost — retrying"); setTimeout(connect, 2000); };
 }
 connect();
+
+/* ---- tabs ---- */
+let current = null;
+function showTab(rec){
+  $("tabDev").setAttribute("aria-selected", !rec);
+  $("tabRec").setAttribute("aria-selected", rec);
+  $("viewDev").hidden = rec;
+  $("viewRec").hidden = !rec;
+  if (rec) loadClips();
+}
+$("tabDev").onclick = () => showTab(false);
+$("tabRec").onclick = () => showTab(true);
+
+/* ---- recordings ---- */
+async function loadClips(){
+  const el = $("clipList");
+  try{
+    const clips = await (await fetch("/api/clips")).json();
+    if (!clips.length){ el.innerHTML = '<div class="empty">No recordings yet. Capture some audio on the Device tab.</div>'; return; }
+    el.innerHTML = "";
+    for (const c of clips){
+      const b = document.createElement("button");
+      b.className = "clip";
+      b.innerHTML = `<div class="ci">
+          <div class="cn">${new Date(c.modified*1000).toLocaleString()}</div>
+          <div class="cp">${c.preview || "<i style='opacity:.6'>not transcribed</i>"}</div>
+        </div>
+        <span class="cd">${c.seconds.toFixed(0)}s</span>
+        <span class="tag ${c.status}">${c.status === "none" ? "new" : c.status}</span>`;
+      b.onclick = () => openClip(c.name);
+      el.appendChild(b);
+    }
+  }catch(e){ el.innerHTML = '<div class="empty">could not load recordings</div>'; }
+}
+
+async function openClip(name){
+  current = name;
+  $("clipList").hidden = true;
+  $("detail").hidden = false;
+  $("dTitle").textContent = name;
+  $("player").src = "/api/audio/" + encodeURIComponent(name);
+  $("dSegs").innerHTML = '<div class="empty">loading…</div>';
+  $("dSpeakers").innerHTML = "";
+  await renderTranscript(name);
+}
+
+async function renderTranscript(name){
+  const r = await fetch("/api/transcript/" + encodeURIComponent(name));
+  if (!r.ok){
+    $("dSegs").innerHTML = '<div class="empty">Not transcribed yet — press Transcribe.</div>';
+    return;
+  }
+  const t = await r.json();
+  const named = t.speakers || {};
+  const label = s => (named[s] && named[s].name) ? named[s].name : s;
+
+  const ids = [...new Set(t.segments.map(s => s.speaker).filter(Boolean))];
+  $("dSpeakers").innerHTML = "";
+  for (const id of ids){
+    const chip = document.createElement("span");
+    const known = named[id] && named[id].name;
+    chip.className = "who" + (known ? " named" : "");
+    chip.textContent = known ? `${named[id].name} · tap to rename` : `${id} · tap to name`;
+    chip.onclick = () => nameSpeaker(name, id, known || "");
+    $("dSpeakers").appendChild(chip);
+  }
+
+  $("dSegs").innerHTML = "";
+  if (!t.segments.length){ $("dSegs").innerHTML = '<div class="empty">No speech detected in this clip.</div>'; return; }
+  for (const s of t.segments){
+    const d = document.createElement("div");
+    d.className = "seg";
+    const who = s.speaker ? `<span class="who ${named[s.speaker]&&named[s.speaker].name?'named':''}">${label(s.speaker)}</span> ` : "";
+    d.innerHTML = `<span class="t" data-at="${s.start}">${s.start.toFixed(0)}s</span><div>${who}${s.text}</div>`;
+    d.querySelector(".t").onclick = () => { const p = $("player"); p.currentTime = s.start; p.play(); };
+    $("dSegs").appendChild(d);
+  }
+}
+
+async function nameSpeaker(clip, speaker, existing){
+  const name = prompt(`Who is ${speaker}?`, existing);
+  if (!name) return;
+  const r = await fetch("/api/label", {
+    method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({clip, speaker, name})
+  });
+  if (r.ok){ log(`labelled ${speaker} as ${name}`); await renderTranscript(clip); }
+  else { const e = await r.json().catch(()=>({})); alert(e.detail || "could not save that name"); }
+}
+
+$("bBack").onclick = () => { $("detail").hidden = true; $("clipList").hidden = false; loadClips(); };
+$("bTranscribe").onclick = async () => {
+  if (!current) return;
+  await fetch("/api/transcribe/" + encodeURIComponent(current), {method:"POST"});
+  $("dSegs").innerHTML = '<div class="empty">transcribing… this takes a few seconds</div>';
+};
 
 $("bConn").onclick = () => { send({cmd:"connect"}); log("scanning for device…"); };
 $("bDis").onclick  = () => { send({cmd:"disconnect"}); log("disconnected"); };
