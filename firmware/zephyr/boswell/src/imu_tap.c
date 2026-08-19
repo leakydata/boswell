@@ -47,6 +47,7 @@ static uint32_t n_double;     /* DOUBLE_TAP set in TAP_SRC */
 static uint32_t n_accepted;   /* survived debounce */
 static uint32_t n_debounced;
 static uint32_t debounce_ms = TAP_DEBOUNCE_DEFAULT_MS;
+static uint8_t  tap_thresh = 4;
 
 /* Two consecutive toggles closer together than this are treated as one event.
  * One physical tap rings the accelerometer into many events: a measured run
@@ -205,8 +206,11 @@ void imu_tap_probe(uint8_t out[4])
     }
 }
 
+uint8_t imu_tap_get_threshold(void) { return tap_thresh; }
+
 void imu_tap_set_threshold(uint8_t thresh)
 {
+    tap_thresh = thresh & 0x1F;
     if (imu_addr) {
         reg_write(REG_TAP_THS_6D, 0x80 | (thresh & 0x1F));
     }

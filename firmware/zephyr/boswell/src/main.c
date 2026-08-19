@@ -13,6 +13,8 @@
 #include "ble_audio.h"
 #include "imu_tap.h"
 #include "battery.h"
+#include "led.h"
+#include "cfg_store.h"
 #include "qspi_store.h"
 
 #include <stdlib.h>
@@ -45,34 +47,21 @@ struct boswell_state g_state = {
 
 /* ---------------------------------------------------------------- leds */
 
-static const struct gpio_dt_spec led_r = GPIO_DT_SPEC_GET(DT_ALIAS(led0), gpios);
-static const struct gpio_dt_spec led_g = GPIO_DT_SPEC_GET(DT_ALIAS(led1), gpios);
-static const struct gpio_dt_spec led_b = GPIO_DT_SPEC_GET(DT_ALIAS(led2), gpios);
-
-static void led_set(bool r, bool g, bool b)
-{
-    gpio_pin_set_dt(&led_r, r);
-    gpio_pin_set_dt(&led_g, g);
-    gpio_pin_set_dt(&led_b, b);
-}
-
-/* blue advertising · green capturing · red connected but idle · magenta buffering */
+/* blue advertising · green capturing · red connected but idle · magenta
+ * draining the flash backlog. Brightness and steady-vs-pulse live in led.c. */
 static void led_state(void)
 {
-    if (!ble_audio_connected()) {
-        led_set(g_state.streaming, false, true);
-    } else if (!g_state.streaming) {
-        led_set(true, false, false);
-    } else {
-        led_set(false, true, false);
-    }
-}
+    bool draining = qspi_store_pending() > 0 && ble_audio_ready();
 
-static void led_init(void)
-{
-    gpio_pin_configure_dt(&led_r, GPIO_OUTPUT_INACTIVE);
-    gpio_pin_configure_dt(&led_g, GPIO_OUTPUT_INACTIVE);
-    gpio_pin_configure_dt(&led_b, GPIO_OUTPUT_INACTIVE);
+    if (draining) {
+        led_set_colour(true, false, true);          /* magenta */
+    } else if (!ble_audio_connected()) {
+        led_set_colour(g_state.streaming, false, true);
+    } else if (!g_state.streaming) {
+        led_set_colour(true, false, false);
+    } else {
+        led_set_colour(false, true, false);
+    }
 }
 
 /* ---------------------------------------------------------------- watchdog */
@@ -155,6 +144,7 @@ static int cmd_debounce(const struct shell *sh, size_t argc, char **argv)
         return 0;
     }
     imu_tap_set_debounce((uint32_t)atoi(argv[1]));
+    cfg_store_touch();
     shell_print(sh, "debounce -> %u ms", imu_tap_get_debounce());
     return 0;
 }
@@ -177,6 +167,7 @@ static int cmd_tap(const struct shell *sh, size_t argc, char **argv)
     }
     uint8_t t = (uint8_t)atoi(argv[1]);
     imu_tap_set_threshold(t);
+    cfg_store_touch();
     shell_print(sh, "tap threshold -> %u", t & 0x1F);
     return 0;
 }
@@ -198,6 +189,15 @@ static int cmd_stream(const struct shell *sh, size_t argc, char **argv)
     return 0;
 }
 
+static int cmd_reboot(const struct shell *sh, size_t argc, char **argv)
+{
+    ARG_UNUSED(argc); ARG_UNUSED(argv);
+    shell_print(sh, "rebooting");
+    k_sleep(K_MSEC(100));
+    sys_reboot(SYS_REBOOT_COLD);
+    return 0;
+}
+
 static int cmd_status(const struct shell *sh, size_t argc, char **argv)
 {
     ARG_UNUSED(argc); ARG_UNUSED(argv);
@@ -212,6 +212,9 @@ static int cmd_status(const struct shell *sh, size_t argc, char **argv)
                 qspi_store_dropped(), qspi_store_capacity() / 1024);
     shell_print(sh, "qspi pushes=%u pages=%u erases=%u wake=%u",
                 qs[0], qs[1], qs[2], qs[3]);
+    shell_print(sh, "cfg store=%d  tap_thresh=%u debounce=%u ms",
+                cfg_store_ready(), imu_tap_get_threshold(),
+                imu_tap_get_debounce());
     shell_print(sh, "battery=%u mV (%u%%) charging=%d  imu=%d",
                 battery_mv(), battery_percent(), battery_charging(),
                 imu_tap_present());
@@ -221,6 +224,7 @@ static int cmd_status(const struct shell *sh, size_t argc, char **argv)
 SHELL_STATIC_SUBCMD_SET_CREATE(boswell_cmds,
     SHELL_CMD(dfu, NULL, "Reboot into the bootloader for flashing", cmd_dfu),
     SHELL_CMD(status, NULL, "Show capture state", cmd_status),
+    SHELL_CMD(reboot, NULL, "Restart the firmware", cmd_reboot),
     SHELL_CMD(stream, NULL, "Arm/disarm capture (on|off)", cmd_stream),
     SHELL_CMD(imu, NULL, "Re-probe the IMU and report", cmd_imu),
     SHELL_CMD(tap, NULL, "Set double-tap threshold (0-31)", cmd_tap),
@@ -244,8 +248,14 @@ static void on_ctrl(uint8_t op, uint8_t arg)
     case CTRL_VAD:          g_state.vad_enabled = arg != 0; break;
     case CTRL_VAD_THRESH:   g_state.vad_thresh = arg * 32; break;
     case CTRL_BACKLOG_MODE: g_state.backlog_mode = arg ? 1 : 0; break;
-    case CTRL_LED_LEVEL:    g_state.led_level = arg;      break;
-    case CTRL_LED_MODE:     g_state.led_mode = arg ? 1 : 0; break;
+    case CTRL_LED_LEVEL:
+        g_state.led_level = arg;
+        led_set_level(arg);
+        break;
+    case CTRL_LED_MODE:
+        g_state.led_mode = arg ? 1 : 0;
+        led_set_mode(g_state.led_mode);
+        break;
     case CTRL_MIC_SAVE:     g_state.mic_power_save = arg ? 1 : 0; break;
     case CTRL_DFU:
         if (arg == 0x5A) {          /* deliberately awkward, not a stray write */
@@ -256,6 +266,7 @@ static void on_ctrl(uint8_t op, uint8_t arg)
     }
     ble_audio_publish_info();
     led_state();
+    cfg_store_touch();
 }
 
 /* Hands one replayed record to the link, from the writer thread. */
@@ -274,6 +285,43 @@ static void on_double_tap(void)
     ble_audio_apply_conn_params(g_state.streaming);
     ble_audio_publish_info();
     led_state();
+}
+
+/* ---------------------------------------------------------- settings glue */
+
+static void settings_snapshot(struct boswell_settings *s)
+{
+    memset(s, 0, sizeof(*s));
+    s->gain            = g_state.gain;
+    s->use16k          = g_state.use16k;
+    s->vad_enabled     = g_state.vad_enabled;
+    s->vad_thresh      = g_state.vad_thresh;
+    s->led_level       = g_state.led_level;
+    s->led_mode        = g_state.led_mode;
+    s->backlog_mode    = g_state.backlog_mode;
+    s->mic_power_save  = g_state.mic_power_save;
+    s->tap_thresh      = imu_tap_get_threshold();
+    s->tap_debounce_ms = (uint16_t)imu_tap_get_debounce();
+    s->tx_power        = g_state.tx_power;
+}
+
+static void settings_apply(const struct boswell_settings *s)
+{
+    g_state.gain           = s->gain;
+    g_state.use16k         = s->use16k;
+    g_state.vad_enabled    = s->vad_enabled;
+    g_state.vad_thresh     = s->vad_thresh;
+    g_state.led_level      = s->led_level;
+    g_state.led_mode       = s->led_mode;
+    g_state.backlog_mode   = s->backlog_mode;
+    g_state.mic_power_save = s->mic_power_save;
+    g_state.tx_power       = s->tx_power;
+    if (s->tap_thresh) {
+        imu_tap_set_threshold(s->tap_thresh);
+    }
+    if (s->tap_debounce_ms) {
+        imu_tap_set_debounce(s->tap_debounce_ms);
+    }
 }
 
 /* ---------------------------------------------------------------- capture */
@@ -389,8 +437,10 @@ int main(void)
     /* USB and the LED come first so that whatever happens next can be seen.
      * The first version of this initialised the microphone and Bluetooth
      * before either, and when it faulted there was no way to tell why. */
-    led_init();
-    led_set(false, false, true);
+    (void)led_init();
+    led_set_level(g_state.led_level);
+    led_set_mode(g_state.led_mode);
+    led_set_colour(false, false, true);
     (void)usb_enable(NULL);
     k_sleep(K_MSEC(1500));          /* let a host enumerate before we talk */
     LOG_INF("Boswell starting");
@@ -403,6 +453,9 @@ int main(void)
     LOG_INF("ble_audio_init -> %d", err);
 
     qspi_store_set_drain(drain_to_host, ble_audio_ready);
+    err = cfg_store_init();
+    LOG_INF("cfg_store_init -> %d", err);
+
     err = qspi_store_init();
     LOG_INF("qspi_store_init -> %d", err);
 
@@ -411,6 +464,16 @@ int main(void)
 
     err = imu_tap_init(on_double_tap);
     LOG_INF("imu_tap_init -> %d", err);
+
+    /* After the drivers exist, so applying a restored value reaches hardware
+     * rather than only updating a variable that init then overwrites. */
+    struct boswell_settings saved;
+    if (cfg_store_load(&saved)) {
+        settings_apply(&saved);
+        mic_set_gain(g_state.gain);
+        led_set_level(g_state.led_level);
+        led_set_mode(g_state.led_mode);
+    }
 
     watchdog_init();
     LOG_INF("watchdog ready");
@@ -423,15 +486,27 @@ int main(void)
                     K_PRIO_PREEMPT(10), 0, K_NO_WAIT);
     k_thread_name_set(&capture_thread, "capture");
 
-    int ticks = 0;
+    /* Ticks at the pulse resolution rather than the housekeeping interval: a
+     * 25 ms flash cannot be driven by a loop that wakes twice a second. */
+    int64_t next_house = 0, next_batt = 0;
     while (1) {
-        watchdog_feed();
-        led_state();
-        if (++ticks >= 60) {        /* every ~30 s */
-            ticks = 0;
+        int64_t now = k_uptime_get();
+
+        led_service();
+
+        if (now >= next_house) {
+            next_house = now + 500;
+            watchdog_feed();
+            led_state();
+        }
+        if (now >= next_batt) {
+            next_batt = now + 30000;
             battery_sample();
         }
-        k_sleep(K_MSEC(500));
+        struct boswell_settings cur;
+        settings_snapshot(&cur);
+        cfg_store_service(&cur);
+        k_sleep(K_MSEC(10));
     }
     return 0;
 }

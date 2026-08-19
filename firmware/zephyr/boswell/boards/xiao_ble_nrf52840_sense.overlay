@@ -77,3 +77,52 @@
 		io-channels = <&adc 7>;
 	};
 };
+
+/*
+ * PWM on the three LED channels, for brightness control.
+ *
+ * The board's stock pwm0_default maps PWM_OUT0 to P0.17, which is not an LED
+ * at all -- it is the BQ25101's ~CHG output, which this firmware reads to
+ * report charging. Using the shipped pwm-led0 alias would have driven an
+ * output onto an input the battery code depends on. These are the real LED
+ * pins: red P0.26, green P0.30, blue P0.06.
+ *
+ * The RGB LED is common anode, so a channel lights when its pin is pulled
+ * low; nordic,invert makes a rising duty cycle mean a brighter LED.
+ */
+&pwm0 {
+	status = "okay";
+	pinctrl-0 = <&pwm0_leds>;
+	pinctrl-1 = <&pwm0_leds_sleep>;
+	pinctrl-names = "default", "sleep";
+};
+
+&pinctrl {
+	pwm0_leds: pwm0_leds {
+		group1 {
+			psels = <NRF_PSEL(PWM_OUT0, 0, 26)>,
+				<NRF_PSEL(PWM_OUT1, 0, 30)>,
+				<NRF_PSEL(PWM_OUT2, 0, 6)>;
+			nordic,invert;
+		};
+	};
+
+	pwm0_leds_sleep: pwm0_leds_sleep {
+		group1 {
+			psels = <NRF_PSEL(PWM_OUT0, 0, 26)>,
+				<NRF_PSEL(PWM_OUT1, 0, 30)>,
+				<NRF_PSEL(PWM_OUT2, 0, 6)>;
+			nordic,invert;
+			low-power-enable;
+		};
+	};
+};
+
+/ {
+	boswell_leds {
+		compatible = "pwm-leds";
+		pwm_r: pwm_r { pwms = <&pwm0 0 PWM_MSEC(20) PWM_POLARITY_NORMAL>; };
+		pwm_g: pwm_g { pwms = <&pwm0 1 PWM_MSEC(20) PWM_POLARITY_NORMAL>; };
+		pwm_b: pwm_b { pwms = <&pwm0 2 PWM_MSEC(20) PWM_POLARITY_NORMAL>; };
+	};
+};

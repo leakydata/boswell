@@ -31,5 +31,6 @@ int     imu_tap_reprobe(void);
 void    imu_tap_counters(uint32_t out[4]);
 void     imu_tap_set_debounce(uint32_t ms);
 uint32_t imu_tap_get_debounce(void);
+uint8_t  imu_tap_get_threshold(void);
 
 #endif
