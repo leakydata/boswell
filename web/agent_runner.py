@@ -27,6 +27,17 @@ DEFAULT_MODEL = "gpt-oss:20b"
 IDLE_SECONDS = 90.0        # silence that marks the end of a conversation
 MAX_WAIT = 900.0           # fire anyway if someone talks continuously
 MIN_CHARS = 120            # below this there is nothing worth reasoning about
+# A batch that is only a clip or two is thirty seconds of speech, and thirty
+# seconds almost never contains a commitment, a date or a durable fact. The
+# agent was reviewing exactly that and correctly answering "nothing to
+# record" every time, so it produced nothing at all over a whole day. Batches
+# are widened to the surrounding conversation before the model sees them.
+CONTEXT_GAP = 300.0        # same gap the recordings view groups conversations by
+# A long conversation can run to tens of thousands of characters. Past a point
+# the model is not reading more, it is losing the beginning, so the tail is
+# kept -- the most recent talk is the part most likely to contain something
+# still worth acting on.
+MAX_CHARS = 16000
 
 SYSTEM = """You are reviewing a transcript of a real conversation captured by a \
 wearable microphone. Speakers are named where known, or SPEAKER_xx where not.
@@ -88,6 +99,16 @@ class ConversationAgent:
                 "busy": self.busy,
             }
 
+    def review_now(self, batch):
+        """Run the agent on an explicit batch and return what it did.
+
+        Used by on-demand review; the scheduled path stays untouched so a
+        manual review cannot disturb what is waiting to fire on its own.
+        """
+        self._run(batch)
+        return self.last_result or {"clips": [c for c, _, _ in batch],
+                                    "actions": 0, "said": ""}
+
     def flush_now(self):
         with self._lock:
             self._last_at = 0        # make it look long idle; the loop picks it up
@@ -123,14 +144,62 @@ class ConversationAgent:
                 lines.append(f"{who}: {s['text'].strip()}")
         return "\n".join(lines)
 
+    def _widen(self, batch):
+        """Grow a batch to the conversation its clips belong to.
+
+        What is worth recording is rarely visible in one clip: "I will send
+        that on Friday" is a commitment only if you can see what "that" was.
+        Neighbouring clips within CONTEXT_GAP are pulled in from their stored
+        transcripts, which costs a few file reads and no re-transcription.
+        """
+        try:
+            import index_db, pipeline
+        except Exception:
+            return batch
+        have = {c for c, _, _ in batch}
+        try:
+            convs = index_db.conversations(int(CONTEXT_GAP), 400)
+        except Exception:
+            return batch
+
+        wanted = []
+        for conv in convs:
+            if have & set(conv["clips"]):
+                wanted = conv["clips"]
+                break
+        if not wanted:
+            return batch
+
+        widened = []
+        for name in wanted:
+            existing = next((b for b in batch if b[0] == name), None)
+            if existing:
+                widened.append(existing)
+                continue
+            tp = pipeline.transcript_path(name)
+            if not os.path.exists(tp):
+                continue
+            try:
+                t = json.load(open(tp))
+            except Exception:
+                continue
+            segs = t.get("segments") or []
+            if segs:
+                widened.append((name, segs, t.get("speakers") or {}))
+        return widened or batch
+
     def _run(self, batch):
         import sys
         sys.path.insert(0, os.path.join(HERE, "..", "host"))
         from tools_impl import REGISTRY, SCHEMAS
 
+        batch = self._widen(batch)
         text = self._render(batch)
         if len(text) < MIN_CHARS:
             return
+        if len(text) > MAX_CHARS:
+            text = text[-MAX_CHARS:]
+            text = text[text.index("\n") + 1:] if "\n" in text else text
 
         clips = [c for c, _, _ in batch]
         self.busy = f"{len(clips)} clip(s)"

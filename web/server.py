@@ -1111,6 +1111,40 @@ async def api_agent_run():
     return {"ok": True, "pending_chars": agent.pending_chars()}
 
 
+@app.post("/api/agent/review")
+async def api_agent_review(body: dict):
+    """Review a conversation on demand rather than waiting for silence.
+
+    The scheduler fires after a gap in speech, which is right for capturing
+    the day as it happens but useless for anything already recorded. This is
+    how you point the agent at a conversation you can see on screen.
+    """
+    names = body.get("names") or []
+    if not isinstance(names, list) or not names:
+        raise HTTPException(400, "need a list of clip names")
+
+    batch = []
+    for name in names:
+        if "/" in name or not name.endswith(".wav"):
+            raise HTTPException(400, f"bad name: {name}")
+        tp = pipeline.transcript_path(name)
+        if not os.path.exists(tp):
+            continue
+        try:
+            t = json.load(open(tp))
+        except Exception:
+            continue
+        segs = t.get("segments") or []
+        if segs:
+            batch.append((name, segs, t.get("speakers") or {}))
+    if not batch:
+        raise HTTPException(400, "none of those clips are transcribed")
+
+    loop = asyncio.get_running_loop()
+    result = await loop.run_in_executor(None, agent.review_now, batch)
+    return result
+
+
 @app.get("/api/agent/items")
 async def api_agent_items(kind: str | None = None, limit: int = 200):
     return agent_runner.load_items(kind, limit)
