@@ -49,6 +49,8 @@ class Device:
             "clip_seconds": 0.0, "source": None,
             "recovered_seconds": 0.0, "backlog_mode": 0,
             "led_level": 255, "led_mode": 0,
+            "battery_mv": 0, "battery_pct": 0, "charging": False,
+            "fast_charge": False, "mic_running": True,
         }
         self.relay: WebSocket | None = None
         self.listeners: set[asyncio.Queue] = set()
@@ -231,6 +233,14 @@ class Device:
         if len(info) >= 34:
             self.state["led_level"] = info[32]
             self.state["led_mode"] = info[33]
+        if len(info) >= 38:
+            mv = info[34] | (info[35] << 8)
+            self.state["battery_mv"] = mv
+            self.state["battery_pct"] = info[36]
+            flags = info[37]
+            self.state["charging"] = bool(flags & 1)
+            self.state["fast_charge"] = bool(flags & 2)
+            self.state["mic_running"] = bool(flags & 4)
         if len(info) >= 32:
             pend = info[28] | (info[29] << 8) | (info[30] << 16)
             self.state["backlog_bytes"] = pend
@@ -266,6 +276,14 @@ class Device:
         await self._ctrl(0x0A, self.state["led_level"])
         await self._ctrl(0x0B, self.state["led_mode"])
         self.publish()
+
+    async def set_fast_charge(self, on: bool):
+        if await self._ctrl(0x0C, 1 if on else 0):
+            self.event("log", text=f"charge current: {'100' if on else '50'} mA")
+
+    async def set_mic_power_save(self, on: bool):
+        if await self._ctrl(0x0D, 1 if on else 0):
+            self.event("log", text=f"mic power saving {'on' if on else 'off'}")
 
     async def clear_buffer(self):
         if await self._ctrl(0x08, 1):
@@ -335,7 +353,10 @@ def clip_info(name):
     return {"name": name, "seconds": dur,
             "modified": os.path.getmtime(path),
             "status": status, "preview": preview, "speakers": speakers,
-            "edited": edited}
+            "edited": edited,
+            # None until transcribed -- "no speech found" and "not looked at
+            # yet" are different things and the filter must not conflate them.
+            "has_speech": (bool(preview.strip()) if status == "done" else None)}
 
 
 async def rotator():
@@ -859,6 +880,10 @@ async def ws(sock: WebSocket):
                 await device.set_vad(bool(msg.get("on", False)))
             elif cmd == "clear_buffer":
                 await device.clear_buffer()
+            elif cmd == "fast_charge":
+                await device.set_fast_charge(bool(msg.get("on")))
+            elif cmd == "mic_power_save":
+                await device.set_mic_power_save(bool(msg.get("on")))
             elif cmd == "led":
                 await device.set_led(int(msg.get("level", 255)),
                                      bool(msg.get("pulse")))

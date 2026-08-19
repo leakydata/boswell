@@ -415,6 +415,38 @@ exactly the words that get mangled.
 Changing the list rebuilds the ASR model, which takes a few seconds, and applies
 to clips transcribed from then on. Re-transcribe an older clip to apply it there.
 
+## Power
+
+Rough budget while streaming, on a device that has to run all day:
+
+| | |
+|---|---|
+| BLE connection and notifies | ~5–8 mA |
+| PDM microphone | ~1 mA |
+| Status LED at full brightness | ~2 mA |
+| IMU at 416 Hz (tap detection) | ~0.5 mA |
+
+The LED being a quarter of the microphone-and-radio budget is why it is
+controllable, and why **blink** beats **dim** — see below.
+
+**The microphone is powered down when capture is disarmed.** Nothing is being
+recorded then, and it is around 1 mA. It restarts, with its gain reapplied,
+when capture is armed again.
+
+**Battery voltage** is read through the board's 1M/510k divider against the
+3.0 V internal reference, with `VBAT_ENABLE` driven low only for the reading.
+Percentage comes from a breakpoint table rather than a linear map, because a
+lithium discharge curve is flat through the middle and a linear reading would
+be badly wrong for most of the cell's life.
+
+> The voltage reading has only been exercised on USB power so far. Check it
+> against a multimeter once a cell is attached and adjust `VBAT_DIVIDER` if it
+> reads high or low.
+
+**Charge current** defaults to 50 mA, which is a ten-hour charge for a 500 mAh
+cell. The BQ25101's HICHG pin selects 100 mA, exposed as a switch. Only enable
+it on a cell rated for that current.
+
 ## Status light
 
 The LED is roughly 2 mA against a whole-device budget near 8 mA, so it is worth

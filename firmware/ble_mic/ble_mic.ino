@@ -94,6 +94,8 @@ static bool     streaming   = false;
 static bool     use16k      = DEFAULT_16K;
 static bool     vadEnabled  = DEFAULT_VAD;
 static int      vadThresh   = DEFAULT_VAD_TH;
+static bool     micRunning  = true;
+static int      currentGain = DEFAULT_GAIN;
 static uint16_t seq         = 0;
 static bool     connected   = false;
 
@@ -128,6 +130,63 @@ static uint8_t  ledMode  = 0;        // 0 steady, 1 brief pulse
 #define LED_PULSE_ON_MS    25
 #define LED_PULSE_EVERY_MS 3000
 static bool     ledWantR = false, ledWantG = false, ledWantB = false;
+
+/* ---- battery ----
+ * VBAT reaches the ADC through a 1M/510k divider, and VBAT_ENABLE must be
+ * driven low first or the divider is disconnected and the reading is garbage.
+ * The 3.0 V internal reference is used rather than VDD so the result does not
+ * drift as the cell discharges. */
+/* The variant names the charge-current pin but not the charge-status one.
+ * From the board pin map: D23 is P0.17, the BQ25101 ~CHG output, active low. */
+#ifndef PIN_CHG
+#define PIN_CHG         (23)
+#endif
+#define VBAT_DIVIDER    (1510.0f / 510.0f)
+#define VBAT_REF_MV     3000.0f
+#define ADC_MAX         4095.0f
+static uint16_t batteryMv   = 0;
+static bool     charging    = false;
+static bool     fastCharge  = false;   // BQ25101: LOW = 100 mA, float = 50 mA
+static uint8_t  micPowerSave = 1;      // stop the mic when not armed
+
+static uint16_t readBatteryMv() {
+  digitalWrite(VBAT_ENABLE, LOW);      // connect the divider
+  delayMicroseconds(200);
+  uint32_t acc = 0;
+  for (int i = 0; i < 8; i++) acc += analogRead(PIN_VBAT);
+  digitalWrite(VBAT_ENABLE, HIGH);     // and disconnect it again
+  float raw = acc / 8.0f;
+  return (uint16_t)(raw * (VBAT_REF_MV / ADC_MAX) * VBAT_DIVIDER);
+}
+
+/* A single-cell lithium curve is flat through the middle, so a linear map from
+ * volts to percent is misleading. These breakpoints track the discharge curve
+ * closely enough to be useful without pretending to precision. */
+static uint8_t batteryPercent(uint16_t mv) {
+  static const uint16_t pts[][2] = {
+    {4150, 100}, {4050, 90}, {3950, 75}, {3850, 60}, {3800, 50},
+    {3750, 40}, {3700, 30}, {3650, 20}, {3550, 10}, {3400, 5}, {3200, 0}
+  };
+  if (mv >= pts[0][0]) return 100;
+  for (size_t i = 1; i < sizeof(pts) / sizeof(pts[0]); i++) {
+    if (mv >= pts[i][0]) {
+      uint16_t hiV = pts[i - 1][0], loV = pts[i][0];
+      uint8_t  hiP = pts[i - 1][1], loP = pts[i][1];
+      return (uint8_t)(loP + (long)(mv - loV) * (hiP - loP) / (hiV - loV));
+    }
+  }
+  return 0;
+}
+
+static void setFastCharge(bool on) {
+  fastCharge = on;
+  if (on) {
+    pinMode(PIN_CHARGING_CURRENT, OUTPUT);
+    digitalWrite(PIN_CHARGING_CURRENT, LOW);    // 100 mA
+  } else {
+    pinMode(PIN_CHARGING_CURRENT, INPUT);       // float: 50 mA default
+  }
+}
 
 // ---------------------------------------------------------------- pdm
 
@@ -220,6 +279,7 @@ static void updateLed() {
 // ---------------------------------------------------------------- helpers
 
 static void applyGain(int gain) {
+  currentGain = gain;
   // NOTE: PDM.begin() internally calls setGain(DEFAULT_PDM_GAIN=20), so gain
   // must always be set AFTER begin(), never before. GAINL/GAINR is writable
   // while the peripheral is running, so no restart is needed here.
@@ -227,7 +287,7 @@ static void applyGain(int gain) {
 }
 
 static void publishInfo() {
-  uint8_t info[34];
+  uint8_t info[38];
   info[0] = 1;                          // codec: 1 = IMA ADPCM
   info[1] = use16k ? 1 : 0;
   info[2] = FRAME_MS;
@@ -260,6 +320,10 @@ static void publishInfo() {
   info[31] = (uint8_t)(qspiOk ? (qspiSizeBytes() >> 16) : 0);   // MiB-ish
   info[32] = ledLevel;
   info[33] = ledMode;
+  info[34] = (uint8_t)(batteryMv & 0xFF);
+  info[35] = (uint8_t)(batteryMv >> 8);
+  info[36] = batteryPercent(batteryMv);
+  info[37] = (uint8_t)((charging ? 1 : 0) | (fastCharge ? 2 : 0) | (micRunning ? 4 : 0));
   infoChar.write(info, sizeof(info));
 }
 
@@ -305,6 +369,12 @@ void ctrl_write_cb(uint16_t handle, BLECharacteristic *chr,
     case 0x0A:                       // brightness, 0 = off
       ledLevel = data[1];
       updateLed();
+      break;
+    case 0x0C:                       // 0 = 50 mA charge, 1 = 100 mA
+      setFastCharge(data[1] != 0);
+      break;
+    case 0x0D:
+      micPowerSave = data[1] ? 1 : 0;
       break;
     case 0x0B:                       // 0 = steady, 1 = pulse
       ledMode = data[1] ? 1 : 0;
@@ -452,7 +522,7 @@ void setup() {
 
   infoChar.setProperties(CHR_PROPS_READ);
   infoChar.setPermission(SECMODE_OPEN, SECMODE_NO_ACCESS);
-  infoChar.setMaxLen(34);
+  infoChar.setMaxLen(38);
   infoChar.begin();
   publishInfo();
 
@@ -469,6 +539,14 @@ void setup() {
   Serial.println("XIAO-MIC advertising");
 
   // Last, deliberately: the radio must come up even if the IMU misbehaves.
+  pinMode(VBAT_ENABLE, OUTPUT);
+  digitalWrite(VBAT_ENABLE, HIGH);
+  pinMode(PIN_CHG, INPUT);
+  analogReference(AR_INTERNAL_3_0);
+  analogReadResolution(12);
+  setFastCharge(false);
+  batteryMv = readBatteryMv();
+
   qspiOk = qspiBegin();
   Serial.println(qspiOk ? "QSPI: store-and-forward ready" : "QSPI: not found");
 
@@ -481,6 +559,15 @@ void setup() {
 
 void loop() {
   servicePulse();
+
+  // Sampling the battery is slow and it moves slowly; once every few seconds
+  // is plenty and keeps the ADC off the rest of the time.
+  static uint32_t lastBatMs = 0;
+  if (millis() - lastBatMs > 5000) {
+    lastBatMs = millis();
+    batteryMv = readBatteryMv();
+    charging = digitalRead(PIN_CHG) == LOW;   // ~CHG is active low
+  }
 
   static uint32_t lastInfoMs = 0;
   if (millis() - lastInfoMs > 500) { lastInfoMs = millis(); publishInfo(); }
@@ -501,6 +588,24 @@ void loop() {
 
   if (!streaming) {
     ringTail = ringHead;      // stay live rather than accumulating stale audio
+    // The PDM mic is around 1 mA, which is meaningful against a budget near
+    // 8 mA. Nothing is being recorded while disarmed, so stop it entirely.
+    if (micPowerSave && micRunning) {
+      PDM.end();
+      digitalWrite(PIN_PDM_PWR, LOW);
+      micRunning = false;
+    }
+    delay(20);
+    return;
+  }
+
+  if (!micRunning) {
+    digitalWrite(PIN_PDM_PWR, HIGH);
+    delay(5);
+    PDM.begin(1, PDM_RATE);
+    PDM.setGain(currentGain);        // begin() resets gain -- see applyGain()
+    micRunning = true;
+    ringTail = ringHead;
     delay(5);
     return;
   }

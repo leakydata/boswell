@@ -267,6 +267,8 @@ button.who{font-size:11px}
         <dt>Buffered on device</dt><dd id="backlog">0.0 s</dd>
         <dt>Unsaved clip</dt><dd id="clip">0.0 s</dd>
         <dt>Flash · IMU</dt><dd id="hw">—</dd>
+        <dt>Battery</dt><dd id="batt">—</dd>
+        <dt>Microphone</dt><dd id="micstate">—</dd>
       </dl>
     </div>
 
@@ -285,6 +287,13 @@ button.who{font-size:11px}
       <label class="row">Voice activity gating
         <span class="switch" id="vad" role="switch" aria-checked="false" tabindex="0"></span>
       </label>
+      <label class="row">Fast charge (100 mA)
+        <span class="switch" id="fastchg" role="switch" aria-checked="false" tabindex="0"></span>
+      </label>
+      <div style="font-size:12.5px;color:var(--muted);margin-top:-4px">
+        The charger defaults to 50 mA, so a 500 mAh cell takes about ten hours.
+        100 mA halves that. Only raise it on a cell rated for the current.
+      </div>
       <label class="row">Status light
         <input type="range" id="led" min="0" max="255" value="255" step="15" disabled>
         <span class="val" id="ledv">full</span>
@@ -316,10 +325,15 @@ button.who{font-size:11px}
   </div>
 
   <div class="view" id="viewRec" hidden>
-    <div class="btns" style="margin-bottom:14px">
+    <div class="btns" style="margin-bottom:10px">
       <button class="pri" id="bAll">Transcribe all</button>
       <button id="bRefresh">Refresh</button>
       <span class="val" id="qdepth" style="align-self:center"></span>
+    </div>
+    <div class="btns" style="margin-bottom:14px" role="group" aria-label="Filter recordings">
+      <button id="fAll" aria-pressed="true">All</button>
+      <button id="fVoice" aria-pressed="false">With voice</button>
+      <button id="fSilent" aria-pressed="false">Silent</button>
     </div>
     <div class="card" id="clipList" style="border:none;background:transparent;padding:0">
       <div class="empty">loading…</div>
@@ -501,6 +515,13 @@ function paint(s){
   $("backlog").textContent = s.backlog_seconds.toFixed(1) + " s";
   $("clip").textContent = (s.clip_seconds||0).toFixed(1) + " s";
   $("hw").textContent = (s.qspi_mb ? s.qspi_mb + " MB" : "—") + " · " + (s.imu ? "ok" : "—");
+  const mv = s.battery_mv || 0;
+  $("batt").textContent = mv > 500
+    ? `${(mv/1000).toFixed(2)} V · ${s.battery_pct}%` + (s.charging ? " · charging" : "")
+    : (s.connected ? "USB only" : "—");
+  $("micstate").textContent = !s.connected ? "—"
+    : (s.mic_running ? "running" : "powered down");
+  $("fastchg").setAttribute("aria-checked", !!s.fast_charge);
   const m = $("meter");
   m.style.width = Math.round((s.level||0)*100) + "%";
   const hot = (s.peak||0) > 30000;
@@ -653,11 +674,33 @@ async function loadPeople(){
 }
 
 /* ---- recordings ---- */
+let clipFilter = "all";
+function setFilter(f){
+  clipFilter = f;
+  for (const [id, key] of [["fAll","all"],["fVoice","voice"],["fSilent","silent"]])
+    $(id).setAttribute("aria-pressed", key === f);
+  loadClips();
+}
+$("fAll").onclick = () => setFilter("all");
+$("fVoice").onclick = () => setFilter("voice");
+$("fSilent").onclick = () => setFilter("silent");
+
 async function loadClips(){
   const el = $("clipList");
   try{
-    const clips = await (await fetch("/api/clips")).json();
-    if (!clips.length){ el.innerHTML = '<div class="empty">No recordings yet. Capture some audio on the Device tab.</div>'; return; }
+    const all = await (await fetch("/api/clips")).json();
+    // has_speech is null until a clip is transcribed; an unknown clip is not
+    // the same as a silent one, so it stays out of both filtered views.
+    const clips = clipFilter === "all" ? all
+      : all.filter(c => clipFilter === "voice" ? c.has_speech === true
+                                               : c.has_speech === false);
+    if (!all.length){ el.innerHTML = '<div class="empty">No recordings yet. Capture some audio on the Device tab.</div>'; return; }
+    if (!clips.length){
+      const n = all.filter(c => c.has_speech === null).length;
+      el.innerHTML = `<div class="empty">Nothing matches this filter.` +
+        (n ? ` ${n} clip${n===1?"":"s"} not transcribed yet.` : "") + `</div>`;
+      return;
+    }
     el.innerHTML = "";
     for (const c of clips){
       const b = document.createElement("button");
@@ -667,7 +710,8 @@ async function loadClips(){
           <div class="cp">${c.preview || "<i style='opacity:.6'>not transcribed</i>"}</div>
         </div>
         <span class="cd">${c.seconds.toFixed(0)}s</span>
-        <span class="tag ${c.status}">${c.status === "none" ? "new" : c.status}</span>`;
+        <span class="tag ${c.status}">${c.status === "none" ? "new"
+          : (c.has_speech === false ? "silent" : c.status)}</span>`;
       b.onclick = () => openClip(c.name);
       el.appendChild(b);
     }
@@ -1105,6 +1149,14 @@ function toggleLedPulse(){
 }
 ledpulse.onclick = toggleLedPulse;
 ledpulse.onkeydown = e => { if (e.key === " " || e.key === "Enter"){ e.preventDefault(); toggleLedPulse(); } };
+
+const fastchg = $("fastchg");
+fastchg.onclick = () => {
+  const on = fastchg.getAttribute("aria-checked") !== "true";
+  fastchg.setAttribute("aria-checked", on);
+  send({cmd:"fast_charge", on});
+};
+fastchg.onkeydown = e => { if (e.key === " " || e.key === "Enter"){ e.preventDefault(); fastchg.onclick(); } };
 
 const blmode = $("blmode");
 function toggleBl(){
