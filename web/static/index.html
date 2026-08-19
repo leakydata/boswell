@@ -118,12 +118,26 @@ nav.tabs button[aria-selected=true]{background:var(--surface);color:var(--ink);
 .tag.error{background:color-mix(in srgb,var(--bad) 16%,transparent);color:var(--bad)}
 
 /* transcript */
-audio{width:100%;margin:6px 0 10px}
+audio{display:none}
 .wave{position:relative;background:var(--sunk);border:1px solid var(--rule);
-  border-radius:6px;overflow:hidden;margin-bottom:14px;cursor:pointer}
-.wave canvas{display:block;width:100%;height:76px}
-.wavelegend{display:flex;gap:16px;padding:7px 10px;border-top:1px solid var(--rule);
-  font-family:var(--mono);font-size:11px;color:var(--muted)}
+  border-radius:8px;overflow:hidden;margin:6px 0 14px}
+.wave canvas{display:block;width:100%;height:96px;cursor:pointer}
+.transport{display:flex;align-items:center;gap:12px;padding:8px 10px;
+  border-top:1px solid var(--rule);background:var(--surface)}
+#play{flex:none;width:44px;height:44px;min-height:44px;padding:0;border-radius:50%;
+  background:var(--accent);border:none;color:#fff;display:grid;place-items:center}
+#play svg{width:18px;height:18px;fill:currentColor;
+  /* nudge the triangle so it reads as centred inside the circle */
+  transform:translateX(1px)}
+#play[data-playing=true] svg{transform:none}
+.time{font-family:var(--mono);font-size:13px;font-variant-numeric:tabular-nums;
+  color:var(--ink);flex:none}
+.time b{font-weight:600}
+.time span{color:var(--faint)}
+.legend{margin-left:auto;display:flex;gap:12px;font-family:var(--mono);
+  font-size:10.5px;color:var(--muted);align-items:center}
+.legend i{width:9px;height:9px;border-radius:2px;display:inline-block;margin-right:5px}
+@media(max-width:430px){.legend{display:none}}
 .seg{display:flex;gap:10px;padding:9px 0;border-bottom:1px solid var(--rule);font-size:15px}
 .seg:last-child{border:none}
 .seg .t{font-family:var(--mono);font-size:11.5px;color:var(--faint);flex:none;
@@ -234,13 +248,17 @@ audio{width:100%;margin:6px 0 10px}
 
     <div class="card" id="detail" hidden>
       <h2 id="dTitle">Transcript</h2>
-      <audio id="player" controls preload="none"></audio>
-      <div class="wave" id="wave">
+      <audio id="player" preload="metadata"></audio>
+      <div class="wave">
         <canvas id="wcanvas"></canvas>
-        <div class="wavelegend">
-          <span class="key"><span class="sw" style="width:10px;height:10px;border-radius:2px;background:var(--accent);display:inline-block"></span> speech</span>
-          <span class="key"><span class="sw" style="width:10px;height:10px;border-radius:2px;background:var(--faint);display:inline-block"></span> quiet</span>
-          <span id="winfo"></span>
+        <div class="transport">
+          <button id="play" aria-label="Play"><svg id="playIcon" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></button>
+          <div class="time"><b id="tNow">0:00</b><span id="tDur"> / 0:00</span></div>
+          <div class="legend">
+            <span><i style="background:var(--accent)"></i>speech</span>
+            <span><i style="background:var(--faint)"></i>quiet</span>
+            <span id="winfo"></span>
+          </div>
         </div>
       </div>
       <div class="spk" id="dSpeakers"></div>
@@ -425,8 +443,12 @@ async function openClip(name){
   $("clipList").hidden = true;
   $("detail").hidden = false;
   $("dTitle").textContent = name;
-  $("player").src = "/api/audio/" + encodeURIComponent(name);
+  const pl = $("player");
+  pl.pause();
+  pl.src = "/api/audio/" + encodeURIComponent(name);
+  pl.currentTime = 0;
   loadWave(name);
+  syncTransport();
   $("dSegs").innerHTML = '<div class="empty">loading…</div>';
   $("dSpeakers").innerHTML = "";
   await renderTranscript(name);
@@ -467,7 +489,7 @@ function drawWave(){
   g.globalAlpha = 1;
 
   const p = $("player");
-  if (p && waveDur && p.currentTime){
+  if (p && waveDur){
     const x = (p.currentTime / waveDur) * w;
     g.strokeStyle = cssVar("--bad"); g.lineWidth = 1.5;
     g.beginPath(); g.moveTo(x, 0); g.lineTo(x, h); g.stroke();
@@ -480,20 +502,49 @@ async function loadWave(name){
   try{
     const d = await (await fetch("/api/envelope/" + encodeURIComponent(name))).json();
     waveData = d; waveDur = d.seconds || 0;
-    $("winfo").textContent = `${waveDur.toFixed(1)}s · peak ${Math.round(d.peak/32767*100)}%`;
-    drawWave();
+    $("winfo").textContent = `peak ${Math.round(d.peak/32767*100)}%`;
+    syncTransport();
   }catch(e){}
 }
 
-$("wave").onclick = e => {
+const ICON_PLAY  = "M8 5v14l11-7z";
+const ICON_PAUSE = "M6 5h4v14H6zM14 5h4v14h-4z";
+
+function fmt(t){
+  if (!isFinite(t)) return "0:00";
+  const m = Math.floor(t / 60), sec = Math.floor(t % 60);
+  return m + ":" + String(sec).padStart(2, "0");
+}
+
+function syncTransport(){
+  const p = $("player");
+  const playing = !p.paused && !p.ended;
+  $("play").dataset.playing = playing;
+  $("play").setAttribute("aria-label", playing ? "Pause" : "Play");
+  $("playIcon").firstElementChild.setAttribute("d", playing ? ICON_PAUSE : ICON_PLAY);
+  $("tNow").textContent = fmt(p.currentTime);
+  $("tDur").textContent = " / " + fmt(waveDur || p.duration || 0);
+  drawWave();
+}
+
+$("play").onclick = () => {
+  const p = $("player");
+  if (p.paused) p.play().catch(() => log("could not play this clip"));
+  else p.pause();
+};
+
+/* Seeking happens on the waveform itself -- tap where you want to be. */
+$("wcanvas").onclick = e => {
   if (!waveDur) return;
   const r = $("wcanvas").getBoundingClientRect();
   const p = $("player");
   p.currentTime = Math.max(0, Math.min(waveDur, ((e.clientX - r.left) / r.width) * waveDur));
-  p.play();
+  if (p.paused) p.play().catch(() => {});
+  syncTransport();
 };
-$("player").addEventListener("timeupdate", drawWave);
-$("player").addEventListener("seeked", drawWave);
+
+["timeupdate","seeked","play","pause","ended","loadedmetadata"].forEach(
+  ev => $("player").addEventListener(ev, syncTransport));
 addEventListener("resize", drawWave);
 
 async function renderTranscript(name){

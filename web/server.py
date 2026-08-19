@@ -46,8 +46,9 @@ class Device:
             "rate": 8000, "frames": 0, "lost": 0, "backlog_bytes": 0,
             "backlog_seconds": 0.0, "qspi_mb": 0, "imu": False,
             "peak": 0, "rms": 0.0, "level": 0.0, "error": None,
-            "clip_seconds": 0.0,
+            "clip_seconds": 0.0, "source": None,
         }
+        self.relay: WebSocket | None = None
         self.listeners: set[asyncio.Queue] = set()
         self.client: BleakClient | None = None
         self._pcm: list[np.ndarray] = []
@@ -73,6 +74,25 @@ class Device:
                 pass
 
     # ---- audio ---------------------------------------------------------
+    def consume(self, data: bytes):
+        """Ingest one wire frame, whoever delivered it: our own BLE link or a
+        phone relaying on our behalf. The format is identical either way."""
+        self._on_audio(None, data)
+
+    def maybe_rotate(self):
+        """Close off a clip once it is long enough. Runs for every source, so
+        relayed audio is segmented and transcribed exactly like local audio."""
+        self.state["clip_seconds"] = round(self.clip_seconds(), 1)
+        if self.clip_seconds() < SEG_SECONDS:
+            return None
+        path = self.take_clip()
+        if path:
+            name = os.path.basename(path)
+            self.event("clip", path=name)
+            if auto_transcribe:
+                worker.submit(name)
+        return path
+
     def _on_audio(self, _sender, data: bytearray):
         if len(data) < HEADER_LEN:
             return
@@ -136,35 +156,29 @@ class Device:
 
         async with BleakClient(dev, timeout=30.0) as c:
             self.client = c
-            self.state.update(connected=True, error=None)
+            # Counters are per-session: sequence numbers restart at each
+        # connection, so carrying them across made a reconnect look like
+        # tens of thousands of lost frames.
+        self._last_seq = None
+        self.state.update(connected=True, error=None, source="ble",
+                          frames=0, lost=0)
             await self._read_info(c)
             await c.start_notify(AUDIO_UUID, self._on_audio)
             await self.set_armed(True)
             self.publish()
             self.event("log", text="connected to device")
 
-            last_info = last_clip = time.time()
+            last_info = time.time()
             while self._want and c.is_connected:
                 await asyncio.sleep(0.25)
-                now = time.time()
-                self.state["clip_seconds"] = round(self.clip_seconds(), 1)
-                if now - last_info > 1.0:
-                    last_info = now
+                if time.time() - last_info > 1.0:
+                    last_info = time.time()
                     await self._read_info(c)
                     self.publish()
-                if self.clip_seconds() >= SEG_SECONDS:
-                    last_clip = now
-                    path = self.take_clip()
-                    if path:
-                        name = os.path.basename(path)
-                        self.event("clip", path=name)
-                        # Transcribe automatically -- a device that records
-                        # continuously should not need a tap per clip.
-                        if auto_transcribe:
-                            worker.submit(name)
 
             self.client = None
-            self.state["connected"] = False
+            if self.state.get("source") == "ble":
+                self.state.update(connected=False, source=None)
             self.publish()
 
     async def _read_info(self, c):
@@ -179,23 +193,31 @@ class Device:
             self.state["backlog_seconds"] = round(pend / 4500.0, 1)
             self.state["qspi_mb"] = round(info[31] * 65536 / 1048576)
 
+    async def _ctrl(self, op: int, arg: int):
+        """Write to the device control characteristic over whichever link we
+        have. A relay forwards the same two bytes over its own BLE handle."""
+        if self.client and self.client.is_connected:
+            await self.client.write_gatt_char(CTRL_UUID, bytes([op, arg]), response=True)
+            return True
+        if self.relay is not None:
+            try:
+                await self.relay.send_json({"type": "ctrl", "op": op, "arg": arg})
+                return True
+            except Exception:
+                return False
+        return False
+
     async def set_armed(self, on: bool):
         self.state["armed"] = bool(on)
-        if self.client and self.client.is_connected:
-            await self.client.write_gatt_char(
-                CTRL_UUID, bytes([0x01, 1 if on else 0]), response=True)
+        await self._ctrl(0x01, 1 if on else 0)
         self.publish()
 
     async def set_gain(self, g: int):
-        if self.client and self.client.is_connected:
-            await self.client.write_gatt_char(
-                CTRL_UUID, bytes([0x03, max(0, min(80, g))]), response=True)
+        if await self._ctrl(0x03, max(0, min(80, g))):
             self.event("log", text=f"gain set to {g}")
 
     async def set_vad(self, on: bool):
-        if self.client and self.client.is_connected:
-            await self.client.write_gatt_char(
-                CTRL_UUID, bytes([0x04, 1 if on else 0]), response=True)
+        if await self._ctrl(0x04, 1 if on else 0):
             self.event("log", text=f"VAD {'on' if on else 'off'}")
 
     def want(self, on: bool):
@@ -246,11 +268,22 @@ def clip_info(name):
             "status": status, "preview": preview, "speakers": speakers}
 
 
+async def rotator():
+    """Segment whatever is arriving, from any source."""
+    while True:
+        await asyncio.sleep(0.5)
+        try:
+            device.maybe_rotate()
+        except Exception:
+            pass
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    task = asyncio.create_task(device.run())
+    tasks = [asyncio.create_task(device.run()), asyncio.create_task(rotator())]
     yield
-    task.cancel()
+    for t in tasks:
+        t.cancel()
 
 
 app = FastAPI(lifespan=lifespan)
@@ -429,6 +462,59 @@ async def api_label(body: dict):
     json.dump(t, open(tp, "w"), indent=2)
     device.event("log", text=f"labelled {spk} as {name} ({count} sample(s))")
     return {"name": name, "samples": count, "speakers": t["speakers"]}
+
+
+@app.websocket("/ingest")
+async def ingest(sock: WebSocket):
+    """Audio in from a phone relaying the board's BLE stream, control out.
+
+    Binary messages are wire frames, byte-identical to what the board sends
+    over GATT -- the relay never decodes or re-encodes, so a dropped frame
+    still costs exactly one frame and nothing downstream can tell the
+    difference between relayed and local audio.
+
+    Text messages are JSON status from the relay. The server replies with
+    {"type":"ctrl","op":..,"arg":..} for the relay to write to the board's
+    control characteristic.
+    """
+    if not token_ok(sock.query_params.get("token")):
+        await sock.close(code=1008)
+        return
+    await sock.accept()
+
+    device.relay = sock
+    device.state.update(connected=True, source="relay", error=None,
+                        frames=0, lost=0)
+    device._last_seq = None
+    device.publish()
+    device.event("log", text="relay connected")
+
+    try:
+        while True:
+            msg = await sock.receive()
+            if msg.get("type") == "websocket.disconnect":
+                break
+            if (b := msg.get("bytes")) is not None:
+                device.consume(b)
+            elif (t := msg.get("text")) is not None:
+                try:
+                    info = json.loads(t)
+                except Exception:
+                    continue
+                if info.get("type") == "status":
+                    for k in ("rate", "backlog_bytes", "backlog_seconds",
+                              "qspi_mb", "imu", "armed"):
+                        if k in info:
+                            device.state[k] = info[k]
+                    device.publish()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        device.relay = None
+        if device.state.get("source") == "relay":
+            device.state.update(connected=False, source=None)
+        device.publish()
+        device.event("log", text="relay disconnected")
 
 
 @app.websocket("/ws")
