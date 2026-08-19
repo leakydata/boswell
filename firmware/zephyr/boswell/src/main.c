@@ -82,16 +82,28 @@ static void usb_service(void)
  * draining the flash backlog. Brightness and steady-vs-pulse live in led.c. */
 static void led_state(void)
 {
-    bool draining = qspi_store_pending() > 0 && ble_audio_ready();
-
-    if (draining) {
-        led_set_colour(true, false, true);          /* magenta */
+    /* The wearer's first question is "is it recording?", so that decides the
+     * colour: green while capturing, red while stopped. Everything else is
+     * secondary and must not be able to mask it.
+     *
+     * A real backlog replay still shows magenta, but only a real one. The
+     * test used to be "any pending byte at all", which is briefly true during
+     * ordinary live streaming as frames pass through the staging ring, so the
+     * light sat magenta nearly all the time. A quarter of a second of audio
+     * is the smallest backlog worth reporting.
+     *
+     * Being armed with no host used to come out as red plus blue, which is
+     * the same magenta as draining -- two unrelated states, one colour. It is
+     * green now, because the device is recording either way; where the audio
+     * is going is what the blue channel is for. */
+    if (qspi_store_pending() > 2048 && ble_audio_ready()) {
+        led_set_colour(true, false, true);          /* magenta: replaying */
+    } else if (g_state.streaming) {
+        led_set_colour(false, true, false);         /* green: capturing */
     } else if (!ble_audio_connected()) {
-        led_set_colour(g_state.streaming, false, true);
-    } else if (!g_state.streaming) {
-        led_set_colour(true, false, false);
+        led_set_colour(false, false, true);         /* blue: waiting for a host */
     } else {
-        led_set_colour(false, true, false);
+        led_set_colour(true, false, false);         /* red: connected, stopped */
     }
 }
 
