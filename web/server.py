@@ -447,6 +447,93 @@ async def api_transcript(name: str):
     return JSONResponse(json.load(open(tp)))
 
 
+@app.delete("/api/clip/{name}")
+async def api_delete(name: str):
+    if "/" in name or not name.endswith(".wav"):
+        raise HTTPException(400, "bad name")
+    path = os.path.join(DATA, name)
+    if not os.path.exists(path):
+        raise HTTPException(404, "no such clip")
+    removed = []
+    for f in (path, pipeline.transcript_path(name),
+              os.path.join(ENVELOPES, name + ".json")):
+        if os.path.exists(f):
+            os.remove(f)
+            removed.append(os.path.basename(f))
+    device.event("log", text=f"deleted {name}")
+    return {"deleted": name, "files": removed}
+
+
+@app.post("/api/split/{name}")
+async def api_split(name: str):
+    """Extract one clip per speaker from a diarized recording.
+
+    Each speaker's segments are concatenated into their own file, giving a
+    clean single-voice clip. That matters because enrolment quality is what
+    limits speaker identification: a voiceprint built from 20 seconds of one
+    person is far stronger than one built from a clip where two people
+    overlap.
+    """
+    if "/" in name or not name.endswith(".wav"):
+        raise HTTPException(400, "bad name")
+    src = os.path.join(DATA, name)
+    tp = pipeline.transcript_path(name)
+    if not os.path.exists(src):
+        raise HTTPException(404, "no such clip")
+    if not os.path.exists(tp):
+        raise HTTPException(400, "transcribe the clip first — the split follows "
+                                 "the diarized speaker turns")
+
+    t = json.load(open(tp))
+    segs = [x for x in t.get("segments", []) if x.get("speaker")]
+    speakers = sorted({x["speaker"] for x in segs})
+    if len(speakers) < 2:
+        raise HTTPException(400, f"only one speaker in this clip ({len(speakers)} found)")
+
+    audio, rate = sf.read(src, dtype="int16")
+    if audio.ndim > 1:
+        audio = audio[:, 0]
+
+    base = os.path.splitext(name)[0]
+    made = []
+    for spk in speakers:
+        parts = []
+        for x in segs:
+            if x["speaker"] != spk:
+                continue
+            a = max(0, int(x["start"] * rate))
+            b = min(len(audio), int(x["end"] * rate))
+            if b > a:
+                parts.append(audio[a:b])
+        if not parts:
+            continue
+        out_name = f"{base}__{spk}.wav"
+        sf.write(os.path.join(DATA, out_name), np.concatenate(parts), rate,
+                 subtype="PCM_16")
+
+        # Carry over this speaker's lines and voiceprint so the new clip is
+        # immediately nameable without re-running the models.
+        offset, new_segs = 0.0, []
+        for x in segs:
+            if x["speaker"] != spk:
+                continue
+            dur = max(0.0, x["end"] - x["start"])
+            new_segs.append({"start": round(offset, 2), "end": round(offset + dur, 2),
+                             "speaker": spk, "text": x["text"]})
+            offset += dur
+        emb = t.get("embeddings", {}).get(spk)
+        json.dump({"clip": out_name, "created": time.time(), "segments": new_segs,
+                   "speakers": {spk: (t.get("speakers", {}).get(spk)
+                                      or {"name": None, "score": 0.0})},
+                   "embeddings": {spk: emb} if emb else {}},
+                  open(pipeline.transcript_path(out_name), "w"), indent=2)
+        made.append({"name": out_name, "speaker": spk,
+                     "seconds": round(sum(len(p) for p in parts) / rate, 1)})
+
+    device.event("log", text=f"split {name} into {len(made)} single-voice clips")
+    return {"source": name, "clips": made}
+
+
 @app.get("/api/speakers")
 async def api_speakers():
     meta = {}
