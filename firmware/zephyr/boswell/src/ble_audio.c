@@ -8,6 +8,7 @@
  */
 
 #include "ble_audio.h"
+#include "imu_tap.h"
 
 #include <zephyr/bluetooth/bluetooth.h>
 #include <zephyr/bluetooth/conn.h>
@@ -164,11 +165,28 @@ static void le_param_updated(struct bt_conn *conn, uint16_t interval,
             interval, latency, timeout);
 }
 
+/* Logged so the negotiated link is a measurement rather than an assumption:
+ * a 4.0 dongle, an AX210 and a phone all end up in different places here. */
+static void le_phy_updated(struct bt_conn *conn, struct bt_conn_le_phy_info *info)
+{
+    ARG_UNUSED(conn);
+    LOG_INF("phy now: tx %u rx %u", info->tx_phy, info->rx_phy);
+}
+
+static void le_data_len_updated(struct bt_conn *conn,
+                                struct bt_conn_le_data_len_info *info)
+{
+    ARG_UNUSED(conn);
+    LOG_INF("data len now: tx %u rx %u", info->tx_max_len, info->rx_max_len);
+}
+
 BT_CONN_CB_DEFINE(conn_callbacks) = {
     .connected = connected,
     .disconnected = disconnected,
     .le_param_req = le_param_req,
     .le_param_updated = le_param_updated,
+    .le_phy_updated = le_phy_updated,
+    .le_data_len_updated = le_data_len_updated,
 };
 
 bool ble_audio_connected(void)
@@ -210,6 +228,12 @@ void ble_audio_publish_info(void)
     info_buf[3] = ns & 0xFF;
     info_buf[4] = (ns >> 8) & 0xFF;
     info_buf[5] = (uint8_t)(g_state.vad_enabled | (g_state.backlog_mode << 1));
+    /* 1 = the internal sensor bus. The host prints four WHO_AM_I probe slots
+     * because the Arduino build has two candidate buses to search; Zephyr
+     * routes the sensors to i2c0 only, so the last two stay unprobed. */
+    info_buf[6] = imu_tap_present() ? 1 : 0;
+    info_buf[7] = imu_tap_addr();
+    imu_tap_probe(&info_buf[8]);
     info_buf[32] = g_state.led_level;
     info_buf[33] = g_state.led_mode;
     info_buf[39] = (uint8_t)g_state.tx_power;

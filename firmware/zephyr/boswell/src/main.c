@@ -11,7 +11,9 @@
 #include "codec.h"
 #include "mic.h"
 #include "ble_audio.h"
+#include "imu_tap.h"
 
+#include <stdlib.h>
 #include <zephyr/kernel.h>
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/watchdog.h>
@@ -126,6 +128,54 @@ static int cmd_dfu(const struct shell *sh, size_t argc, char **argv)
     return 0;
 }
 
+static int cmd_imu(const struct shell *sh, size_t argc, char **argv)
+{
+    ARG_UNUSED(argc); ARG_UNUSED(argv);
+    int err = imu_tap_reprobe();
+    uint8_t p[4];
+    imu_tap_probe(p);
+    uint32_t n[4];
+    imu_tap_counters(n);
+    shell_print(sh, "imu present=%d addr=0x%02x probe=%02x %02x %02x %02x (init %d)",
+                imu_tap_present(), imu_tap_addr(), p[0], p[1], p[2], p[3], err);
+    shell_print(sh, "taps: irq=%u double=%u accepted=%u debounced=%u",
+                n[0], n[1], n[2], n[3]);
+    return 0;
+}
+
+static int cmd_debounce(const struct shell *sh, size_t argc, char **argv)
+{
+    if (argc < 2) {
+        shell_print(sh, "debounce = %u ms", imu_tap_get_debounce());
+        return 0;
+    }
+    imu_tap_set_debounce((uint32_t)atoi(argv[1]));
+    shell_print(sh, "debounce -> %u ms", imu_tap_get_debounce());
+    return 0;
+}
+
+static int cmd_taps(const struct shell *sh, size_t argc, char **argv)
+{
+    ARG_UNUSED(argc); ARG_UNUSED(argv);
+    uint32_t n[4];
+    imu_tap_counters(n);
+    shell_print(sh, "irq=%u double=%u accepted=%u debounced=%u",
+                n[0], n[1], n[2], n[3]);
+    return 0;
+}
+
+static int cmd_tap(const struct shell *sh, size_t argc, char **argv)
+{
+    if (argc < 2) {
+        shell_print(sh, "usage: boswell tap <0-31>   (lower = more sensitive)");
+        return 0;
+    }
+    uint8_t t = (uint8_t)atoi(argv[1]);
+    imu_tap_set_threshold(t);
+    shell_print(sh, "tap threshold -> %u", t & 0x1F);
+    return 0;
+}
+
 static int cmd_status(const struct shell *sh, size_t argc, char **argv)
 {
     ARG_UNUSED(argc); ARG_UNUSED(argv);
@@ -138,6 +188,10 @@ static int cmd_status(const struct shell *sh, size_t argc, char **argv)
 SHELL_STATIC_SUBCMD_SET_CREATE(boswell_cmds,
     SHELL_CMD(dfu, NULL, "Reboot into the bootloader for flashing", cmd_dfu),
     SHELL_CMD(status, NULL, "Show capture state", cmd_status),
+    SHELL_CMD(imu, NULL, "Re-probe the IMU and report", cmd_imu),
+    SHELL_CMD(tap, NULL, "Set double-tap threshold (0-31)", cmd_tap),
+    SHELL_CMD(taps, NULL, "Show tap counters", cmd_taps),
+    SHELL_CMD(debounce, NULL, "Get/set tap debounce in ms", cmd_debounce),
     SHELL_SUBCMD_SET_END
 );
 SHELL_CMD_REGISTER(boswell, &boswell_cmds, "Boswell commands", NULL);
@@ -166,6 +220,18 @@ static void on_ctrl(uint8_t op, uint8_t arg)
         break;
     default: break;
     }
+    ble_audio_publish_info();
+    led_state();
+}
+
+/* A double tap toggles capture: the device is worn, so the only control that
+ * works without looking at it is touch. Green means capturing, red means
+ * stopped, and the LED is the only feedback the wearer gets. */
+static void on_double_tap(void)
+{
+    g_state.streaming = !g_state.streaming;
+    LOG_INF("double tap -> %s", g_state.streaming ? "capturing" : "stopped");
+    ble_audio_apply_conn_params(g_state.streaming);
     ble_audio_publish_info();
     led_state();
 }
@@ -271,6 +337,9 @@ int main(void)
 
     err = ble_audio_init(on_ctrl);
     LOG_INF("ble_audio_init -> %d", err);
+
+    err = imu_tap_init(on_double_tap);
+    LOG_INF("imu_tap_init -> %d", err);
 
     watchdog_init();
     LOG_INF("watchdog ready");

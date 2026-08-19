@@ -40,3 +40,13 @@
 	regulator-always-on;
 	startup-delay-us = <3000>;
 };
+
+/*
+ * Hold the IMU's supply on. The board declares this one with regulator-boot-on
+ * but not regulator-always-on, so nothing keeps a reference to it and the
+ * part can end up unpowered -- WHO_AM_I reads back 0xFF on both addresses.
+ * Same failure the microphone had, one node over.
+ */
+&{/lsm6ds3tr-c-en} {
+	regulator-always-on;
+};

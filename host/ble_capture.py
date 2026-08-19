@@ -128,7 +128,9 @@ async def capture(args):
               f"frame={frame_ms}ms samples={ns_lo | (ns_hi << 8)} vad={vad}")
         if len(info) >= 8:
             bus, addr = info[6], info[7]
-            where = {0: "NOT FOUND", 1: "Wire1 (17/16)", 2: "Wire (4/5)"}.get(bus, "?")
+            # Bus numbering is shared by both firmwares: 1 is the internal sensor
+            # bus (Wire1 on Arduino, i2c0 on Zephyr), 2 the external header.
+            where = {0: "NOT FOUND", 1: "internal bus", 2: "external bus"}.get(bus, "?")
             print(f"  IMU: {where}" + (f" addr=0x{addr:02X}" if bus else ""))
             if len(info) >= 32:
                 ok = info[27]

@@ -7,5 +7,6 @@ target_sources(app PRIVATE
   src/mic.c
   src/codec.c
   src/ble_audio.c
+  src/imu_tap.c
 )
 target_include_directories(app PRIVATE src)
