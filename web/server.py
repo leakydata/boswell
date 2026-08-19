@@ -22,7 +22,7 @@ from contextlib import asynccontextmanager
 import numpy as np
 import soundfile as sf
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "host"))
@@ -403,7 +403,18 @@ app.mount("/static", StaticFiles(directory=os.path.join(HERE, "static")), name="
 
 @app.get("/")
 async def index():
-    return FileResponse(os.path.join(HERE, "static", "index.html"))
+    """Serve the shell with a build stamp injected.
+
+    A stale cached copy is indistinguishable from a current one otherwise,
+    which wastes real time chasing changes that did in fact ship. The stamp
+    is the file's own mtime, so it moves whenever the UI does.
+    """
+    path = os.path.join(HERE, "static", "index.html")
+    html = open(path, encoding="utf-8").read()
+    build = time.strftime("%H:%M:%S", time.localtime(os.path.getmtime(path)))
+    html = html.replace("__BUILD__", build)
+    return Response(content=html, media_type="text/html",
+                    headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"})
 
 
 ENVELOPES = os.path.join(DATA, "envelopes")
