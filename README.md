@@ -591,9 +591,12 @@ single clip returns 409 until you explicitly confirm.
 
 Naming works at two levels, because misattribution has two different causes:
 
-- **A speaker chip** names every line of that voice in the clip and enrols the
-  voiceprint, so the person is recognised in later recordings. This is the one
-  to use when a new person appears and has several lines.
+- **A speaker chip** names every line of that voice in the clip, and separately
+  tries to add the audio to that person's voiceprint. **The name always
+  applies** — saying who someone is never fails. Enrolment keeps its quality
+  checks, and when a clip is unsuitable the name still sticks and the interface
+  says why, offering to add it anyway. A name set by hand is treated as a
+  correction, so re-transcribing asks before discarding it.
 - **A line's own name** applies to that line only and does not touch the
   voiceprint database, which is deliberate: an embedding describes a whole
   diarized cluster, so enrolling from one misattributed line would teach the

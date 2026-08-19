@@ -866,7 +866,15 @@ async def api_delete_sample(name: str, sample_id: str):
 
 @app.post("/api/label")
 async def api_label(body: dict):
-    """Name a diarized speaker. Enrolment is a running mean, not training."""
+    """Put a name to a diarized speaker.
+
+    Naming and enrolling are separate steps. The name is applied
+    unconditionally -- saying who someone is should never fail. Adding their
+    audio to the voiceprint is the second step and keeps its quality checks;
+    if the audio is unsuitable the name still sticks and the reason is
+    reported. Previously a poor sample rejected the whole request, which made
+    a speaker impossible to label at all.
+    """
     clip, spk, name = body.get("clip"), body.get("speaker"), (body.get("name") or "").strip()
     if not (clip and spk and name):
         raise HTTPException(400, "need clip, speaker and name")
@@ -874,27 +882,44 @@ async def api_label(body: dict):
     if not os.path.exists(tp):
         raise HTTPException(404, "clip not transcribed")
     t = json.load(open(tp))
+
+    # 1. The label, unconditionally.
+    entry = t.setdefault("speakers", {}).setdefault(spk, {})
+    entry["name"] = name
+    entry["manual"] = True
+    entry.setdefault("score", 0.0)
+    # A name set by hand is a correction like any other, so it gets the same
+    # protection: bulk transcription skips this clip and re-transcribing it
+    # asks first, instead of silently discarding the name.
+    t["edited"] = True
+
+    # 2. The voiceprint, only if this audio is worth learning from.
+    enrolled, reason, count = False, None, None
     vec = (t.get("embeddings") or {}).get(spk)
     if vec is None:
-        raise HTTPException(400, f"no voiceprint stored for {spk}")
+        reason = "no voiceprint was extracted for this speaker"
+    else:
+        secs = sum(x["end"] - x["start"]
+                   for x in t.get("segments", []) if x.get("speaker") == spk)
+        res = pipeline.save_speaker(name, vec, clip=clip, speaker=spk,
+                                    seconds=secs, force=bool(body.get("force")))
+        if res.get("ok"):
+            enrolled, count = True, res["count"]
+        else:
+            reason = res.get("detail")
 
-    # How much of this voice the clip actually contains decides whether the
-    # sample is worth enrolling at all.
-    secs = sum(x["end"] - x["start"]
-               for x in t.get("segments", []) if x.get("speaker") == spk)
-    res = pipeline.save_speaker(name, vec, clip=clip, speaker=spk,
-                                seconds=secs, force=bool(body.get("force")))
-    if not res.get("ok"):
-        return JSONResponse({"rejected": True, **res}, status_code=422)
-    count = res["count"]
+    # Re-resolve everyone else, leaving names set by hand alone.
+    emb = {k: np.asarray(v) for k, v in (t.get("embeddings") or {}).items()}
+    for k, v in pipeline.identify(emb).items():
+        if not (t["speakers"].get(k) or {}).get("manual"):
+            t["speakers"][k] = v
+    json.dump(t, open(tp, "w"), indent=2, allow_nan=False)
 
-    # Re-resolve names in this transcript so the UI updates immediately.
-    emb = {k: __import__("numpy").asarray(v)
-           for k, v in (t.get("embeddings") or {}).items()}
-    t["speakers"] = pipeline.identify(emb)
-    json.dump(t, open(tp, "w"), indent=2)
-    device.event("log", text=f"labelled {spk} as {name} ({count} sample(s))")
-    return {"name": name, "samples": count, "speakers": t["speakers"]}
+    device.event("log", text=(f"named {spk} as {name}"
+                              + (f", voiceprint now {count} sample(s)" if enrolled
+                                 else " (voiceprint unchanged)")))
+    return {"named": True, "name": name, "enrolled": enrolled,
+            "samples": count, "reason": reason, "speakers": t["speakers"]}
 
 
 @app.websocket("/ingest")

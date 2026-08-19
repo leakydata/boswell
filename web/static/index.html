@@ -1238,6 +1238,9 @@ async function nameSpeaker(clip, speaker, existing){
   $("namerSub").textContent = `${speaker} · ${clip}`;
   $("namerInput").value = existing || "";
   $("namerErr").textContent = "";
+  $("namerErr").style.color = "var(--bad)";
+  $("namerSave").textContent = "Save name";
+  $("namerSave").onclick = saveName;
   namerCtx.force = false;
   document.getElementById("namerForce")?.remove();
 
@@ -1256,6 +1259,37 @@ async function nameSpeaker(clip, speaker, existing){
   $("scrim").classList.add("open");
   $("namer").classList.add("open");
   setTimeout(() => $("namerInput").focus(), 220);
+}
+
+/* Naming succeeded; only the voiceprint was skipped. Say so plainly and offer
+   the override, rather than making it look like the rename failed. */
+function msgAfterNaming(name, reason, clip, speaker){
+  $("namerT").textContent = `Named ${name}`;
+  $("namerErr").style.color = "var(--muted)";
+  $("namerErr").textContent =
+    `The name is applied. This clip was not added to ${name}'s voiceprint` +
+    (reason ? ` — ${reason}.` : ".");
+  $("namerQuick").innerHTML = "";
+  let over = document.getElementById("namerForce");
+  if (!over){
+    over = document.createElement("button");
+    over.id = "namerForce";
+    over.style.marginTop = "8px";
+    $("namerErr").after(over);
+  }
+  over.textContent = "Add to voiceprint anyway";
+  over.onclick = async () => {
+    const r = await fetch("/api/label", {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({clip, speaker, name, force:true})
+    });
+    const b = await r.json().catch(()=>({}));
+    log(b.enrolled ? `voiceprint now ${b.samples} sample(s)` : "could not add");
+    closeNamer();
+    renderTranscript(clip);
+  };
+  $("namerSave").textContent = "Done";
+  $("namerSave").onclick = () => { closeNamer(); };
 }
 
 function closeNamer(){
@@ -1277,22 +1311,18 @@ async function saveName(){
     });
     const body = await r.json().catch(() => ({}));
     if (r.ok){
-      log(`labelled ${namerCtx.speaker} as ${name} (${body.samples} sample(s))`);
+      // The name always applies. Whether the voiceprint learned from this
+      // clip is separate, and worth saying out loud either way.
       const clip = namerCtx.clip;
-      closeNamer();
-      await renderTranscript(clip);
-    } else if (r.status === 422 && body.rejected){
-      // Advisory, not a refusal: show why, and let the person decide.
-      $("namerErr").textContent = body.detail;
-      let over = document.getElementById("namerForce");
-      if (!over){
-        over = document.createElement("button");
-        over.id = "namerForce";
-        over.textContent = "Add it anyway";
-        over.style.marginTop = "8px";
-        over.onclick = () => { namerCtx.force = true; saveName(); };
-        $("namerErr").after(over);
+      if (body.enrolled){
+        log(`named ${namerCtx.speaker} as ${name} · voiceprint now ${body.samples} sample(s)`);
+        closeNamer();
+      } else {
+        log(`named ${namerCtx.speaker} as ${name} · voiceprint unchanged`);
+        msgAfterNaming(name, body.reason, clip, namerCtx.speaker);
       }
+      await renderTranscript(clip);
+      if (body.enrolled) return;
     } else {
       $("namerErr").textContent = body.detail || "Could not save that name";
     }
