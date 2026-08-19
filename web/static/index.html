@@ -1499,8 +1499,21 @@ async function openConversation(conv){
 
   /* One chip per voice. A named person appears once however many clips they
      turn up in; anyone still unknown stays attached to the clip and id that
-     can actually be named, because that pair is what naming takes. */
+     can actually be named, because that pair is what naming takes.
+     
+     Unknown voices are capped. A long conversation can contain twenty-odd
+     fragments of a second or two each -- every one of them nameable in
+     principle and none of them worth a chip -- and they buried the people
+     actually worth naming under a wall of SPEAKER_00. The rest are behind a
+     disclosure, longest first, so the ones that matter are the ones shown. */
+  const SHOWN_UNNAMED = 4;
+  let hiddenVoices = 0;
+  let shownUnnamed = 0;
   for (const v of voices){
+    if (!v.name){
+      shownUnnamed++;
+      if (shownUnnamed > SHOWN_UNNAMED){ hiddenVoices++; continue; }
+    }
     const chip = document.createElement("button");
     const key = v.name || `${v.clip}:${v.speaker}`;
     const col = colorOf(spkColors[key]);
@@ -1516,6 +1529,28 @@ async function openConversation(conv){
     chip.onclick = () => nameSpeaker(v.clip, v.speaker, v.name || "",
                                      () => openConversation(conv));
     $("cvSpeakers").appendChild(chip);
+  }
+  if (hiddenVoices){
+    const more = document.createElement("button");
+    more.className = "who";
+    more.textContent = `+${hiddenVoices} shorter voice${hiddenVoices===1?"":"s"}`;
+    more.title = "Briefly-heard voices, mostly a second or two each";
+    more.onclick = () => {
+      more.remove();
+      for (const v of voices.filter(x => !x.name).slice(SHOWN_UNNAMED)){
+        const c = document.createElement("button");
+        const col = colorOf(spkColors[`${v.clip}:${v.speaker}`]);
+        c.className = "who";
+        c.style.borderColor = col; c.style.color = col;
+        c.style.background = "transparent";
+        const secs = v.seconds < 10 ? v.seconds.toFixed(1) : v.seconds.toFixed(0);
+        c.textContent = `${v.speaker} · ${secs}s · tap to name`;
+        c.onclick = () => nameSpeaker(v.clip, v.speaker, "",
+                                      () => openConversation(conv));
+        $("cvSpeakers").appendChild(c);
+      }
+    };
+    $("cvSpeakers").appendChild(more);
   }
 
   if (!voices.length && data.segments.length){
