@@ -48,6 +48,7 @@ static uint32_t n_accepted;   /* survived debounce */
 static uint32_t n_debounced;
 static uint32_t debounce_ms = TAP_DEBOUNCE_DEFAULT_MS;
 static uint8_t  tap_thresh = 4;
+static bool     tap_enabled = true;
 
 /* Two consecutive toggles closer together than this are treated as one event.
  * One physical tap rings the accelerometer into many events: a measured run
@@ -80,7 +81,7 @@ static void tap_work_fn(struct k_work *work)
     if (src & TAP_SRC_DOUBLE) {
         n_double++;
     }
-    if (src & TAP_SRC_DOUBLE) {
+    if ((src & TAP_SRC_DOUBLE) && tap_enabled) {
         int64_t now = k_uptime_get();
         if (now - last_tap_ms < (int64_t)debounce_ms) {
             n_debounced++;
@@ -207,6 +208,8 @@ void imu_tap_probe(uint8_t out[4])
 }
 
 uint8_t imu_tap_get_threshold(void) { return tap_thresh; }
+void    imu_tap_set_enabled(bool on)  { tap_enabled = on; }
+bool    imu_tap_enabled(void)         { return tap_enabled; }
 
 void imu_tap_set_threshold(uint8_t thresh)
 {

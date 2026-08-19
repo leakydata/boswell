@@ -22,6 +22,12 @@ static const struct gpio_dt_spec vbat_enable = {
 static const struct gpio_dt_spec chg_pin = {
     .port = DEVICE_DT_GET(DT_NODELABEL(gpio0)), .pin = 17, .dt_flags = 0,
 };
+/* HICHG on P0.13: driven low selects 100 mA, floating leaves the BQ25100 at
+ * its 50 mA default. Only raise it on a cell rated for the current. */
+static const struct gpio_dt_spec hichg = {
+    .port = DEVICE_DT_GET(DT_NODELABEL(gpio0)), .pin = 13, .dt_flags = 0,
+};
+static bool fast_charge;
 
 static bool     ready;
 static uint16_t cached_mv;
@@ -41,6 +47,8 @@ int battery_init(void)
      * connected, which matters on a device meant to run all day. */
     gpio_pin_configure_dt(&vbat_enable, GPIO_OUTPUT_HIGH);
     gpio_pin_configure_dt(&chg_pin, GPIO_INPUT | GPIO_PULL_UP);
+
+    battery_set_fast_charge(false);    /* float: the safe default */
 
     ready = true;
     battery_sample();
@@ -81,6 +89,18 @@ void battery_sample(void)
     }
     cached_mv = (uint16_t)((mv * VBAT_NUM) / VBAT_DEN);
 }
+
+void battery_set_fast_charge(bool on)
+{
+    fast_charge = on;
+    if (on) {
+        gpio_pin_configure_dt(&hichg, GPIO_OUTPUT_LOW);
+    } else {
+        gpio_pin_configure_dt(&hichg, GPIO_INPUT);   /* float, not high */
+    }
+}
+
+bool battery_fast_charge(void) { return fast_charge; }
 
 uint16_t battery_mv(void) { return cached_mv; }
 

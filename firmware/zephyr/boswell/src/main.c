@@ -14,6 +14,8 @@
 #include "imu_tap.h"
 #include "battery.h"
 #include "led.h"
+#include <zephyr/bluetooth/hci.h>
+#include <zephyr/bluetooth/hci_vs.h>
 #include "cfg_store.h"
 #include "qspi_store.h"
 
@@ -275,6 +277,36 @@ SHELL_STATIC_SUBCMD_SET_CREATE(boswell_cmds,
 );
 SHELL_CMD_REGISTER(boswell, &boswell_cmds, "Boswell commands", NULL);
 
+/* Radio transmit power.
+ *
+ * Lower power costs range and saves current, which is a real trade on a
+ * device worn all day; the host exposes it because the right answer depends
+ * on how far the wearer is from the machine. Set through the controller's
+ * vendor-specific HCI command, since there is no portable API for it. */
+static void set_tx_power(int8_t dbm)
+{
+    struct bt_hci_cp_vs_write_tx_power_level *cp;
+    struct net_buf *buf;
+
+    buf = bt_hci_cmd_create(BT_HCI_OP_VS_WRITE_TX_POWER_LEVEL, sizeof(*cp));
+    if (!buf) {
+        LOG_WRN("no buffer for tx power");
+        return;
+    }
+    cp = net_buf_add(buf, sizeof(*cp));
+    cp->handle = 0;
+    cp->handle_type = BT_HCI_VS_LL_HANDLE_TYPE_ADV;
+    cp->tx_power_level = dbm;
+
+    int err = bt_hci_cmd_send_sync(BT_HCI_OP_VS_WRITE_TX_POWER_LEVEL, buf, NULL);
+    if (err) {
+        LOG_WRN("tx power %d dBm rejected (%d)", dbm, err);
+        return;
+    }
+    g_state.tx_power = dbm;
+    LOG_INF("tx power %d dBm", dbm);
+}
+
 /* ---------------------------------------------------------------- control */
 
 static void on_ctrl(uint8_t op, uint8_t arg)
@@ -289,6 +321,11 @@ static void on_ctrl(uint8_t op, uint8_t arg)
     case CTRL_VAD:          g_state.vad_enabled = arg != 0; break;
     case CTRL_VAD_THRESH:   g_state.vad_thresh = arg * 32; break;
     case CTRL_BACKLOG_MODE: g_state.backlog_mode = arg ? 1 : 0; break;
+    case CTRL_TAP_ENABLE:   imu_tap_set_enabled(arg != 0); break;
+    case CTRL_TAP_THRESH:   imu_tap_set_threshold(arg);    break;
+    case CTRL_CLEAR_BUFFER: qspi_store_reset();            break;
+    case CTRL_FAST_CHARGE:  battery_set_fast_charge(arg != 0); break;
+    case CTRL_TX_POWER:     set_tx_power((int8_t)arg);     break;
     case CTRL_LED_LEVEL:
         g_state.led_level = arg;
         led_set_level(arg);

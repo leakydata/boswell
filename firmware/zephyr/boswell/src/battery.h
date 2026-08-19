@@ -18,5 +18,9 @@ uint16_t battery_mv(void);        /* 0 if unavailable */
 uint8_t  battery_percent(void);
 bool     battery_charging(void);
 void     battery_sample(void);    /* refresh the cached reading */
+/* BQ25100 charge current. The pin is driven low for 100 mA and left floating
+ * for the 50 mA default, so this is a tri-state, not a level. */
+void     battery_set_fast_charge(bool on);
+bool     battery_fast_charge(void);
 
 #endif

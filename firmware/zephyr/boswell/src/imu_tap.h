@@ -32,5 +32,9 @@ void    imu_tap_counters(uint32_t out[4]);
 void     imu_tap_set_debounce(uint32_t ms);
 uint32_t imu_tap_get_debounce(void);
 uint8_t  imu_tap_get_threshold(void);
+/* Tap detection can be switched off without unbinding the interrupt, so a
+ * wearer who keeps knocking the device can stop it toggling capture. */
+void     imu_tap_set_enabled(bool on);
+bool     imu_tap_enabled(void);
 
 #endif

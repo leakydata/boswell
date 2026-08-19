@@ -302,6 +302,18 @@ int qspi_store_pop(uint8_t *out, uint8_t max_len)
         break;
     }
 
+    /* A page is padded to its end with 0xFF, and the scan eats those a byte
+     * at a time -- but it needs two bytes to read a header, so a single
+     * trailing pad byte can never be consumed and the backlog reads as 1 B
+     * forever instead of empty. A lone byte that is not a magic marker is
+     * padding by definition. */
+    if (result == 0 && (w_pos - r_pos) == 1) {
+        uint8_t b;
+        if (read_wrapped(r_pos, &b, 1) == 0 && b != QSPI_MAGIC) {
+            r_pos = w_pos;
+        }
+    }
+
     k_mutex_unlock(&lock);
     return result;
 }
