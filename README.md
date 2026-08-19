@@ -36,6 +36,7 @@ with real conversations.
 | QSPI store-and-forward buffering | ✅ |
 | IMU double-tap toggle + RGB status LED | ✅ |
 | IMU: pedometer, activity detection | ⬜ planned |
+| Responsive web UI | ✅ |
 | Phone app | ⬜ planned |
 
 ---
@@ -162,6 +163,7 @@ or radio matches nobody enrolled, scores below threshold, and is reported as
 # 1. environment (uv)
 uv venv --python 3.11 .venv
 uv pip install numpy scipy pyserial bleak soundfile requests intelhex
+uv pip install fastapi "uvicorn[standard]"
 uv pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu128
 uv pip install whisperx
 
@@ -185,6 +187,22 @@ uv run host/transcribe.py data/voice.wav --diarize \
 ollama serve &
 uv run host/agent.py data/voice.wav
 ```
+
+### Web UI
+
+```bash
+uv run web/server.py     # then open http://localhost:8000
+```
+
+A small local service that owns the Bluetooth link and serves a responsive
+front end — connect, arm and disarm capture, set microphone gain and VAD live,
+watch the input level and the device's flash backlog, and save clips.
+
+It is split deliberately so a phone app is a transport swap rather than a
+rewrite: every piece of device state and every action is JSON over a single
+WebSocket, and the browser holds no logic a native client could not
+reimplement in a few dozen lines. The layout is mobile-first and reachable
+from a phone on the same network.
 
 ### Tuning
 

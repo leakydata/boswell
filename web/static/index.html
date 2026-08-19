@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0C1215">
+<title>Boswell</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+:root{
+  --paper:#F1F4F5; --surface:#FFF; --sunk:#E7ECEE;
+  --ink:#101619; --muted:#5C6B71; --faint:#93A4AA; --rule:#D2DBDE;
+  --accent:#12697A; --ok:#2C7A55; --warn:#A8761B; --bad:#A83C2C;
+  --sans:"IBM Plex Sans",system-ui,sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,monospace;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){
+  --paper:#0C1215; --surface:#141C20; --sunk:#0F171A;
+  --ink:#E8EFF1; --muted:#8DA0A7; --faint:#67787F; --rule:#263338;
+  --accent:#46AEC2; --ok:#4FB37F; --warn:#D3A03F; --bad:#DB6B57;
+}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);
+  line-height:1.5;-webkit-font-smoothing:antialiased;
+  padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom)}
+.wrap{max-width:860px;margin:0 auto;padding:20px 16px 40px}
+header{display:flex;align-items:baseline;justify-content:space-between;gap:12px;
+  padding-bottom:14px;border-bottom:2px solid var(--ink);margin-bottom:20px}
+h1{font-size:26px;font-weight:600;letter-spacing:-.03em;margin:0}
+h1 span{color:var(--accent)}
+.ver{font-family:var(--mono);font-size:11px;color:var(--faint)}
+.grid{display:grid;gap:14px;grid-template-columns:1fr}
+@media(min-width:700px){.grid{grid-template-columns:1fr 1fr}.span2{grid-column:1/-1}}
+.card{background:var(--surface);border:1px solid var(--rule);border-radius:8px;padding:16px}
+.card h2{font-family:var(--mono);font-size:10.5px;font-weight:600;letter-spacing:.14em;
+  text-transform:uppercase;color:var(--accent);margin:0 0 12px}
+
+/* status */
+.status{display:flex;align-items:center;gap:12px}
+.dot{width:14px;height:14px;border-radius:50%;background:var(--faint);flex:none;
+  box-shadow:0 0 0 4px transparent;transition:background .2s,box-shadow .2s}
+.dot.live{background:var(--ok);box-shadow:0 0 0 4px color-mix(in srgb,var(--ok) 22%,transparent)}
+.dot.buf{background:#9B59B6;box-shadow:0 0 0 4px #9B59B633}
+.dot.drain{background:var(--accent);box-shadow:0 0 0 4px color-mix(in srgb,var(--accent) 22%,transparent)}
+.dot.idle{background:var(--bad)}
+.dot.off{background:var(--faint)}
+.stxt{font-weight:600;font-size:17px}
+.ssub{font-family:var(--mono);font-size:12px;color:var(--muted)}
+
+/* meter */
+.meter{height:10px;background:var(--sunk);border-radius:5px;overflow:hidden;margin-top:14px}
+.meter i{display:block;height:100%;width:0;background:var(--accent);
+  transition:width .12s linear}
+.meter i.hot{background:var(--bad)}
+
+/* stats */
+dl{margin:0;display:grid;grid-template-columns:1fr auto;gap:7px 12px}
+dt{font-size:13.5px;color:var(--muted)}
+dd{margin:0;font-family:var(--mono);font-size:13.5px;text-align:right;
+  font-variant-numeric:tabular-nums}
+
+/* controls */
+.btns{display:flex;flex-wrap:wrap;gap:8px}
+button{font-family:var(--sans);font-size:15px;font-weight:500;padding:12px 16px;
+  min-height:46px;border-radius:6px;border:1px solid var(--rule);
+  background:var(--sunk);color:var(--ink);cursor:pointer;flex:1 1 auto}
+button:hover{border-color:var(--accent)}
+button:active{transform:translateY(1px)}
+button.pri{background:var(--accent);border-color:var(--accent);color:#fff}
+button.dang{background:transparent;border-color:var(--bad);color:var(--bad)}
+button:disabled{opacity:.45;cursor:not-allowed}
+button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+label.row{display:flex;align-items:center;justify-content:space-between;gap:12px;
+  margin-top:14px;font-size:14px}
+input[type=range]{flex:1;accent-color:var(--accent);height:34px}
+.val{font-family:var(--mono);font-size:13px;color:var(--muted);min-width:58px;text-align:right}
+.switch{width:50px;height:29px;border-radius:15px;background:var(--sunk);
+  border:1px solid var(--rule);position:relative;cursor:pointer;flex:none}
+.switch::after{content:"";position:absolute;top:2px;left:2px;width:23px;height:23px;
+  border-radius:50%;background:var(--faint);transition:transform .16s,background .16s}
+.switch[aria-checked=true]{background:color-mix(in srgb,var(--accent) 25%,transparent);
+  border-color:var(--accent)}
+.switch[aria-checked=true]::after{transform:translateX(21px);background:var(--accent)}
+
+/* log */
+#log{font-family:var(--mono);font-size:12px;color:var(--muted);max-height:180px;
+  overflow-y:auto;margin:0;padding:0;list-style:none}
+#log li{padding:4px 0;border-bottom:1px solid var(--rule)}
+#log li:last-child{border:none}
+.err{color:var(--bad);font-family:var(--mono);font-size:12.5px;margin-top:10px}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Bos<span>well</span></h1>
+    <span class="ver" id="ver">disconnected</span>
+  </header>
+
+  <div class="grid">
+    <div class="card">
+      <h2>Device</h2>
+      <div class="status">
+        <span class="dot off" id="dot"></span>
+        <div>
+          <div class="stxt" id="stxt">Not connected</div>
+          <div class="ssub" id="ssub">press Connect to begin</div>
+        </div>
+      </div>
+      <div class="meter"><i id="meter"></i></div>
+    </div>
+
+    <div class="card">
+      <h2>Signal</h2>
+      <dl>
+        <dt>Frames received</dt><dd id="frames">0</dd>
+        <dt>Frames lost</dt><dd id="lost">0</dd>
+        <dt>Sample rate</dt><dd id="rate">—</dd>
+        <dt>Buffered on device</dt><dd id="backlog">0.0 s</dd>
+        <dt>Unsaved clip</dt><dd id="clip">0.0 s</dd>
+        <dt>Flash · IMU</dt><dd id="hw">—</dd>
+      </dl>
+    </div>
+
+    <div class="card span2">
+      <h2>Controls</h2>
+      <div class="btns">
+        <button class="pri" id="bConn">Connect</button>
+        <button id="bArm" disabled>Stop capture</button>
+        <button id="bSave" disabled>Save clip</button>
+        <button class="dang" id="bDis" disabled>Disconnect</button>
+      </div>
+      <label class="row">Microphone gain
+        <input type="range" id="gain" min="20" max="70" value="50" step="1" disabled>
+        <span class="val" id="gainv">50 · +5 dB</span>
+      </label>
+      <label class="row">Voice activity gating
+        <span class="switch" id="vad" role="switch" aria-checked="false" tabindex="0"></span>
+      </label>
+      <div class="err" id="err"></div>
+    </div>
+
+    <div class="card span2">
+      <h2>Activity</h2>
+      <ul id="log"><li>waiting for connection…</li></ul>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+let ws, armed = false, connected = false;
+
+function log(t){
+  const ul = $("log");
+  if (ul.children.length === 1 && ul.children[0].textContent.startsWith("waiting")) ul.innerHTML = "";
+  const li = document.createElement("li");
+  li.textContent = new Date().toLocaleTimeString() + "  " + t;
+  ul.prepend(li);
+  while (ul.children.length > 60) ul.lastChild.remove();
+}
+
+function send(o){ if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); }
+
+function paint(s){
+  connected = s.connected; armed = s.armed;
+  const dot = $("dot");
+  dot.className = "dot " + (!s.connected ? (s.scanning ? "off" : "off")
+                    : !s.armed ? "idle"
+                    : s.backlog_bytes > 0 ? "drain" : "live");
+  $("stxt").textContent = !s.connected ? (s.scanning ? "Searching…" : "Not connected")
+                        : !s.armed ? "Connected · paused"
+                        : s.backlog_bytes > 0 ? "Draining buffer" : "Recording";
+  $("ssub").textContent = !s.connected ? (s.error || "press Connect to begin")
+                        : `${s.rate/1000} kHz · ADPCM · ${s.frames} frames`;
+  $("ver").textContent = s.connected ? "XIAO-MIC" : "disconnected";
+  $("frames").textContent = s.frames;
+  $("lost").textContent = s.lost;
+  $("rate").textContent = s.rate ? (s.rate/1000) + " kHz" : "—";
+  $("backlog").textContent = s.backlog_seconds.toFixed(1) + " s";
+  $("clip").textContent = (s.clip_seconds||0).toFixed(1) + " s";
+  $("hw").textContent = (s.qspi_mb ? s.qspi_mb + " MB" : "—") + " · " + (s.imu ? "ok" : "—");
+  const m = $("meter");
+  m.style.width = Math.round((s.level||0)*100) + "%";
+  m.classList.toggle("hot", (s.peak||0) > 30000);
+  $("bArm").textContent = s.armed ? "Stop capture" : "Start capture";
+  $("bArm").disabled = !s.connected;
+  $("bSave").disabled = !s.connected;
+  $("bDis").disabled = !s.connected && !s.scanning;
+  $("gain").disabled = !s.connected;
+  $("bConn").disabled = s.connected || s.scanning;
+  $("err").textContent = s.error || "";
+}
+
+function connect(){
+  ws = new WebSocket(`ws://${location.host}/ws`);
+  ws.onmessage = e => {
+    const m = JSON.parse(e.data);
+    if (m.type === "state") paint(m);
+    else if (m.type === "log") log(m.text);
+    else if (m.type === "clip") log("clip written: " + m.path);
+  };
+  ws.onclose = () => { log("server connection lost — retrying"); setTimeout(connect, 2000); };
+}
+connect();
+
+$("bConn").onclick = () => { send({cmd:"connect"}); log("scanning for device…"); };
+$("bDis").onclick  = () => { send({cmd:"disconnect"}); log("disconnected"); };
+$("bArm").onclick  = () => send({cmd:"arm", on: !armed});
+$("bSave").onclick = () => send({cmd:"save"});
+
+const gain = $("gain");
+gain.oninput = () => {
+  const v = +gain.value;
+  $("gainv").textContent = `${v} · ${(v-40)*0.5 >= 0 ? "+" : ""}${((v-40)*0.5).toFixed(1)} dB`;
+};
+gain.onchange = () => send({cmd:"gain", value:+gain.value});
+
+const vad = $("vad");
+function toggleVad(){
+  const on = vad.getAttribute("aria-checked") !== "true";
+  vad.setAttribute("aria-checked", on);
+  send({cmd:"vad", on});
+}
+vad.onclick = toggleVad;
+vad.onkeydown = e => { if (e.key === " " || e.key === "Enter") { e.preventDefault(); toggleVad(); } };
+</script>
+</body>
+</html>
