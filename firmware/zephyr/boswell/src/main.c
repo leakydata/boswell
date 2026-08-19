@@ -45,6 +45,35 @@ struct boswell_state g_state = {
     .tx_power     = 4,
 };
 
+/* ------------------------------------------------------------------- usb */
+
+/* USB is only brought up when the cable is actually supplying power.
+ *
+ * Enabling the USB device keeps the 32 MHz crystal running whether or not
+ * anything is attached, which is wasted current on a device meant to be worn
+ * off a small cell. VBUS is polled rather than assumed so that plugging in
+ * later still gets a console: once enabled it is left enabled, because
+ * cycling the USB stack at runtime is a good deal more fragile than leaving
+ * a peripheral powered while the cable that powers it is attached anyway. */
+static bool usb_up;
+
+static bool vbus_present(void)
+{
+    return (nrf_power_usbregstatus_get(NRF_POWER) &
+            NRF_POWER_USBREGSTATUS_VBUSDETECT_MASK) != 0;
+}
+
+static void usb_service(void)
+{
+    if (usb_up || !vbus_present()) {
+        return;
+    }
+    if (usb_enable(NULL) == 0) {
+        usb_up = true;
+        LOG_INF("USB attached");
+    }
+}
+
 /* ---------------------------------------------------------------- leds */
 
 /* blue advertising · green capturing · red connected but idle · magenta
@@ -452,12 +481,18 @@ int main(void)
     /* USB and the LED come first so that whatever happens next can be seen.
      * The first version of this initialised the microphone and Bluetooth
      * before either, and when it faulted there was no way to tell why. */
+    /* Only wait for enumeration when there is a host to enumerate with.
+     * On battery this saves a second and a half of boot spent on nothing. */
+    if (vbus_present()) {
+        (void)usb_enable(NULL);
+        usb_up = true;
+        k_sleep(K_MSEC(1500));
+    }
+
     (void)led_init();
     led_set_level(g_state.led_level);
     led_set_mode(g_state.led_mode);
     led_set_colour(false, false, true);
-    (void)usb_enable(NULL);
-    k_sleep(K_MSEC(1500));          /* let a host enumerate before we talk */
     LOG_INF("Boswell starting");
     LOG_INF("shell ready: 'boswell dfu' reboots for flashing");
 
@@ -508,6 +543,7 @@ int main(void)
         int64_t now = k_uptime_get();
 
         led_service();
+        usb_service();
 
         if (now >= next_house) {
             next_house = now + 500;
