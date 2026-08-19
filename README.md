@@ -566,6 +566,9 @@ produces sixty disconnected passes instead of one useful one. Transcripts
 accumulate and the agent runs after 90 seconds of quiet — or after 15 minutes
 regardless, for someone who does not stop talking.
 
+Items can be removed individually from the Notes tab, or cleared in bulk —
+optionally just one kind, so "delete every note but keep the tasks" is possible.
+
 Model defaults to `gpt-oss:20b`. It is not the strongest option available, but
 it is ~13 GB and fits beside Whisper's ~9 GB on a 24 GB card; `glm-4.7-flash`
 is the better MoE and at 19 GB the two cannot coexist. Any tool-capable Ollama

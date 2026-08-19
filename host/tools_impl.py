@@ -15,6 +15,9 @@ def _append(kind, record):
     os.makedirs(STORE, exist_ok=True)
     record = dict(record)
     record["_recorded_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    # A stable id so a single item can be removed later. Line numbers shift
+    # as soon as anything else is deleted, so they cannot serve as identity.
+    record["_id"] = f"{int(time.time() * 1000):x}{os.urandom(2).hex()}"
     with open(os.path.join(STORE, f"{kind}.jsonl"), "a") as f:
         f.write(json.dumps(record) + "\n")
     return record

@@ -181,9 +181,70 @@ class ConversationAgent:
                                     f"from {len(clips)} clip(s)")
 
 
+def _backfill_ids(kind):
+    """Give ids to items written before they had one, once, in place."""
+    p = os.path.join(STORE, f"{kind}.jsonl")
+    if not os.path.exists(p):
+        return
+    rows, changed = [], False
+    for line in open(p):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            d = json.loads(line)
+        except Exception:
+            continue
+        if "_id" not in d:
+            d["_id"] = f"{int(time.time()*1000):x}{os.urandom(2).hex()}"
+            changed = True
+        rows.append(d)
+    if changed:
+        with open(p, "w") as f:
+            for d in rows:
+                f.write(json.dumps(d) + "\n")
+
+
+def delete_item(kind, item_id):
+    p = os.path.join(STORE, f"{kind}.jsonl")
+    if not os.path.exists(p):
+        return False
+    rows, removed = [], False
+    for line in open(p):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            d = json.loads(line)
+        except Exception:
+            continue
+        if d.get("_id") == item_id:
+            removed = True
+            continue
+        rows.append(d)
+    if removed:
+        with open(p, "w") as f:
+            for d in rows:
+                f.write(json.dumps(d) + "\n")
+    return removed
+
+
+def clear_items(kind=None):
+    kinds = [kind] if kind else ["tasks", "events", "notes", "facts"]
+    n = 0
+    for k in kinds:
+        p = os.path.join(STORE, f"{k}.jsonl")
+        if os.path.exists(p):
+            n += sum(1 for line in open(p) if line.strip())
+            os.remove(p)
+    return n
+
+
 def load_items(kind=None, limit=200):
     """Everything the agent has recorded, newest first."""
     kinds = [kind] if kind else ["tasks", "events", "notes", "facts"]
+    for k in kinds:
+        _backfill_ids(k)
     out = []
     for k in kinds:
         p = os.path.join(STORE, f"{k}.jsonl")

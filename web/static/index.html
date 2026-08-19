@@ -227,6 +227,11 @@ button.who{font-size:11px}
 .item .t1{font-weight:600;font-size:15px;margin-bottom:3px}
 .item .t2{font-size:14px;color:var(--ink-2)}
 .item .meta{font-family:var(--mono);font-size:11px;color:var(--faint);margin-top:6px}
+.item{position:relative}
+.item .rm{position:absolute;top:10px;right:10px;min-height:30px;padding:4px 10px;
+  font-size:12px;background:none;border:1px solid var(--rule);color:var(--muted)}
+.item .rm:hover{border-color:var(--bad);color:var(--bad)}
+.item .t1{padding-right:78px}
 .person{border:1px solid var(--rule);border-radius:8px;padding:14px;margin-bottom:12px}
 .person h3{font-size:17px;font-weight:600;margin:0 0 2px;display:flex;
   justify-content:space-between;align-items:baseline;gap:10px}
@@ -492,6 +497,7 @@ button.who{font-size:11px}
           <option value="notes">Notes</option>
           <option value="facts">Facts</option>
         </select>
+        <button class="dang" id="bClearItems" style="min-height:40px;flex:0 0 auto">Clear all</button>
       </div>
       <div id="itemList"><div class="empty">loading…</div></div>
     </div>
@@ -764,10 +770,34 @@ async function loadItems(){
         (body ? `<div class="t2">${esc(body)}</div>` : "") +
         `<div class="meta">${esc(it._recorded_at || "")}` +
         (it.tags && it.tags.length ? " · " + esc(it.tags.join(", ")) : "") + `</div>`;
+      const rm = document.createElement("button");
+      rm.className = "rm";
+      rm.textContent = "Remove";
+      rm.onclick = async () => {
+        await fetch(`/api/agent/item/${it._kind}/${it._id}`, {method:"DELETE"});
+        loadItems();
+      };
+      d.appendChild(rm);
       el.appendChild(d);
     }
   }catch(e){ el.innerHTML = '<div class="empty">could not load</div>'; }
 }
+
+let armClear = false;
+$("bClearItems").onclick = async () => {
+  if (!armClear){
+    armClear = true;
+    $("bClearItems").textContent = "Tap again to clear all";
+    setTimeout(() => { armClear = false; $("bClearItems").textContent = "Clear all"; }, 4000);
+    return;
+  }
+  armClear = false; $("bClearItems").textContent = "Clear all";
+  const kind = $("itemKind").value;
+  const r = await fetch("/api/agent/items" + (kind ? `?kind=${kind}` : ""), {method:"DELETE"});
+  const b = await r.json().catch(()=>({}));
+  log(`cleared ${b.cleared ?? 0} item(s)`);
+  loadItems();
+};
 
 setInterval(() => { if (!$("viewNotes").hidden) loadAgent(); }, 5000);
 

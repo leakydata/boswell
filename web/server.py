@@ -796,6 +796,22 @@ async def api_agent_items(kind: str | None = None, limit: int = 200):
     return agent_runner.load_items(kind, limit)
 
 
+@app.delete("/api/agent/item/{kind}/{item_id}")
+async def api_delete_item(kind: str, item_id: str):
+    if kind not in ("tasks", "events", "notes", "facts"):
+        raise HTTPException(400, "unknown kind")
+    if not agent_runner.delete_item(kind, item_id):
+        raise HTTPException(404, "no such item")
+    return {"ok": True}
+
+
+@app.delete("/api/agent/items")
+async def api_clear_items(kind: str | None = None):
+    n = agent_runner.clear_items(kind)
+    device.event("log", text=f"cleared {n} agent item(s)")
+    return {"cleared": n}
+
+
 @app.get("/api/models")
 async def api_models():
     """Ollama models that support tool calling."""
