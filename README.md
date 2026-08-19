@@ -19,6 +19,26 @@ so you don't have to.
 
 ---
 
+## The interface
+
+![Device tab](docs/ui-device.jpg)
+
+*Connection and capture state, input level, flash backlog, and live controls for
+gain, voice gating, charge current and the status light.*
+
+![A transcript](docs/ui-transcript.jpg)
+
+*Each voice gets its own colour in the waveform, so you can see who spoke when
+without cutting the conversation apart. Everything that is not speech stays grey.
+Playback lives in the waveform: tap anywhere to seek.*
+
+![Recordings](docs/ui-recordings.jpg)  ![People](docs/ui-people.jpg)
+
+*Recordings can be filtered to those with voice or without. Naming a speaker
+enrols their voiceprint, and the People tab shows what each one was built from.*
+
+> Screenshots use synthetic speech, not real recordings.
+
 ## Status
 
 Working prototype. Every stage below has been run end-to-end on real hardware
@@ -57,6 +77,60 @@ Firmware uses **14% of flash and 10% of RAM**, so there is ample room for the
 planned features.
 
 ---
+
+## Hardware reference
+
+Official documentation: [Seeed wiki](https://wiki.seeedstudio.com/XIAO_BLE/) ·
+[datasheet (PDF)](https://files.seeedstudio.com/Bazaar/product_pdf/102010469.pdf)
+
+Pin assignments this firmware depends on, from the board's Arduino variant:
+
+| Function | Arduino pin | nRF52840 | Notes |
+|---|---|---|---|
+| PDM power | D19 | P1.10 | |
+| PDM clock | D20 | P1.00 | |
+| PDM data | D21 | P0.16 | |
+| IMU power | D15 | **P1.08** | **must be H0H1 high drive** |
+| IMU I²C SCL | D16 | P0.27 | dedicated bus, not the D4/D5 header |
+| IMU I²C SDA | D17 | P0.07 | |
+| IMU INT1 | D18 | P0.11 | double-tap interrupt |
+| LED red / green / blue | D11 / D13 / D12 | P0.26 / P0.30 / P0.06 | active low |
+| Battery sense enable | D14 | P0.14 | drive **low** to read |
+| Battery voltage | — | P0.31 | 1M/510k divider |
+| Charge current select | D22 | P0.13 | low = 100 mA, float = 50 mA |
+| Charge status | D23 | P0.17 | active low, **not named in the variant** |
+| QSPI flash | D24–D27 | P0.21/25/20/24 | P25Q16H, 2 MB |
+
+### Things the documentation does not tell you
+
+**The IMU will not power up on a normal output pin.** Its supply is P1.08 and
+the pin must be configured `H0H1` high drive. Standard drive cannot source
+enough current, so the sensor never starts and every I²C probe reads `0xFF`,
+which looks exactly like a wiring fault.
+
+**The IMU is on its own I²C bus** (P0.27/P0.07), not the D4/D5 header pins. The
+board's own library papers over this with `#define Wire Wire1`.
+
+**The nRF52 core's I²C blocks forever.** Its TWIM driver spins on hardware
+events with no timeout, so one unresponsive device wedges the main loop while
+Bluetooth keeps advertising — the board looks alive and has silently stopped
+recording. This firmware bit-bangs I²C instead, where every loop is bounded.
+
+**Rate-limit sensor polling by wall clock, not loop iterations.** A poll written
+as "every fourth pass through `loop()`" becomes hundreds of transactions per
+second once the loop is spinning on audio. That was enough here to drown the
+IMU's own tap interrupt and, with one more poller added, to crash the firmware
+at boot.
+
+**`PDM.begin()` resets microphone gain.** It calls `setGain(20)` internally, so
+gain set beforehand is silently discarded. Always set it afterwards.
+
+**The QSPI part is not in the flash-device table.** Every Seeed nRF52 variant
+names `P25Q16H` but `Adafruit_SPIFlash` has no entry for it, so it must be
+declared by hand (see `firmware/ble_mic/qspi_store.h`).
+
+**Charging defaults to 50 mA**, which is about ten hours for a 500 mAh cell.
+The BQ25101's HICHG pin selects 100 mA.
 
 ## Architecture
 
