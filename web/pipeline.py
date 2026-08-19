@@ -8,6 +8,7 @@ and kept resident -- reloading them per clip would cost ~15 s every time.
 """
 
 import json
+import math
 import os
 import queue
 import threading
@@ -361,17 +362,19 @@ class Worker:
                                  if reloading else
                                  "loading transcription models (first run, ~20s)"))
         import whisperx
-        asr_options = {}
-        if terms:
-            asr_options["hotwords"] = " ".join(terms)
-            # A natural-sounding prompt biases the decoder harder than a bare
-            # list, which Whisper tends to treat as noise.
-            asr_options["initial_prompt"] = (
-                "The following conversation may mention: " + ", ".join(terms) + ".")
+        # Decode-time boosting is deliberately NOT used. Measured on a real
+        # 45-second recording: plain decoding produced two segments covering
+        # the whole clip, while hotwords (with or without an initial_prompt)
+        # produced one and silently dropped sixteen seconds of speech.
+        # Conditioning the decoder on a bare word list makes it treat some
+        # chunks as containing nothing.
+        #
+        # Custom words are applied afterwards instead, in apply_vocabulary().
+        # That fixes the same mistakes -- including terms split across words --
+        # and cannot cause audio to go missing.
         self._vocab_sig = sig
         self._asr = whisperx.load_model("large-v3", "cuda",
-                                        compute_type="float16", language="en",
-                                        asr_options=asr_options or None)
+                                        compute_type="float16", language="en")
         self._align = whisperx.load_align_model(language_code="en", device="cuda")
         token = os.environ.get("HF_TOKEN")
         if token:
@@ -411,9 +414,19 @@ class Worker:
         if self._diar is not None:
             df, emb = self._diar(audio, return_embeddings=True)
             res = whisperx.assign_word_speakers(df, res)
-            embeddings = {k: np.asarray(v).ravel().tolist()
-                          for k, v in (emb or {}).items()}
-            names = identify(emb or {})
+            # pyannote returns a NaN embedding when a speaker cluster has too
+            # little audio to compute a standard deviation over. Storing one
+            # produces a transcript that cannot be encoded as valid JSON, so
+            # the clip becomes unreadable and looks untranscribed forever --
+            # and re-transcribing reproduces it. A NaN voiceprint could never
+            # match anything anyway, so drop it and keep the transcript.
+            clean = {}
+            for k, v in (emb or {}).items():
+                arr = np.asarray(v, dtype=np.float64).ravel()
+                if arr.size and np.all(np.isfinite(arr)):
+                    clean[k] = arr
+            embeddings = {k: v.tolist() for k, v in clean.items()}
+            names = identify(clean)
 
         terms = load_vocabulary()
         segs = [{"start": round(float(s["start"]), 2),
@@ -422,7 +435,13 @@ class Worker:
                  "text": apply_vocabulary(s["text"].strip(), terms)}
                 for s in res["segments"] if s.get("text", "").strip()]
 
+        # Drop any segment whose timing did not survive alignment, for the
+        # same reason: one non-finite value makes the whole file unservable.
+        segs = [x for x in segs
+                if all(isinstance(x[k], (int, float)) and math.isfinite(x[k])
+                       for k in ("start", "end"))]
+
         os.makedirs(TRANSCRIPTS, exist_ok=True)
         json.dump({"clip": clip, "created": time.time(), "segments": segs,
                    "speakers": names, "embeddings": embeddings},
-                  open(transcript_path(clip), "w"), indent=2)
+                  open(transcript_path(clip), "w"), indent=2, allow_nan=False)

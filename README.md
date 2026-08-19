@@ -469,14 +469,19 @@ first so the voiceprint comes from one person rather than a conversation.
 ## Custom words
 
 Names, jargon and drug names are what a general transcriber gets wrong, so the
-**People** tab takes a word list. Terms are applied twice:
+**People** tab takes a word list. Terms are applied **after** transcription:
+near-misses are repaired, a single mangled word is matched fuzzily, and runs of
+two or three words are re-joined — so *"she prescribed met form in"* comes back
+as *"she prescribed Metformin"* and *"the boss well project"* as *"the Boswell
+project"*.
 
-- **While listening** — passed as `hotwords` and woven into `initial_prompt`, so
-  the decoder is biased toward them. This makes a term likelier, not certain.
-- **Afterwards** — near-misses are repaired. A single mangled word is matched
-  fuzzily, and runs of two or three words are re-joined, so *"she prescribed met
-  form in"* comes back as *"she prescribed Metformin"* and *"the boss well
-  project"* as *"the Boswell project"*.
+> **Decode-time boosting is deliberately not used.** Passing the word list as
+> `hotwords` or `initial_prompt` is the obvious approach and it loses audio.
+> Measured on a 45-second recording: plain decoding produced two segments
+> covering the whole clip; with boosting it produced one and silently dropped
+> sixteen seconds of speech. Conditioning the decoder on a bare word list makes
+> it treat some chunks as containing nothing. Correcting afterwards fixes the
+> same mistakes and cannot make audio disappear.
 
 Correction is deliberately conservative: only terms of five characters or more
 are fuzzy-matched, and phrase merges need a closer match than single words.
