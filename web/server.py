@@ -280,6 +280,7 @@ async def rotator():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    device.want(True)          # start looking for the board immediately
     tasks = [asyncio.create_task(device.run()), asyncio.create_task(rotator())]
     yield
     for t in tasks:
