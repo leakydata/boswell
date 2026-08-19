@@ -19,6 +19,22 @@ LOG_MODULE_REGISTER(imu, LOG_LEVEL_INF);
 #define REG_INT_DUR2    0x5A
 #define REG_WAKE_UP_THS 0x5B
 #define REG_MD1_CFG     0x5E
+#define REG_CTRL10_C    0x19
+#define REG_STEP_L      0x4B
+#define REG_STEP_H      0x4C
+#define REG_FUNC_SRC    0x53
+
+/* CTRL10_C: embedded functions on, plus pedometer, tilt and significant
+ * motion. FUNC_EN gates all three, so it has to be set alongside them. */
+#define CTRL10_FUNC_EN     0x04
+#define CTRL10_PEDO_EN     0x10
+#define CTRL10_TILT_EN     0x08
+#define CTRL10_SIGN_MOT_EN 0x01
+#define CTRL10_PEDO_RST    0x02
+
+#define FUNC_SRC_STEP_DETECTED 0x10
+#define FUNC_SRC_TILT          0x20
+#define FUNC_SRC_SIGN_MOTION   0x40
 
 #define TAP_SRC_DOUBLE  0x10
 #define TAP_SRC_SINGLE  0x20
@@ -49,6 +65,8 @@ static uint32_t n_debounced;
 static uint32_t debounce_ms = TAP_DEBOUNCE_DEFAULT_MS;
 static uint8_t  tap_thresh = 4;
 static bool     tap_enabled = true;
+static uint32_t step_count;
+static bool     saw_tilt, saw_sign_motion;
 
 /* Two consecutive toggles closer together than this are treated as one event.
  * One physical tap rings the accelerometer into many events: a measured run
@@ -157,6 +175,13 @@ int imu_tap_init(void (*cb)(void))
     reg_write(REG_WAKE_UP_THS, 0x80);   /* SINGLE_DOUBLE_TAP: double-tap mode */
     reg_write(REG_MD1_CFG,     0x08);   /* route double-tap to INT1 */
 
+    /* Embedded motion functions. These run inside the part and are read when
+     * asked rather than interrupting, so they add no wakeups and no cost to
+     * the capture path -- which is the only reason they are worth having on
+     * a device that must last a day. */
+    reg_write(REG_CTRL10_C, CTRL10_FUNC_EN | CTRL10_PEDO_EN |
+                            CTRL10_TILT_EN | CTRL10_SIGN_MOT_EN);
+
     k_work_init(&tap_work, tap_work_fn);
 
     if (!gpio_is_ready_dt(&irq_pin)) {
@@ -205,6 +230,70 @@ void imu_tap_probe(uint8_t out[4])
     for (int i = 0; i < 4; i++) {
         out[i] = probe_results[i];
     }
+}
+
+void imu_motion_poll(void)
+{
+    if (!imu_addr) {
+        return;
+    }
+    uint8_t lo, hi, src;
+
+    if (reg_read(imu_addr, REG_STEP_L, &lo) == 0 &&
+        reg_read(imu_addr, REG_STEP_H, &hi) == 0) {
+        /* The counter is 16 bits and wraps. Track it as a running total so a
+         * wrap does not look like the wearer walking backwards. */
+        static uint16_t last_raw;
+        static bool     have_last;
+        uint16_t raw = (uint16_t)(lo | (hi << 8));
+        if (have_last) {
+            step_count += (uint16_t)(raw - last_raw);
+        }
+        last_raw = raw;
+        have_last = true;
+    }
+    /* FUNC_SRC latches until read, so a tilt or a significant-motion event
+     * between polls is not missed. */
+    if (reg_read(imu_addr, REG_FUNC_SRC, &src) == 0) {
+        if (src & FUNC_SRC_TILT)        saw_tilt = true;
+        if (src & FUNC_SRC_SIGN_MOTION) saw_sign_motion = true;
+    }
+}
+
+uint32_t imu_steps(void) { return step_count; }
+
+uint8_t imu_motion_config(void)
+{
+    uint8_t v = 0;
+    if (imu_addr) {
+        reg_read(imu_addr, REG_CTRL10_C, &v);
+    }
+    return v;
+}
+
+void imu_steps_reset(void)
+{
+    step_count = 0;
+    if (imu_addr) {
+        uint8_t v = CTRL10_FUNC_EN | CTRL10_PEDO_EN | CTRL10_TILT_EN |
+                    CTRL10_SIGN_MOT_EN;
+        reg_write(REG_CTRL10_C, v | CTRL10_PEDO_RST);
+        reg_write(REG_CTRL10_C, v);
+    }
+}
+
+bool imu_tilt(void)
+{
+    bool v = saw_tilt;
+    saw_tilt = false;
+    return v;
+}
+
+bool imu_significant_motion(void)
+{
+    bool v = saw_sign_motion;
+    saw_sign_motion = false;
+    return v;
 }
 
 uint8_t imu_tap_get_threshold(void) { return tap_thresh; }

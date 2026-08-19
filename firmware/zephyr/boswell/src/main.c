@@ -203,6 +203,18 @@ static int cmd_debounce(const struct shell *sh, size_t argc, char **argv)
     return 0;
 }
 
+static int cmd_steps(const struct shell *sh, size_t argc, char **argv)
+{
+    if (argc > 1 && argv[1][0] == 'r') {
+        imu_steps_reset();
+        shell_print(sh, "step counter reset");
+        return 0;
+    }
+    imu_motion_poll();
+    shell_print(sh, "steps=%u", imu_steps());
+    return 0;
+}
+
 static int cmd_taps(const struct shell *sh, size_t argc, char **argv)
 {
     ARG_UNUSED(argc); ARG_UNUSED(argv);
@@ -269,6 +281,9 @@ static int cmd_status(const struct shell *sh, size_t argc, char **argv)
     shell_print(sh, "cfg store=%d  tap_thresh=%u debounce=%u ms",
                 cfg_store_ready(), imu_tap_get_threshold(),
                 imu_tap_get_debounce());
+    shell_print(sh, "steps=%u tilt=%d motion=%d tap=%d ctrl10=0x%02x",
+                imu_steps(), imu_tilt(), imu_significant_motion(),
+                imu_tap_enabled(), imu_motion_config());
     shell_print(sh, "battery=%u mV (%u%%) charging=%d  imu=%d",
                 battery_mv(), battery_percent(), battery_charging(),
                 imu_tap_present());
@@ -284,6 +299,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(boswell_cmds,
     SHELL_CMD(imu, NULL, "Re-probe the IMU and report", cmd_imu),
     SHELL_CMD(tap, NULL, "Set double-tap threshold (0-31)", cmd_tap),
     SHELL_CMD(taps, NULL, "Show tap counters", cmd_taps),
+    SHELL_CMD(steps, NULL, "Show step count, or 'steps reset'", cmd_steps),
     SHELL_CMD(debounce, NULL, "Get/set tap debounce in ms", cmd_debounce),
     SHELL_SUBCMD_SET_END
 );
@@ -602,7 +618,7 @@ int main(void)
 
     /* Ticks at the pulse resolution rather than the housekeeping interval: a
      * 25 ms flash cannot be driven by a loop that wakes twice a second. */
-    int64_t next_house = 0, next_batt = 0;
+    int64_t next_house = 0, next_batt = 0, next_motion = 0;
     while (1) {
         int64_t now = k_uptime_get();
 
@@ -617,6 +633,13 @@ int main(void)
         if (now >= next_batt) {
             next_batt = now + 30000;
             battery_sample();
+        }
+        if (now >= next_motion) {
+            /* Every couple of seconds: the step counter runs in the part and
+             * only needs collecting, and tilt and significant motion latch
+             * until read so nothing is missed between polls. */
+            next_motion = now + 2000;
+            imu_motion_poll();
         }
         struct boswell_settings cur;
         settings_snapshot(&cur);

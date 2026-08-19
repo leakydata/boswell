@@ -35,6 +35,21 @@ uint8_t  imu_tap_get_threshold(void);
 /* Tap detection can be switched off without unbinding the interrupt, so a
  * wearer who keeps knocking the device can stop it toggling capture. */
 void     imu_tap_set_enabled(bool on);
+
+/* Motion, from the part's own embedded functions rather than from streaming
+ * samples and counting peaks on the CPU. The step counter, tilt detector and
+ * significant-motion detector all run inside the LSM6DS3TR-C and cost
+ * nothing to leave on, which is what makes them usable on a device that has
+ * to last a day. */
+uint32_t imu_steps(void);
+void     imu_steps_reset(void);
+bool     imu_tilt(void);            /* seen since the last read */
+bool     imu_significant_motion(void);
+void     imu_motion_poll(void);     /* refresh the cached readings */
+/* CTRL10_C read back from the part. Zero steps on a desk is the same reading
+ * as a pedometer that was never switched on, so the configuration is made
+ * observable rather than assumed. */
+uint8_t  imu_motion_config(void);
 bool     imu_tap_enabled(void);
 
 #endif

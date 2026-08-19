@@ -282,6 +282,16 @@ void ble_audio_publish_info(void)
     info_buf[29] = (uint8_t)((pend >> 8) & 0xFF);
     info_buf[30] = (uint8_t)((pend >> 16) & 0xFF);
     info_buf[31] = (uint8_t)(qspi_store_capacity() / 65536);
+    /* Steps and motion. Bytes 13-17 were unused; the host reads them as a
+     * little-endian count and a flags byte. */
+    uint32_t steps = imu_steps();
+    info_buf[13] = (uint8_t)(steps & 0xFF);
+    info_buf[14] = (uint8_t)((steps >> 8) & 0xFF);
+    info_buf[15] = (uint8_t)((steps >> 16) & 0xFF);
+    info_buf[16] = (uint8_t)((steps >> 24) & 0xFF);
+    info_buf[17] = (uint8_t)((imu_tilt() ? 1 : 0) |
+                             (imu_significant_motion() ? 2 : 0) |
+                             (imu_tap_enabled() ? 4 : 0));
     info_buf[32] = g_state.led_level;
     info_buf[33] = g_state.led_mode;
     uint16_t mv = battery_mv();
