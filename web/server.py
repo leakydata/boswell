@@ -21,7 +21,7 @@ from contextlib import asynccontextmanager
 
 import numpy as np
 import soundfile as sf
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -254,6 +254,42 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
+
+# Optional shared secret. Unset means open, which is fine on a trusted LAN.
+# Set BOSWELL_TOKEN before exposing this anywhere else: every endpoint below
+# can arm the microphone or hand over recordings.
+TOKEN = os.environ.get("BOSWELL_TOKEN", "").strip()
+
+
+def token_ok(supplied: str | None) -> bool:
+    if not TOKEN:
+        return True
+    if not supplied:
+        return False
+    # Constant-time compare so the token cannot be recovered by timing.
+    import hmac
+    return hmac.compare_digest(supplied, TOKEN)
+
+
+@app.middleware("http")
+async def auth_gate(request: Request, call_next):
+    path = request.url.path
+    # The shell and its assets stay public so the token prompt can render.
+    if not TOKEN or path == "/" or path.startswith("/static"):
+        return await call_next(request)
+    supplied = (request.query_params.get("token")
+                or request.headers.get("x-boswell-token")
+                or (request.headers.get("authorization") or "").removeprefix("Bearer ").strip()
+                or request.cookies.get("boswell_token"))
+    if not token_ok(supplied):
+        return JSONResponse({"detail": "unauthorized"}, status_code=401)
+    return await call_next(request)
+
+
+@app.get("/api/auth")
+async def api_auth():
+    """Reached only when the token is valid, so a 200 means 'you are in'."""
+    return {"ok": True, "auth_required": bool(TOKEN)}
 app.mount("/static", StaticFiles(directory=os.path.join(HERE, "static")), name="static")
 
 
@@ -397,6 +433,9 @@ async def api_label(body: dict):
 
 @app.websocket("/ws")
 async def ws(sock: WebSocket):
+    if not token_ok(sock.query_params.get("token")):
+        await sock.close(code=1008)
+        return
     await sock.accept()
     q: asyncio.Queue = asyncio.Queue(maxsize=64)
     device.listeners.add(q)

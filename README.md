@@ -204,6 +204,26 @@ WebSocket, and the browser holds no logic a native client could not
 reimplement in a few dozen lines. The layout is mobile-first and reachable
 from a phone on the same network.
 
+### Remote access
+
+The web UI is unauthenticated by default, which is fine on a trusted LAN.
+Before exposing it anywhere else, set a token — every endpoint can arm the
+microphone or hand over recordings:
+
+```bash
+export BOSWELL_TOKEN=$(python3 -c "import secrets;print(secrets.token_urlsafe(24))")
+uv run web/server.py
+```
+
+The page then asks for the token once and remembers it. HTTP and WebSocket
+are both gated; only the page shell and its assets stay public so the prompt
+can render.
+
+A token is not a substitute for a private network. Prefer **Tailscale or
+WireGuard**, where the device is reachable as if it were at home and nothing
+is published; a tunnel like ngrok puts a microphone control API on the public
+internet, and tunnel URLs get scanned within hours of being created.
+
 ### Tuning
 
 ```bash

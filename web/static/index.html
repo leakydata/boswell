@@ -282,6 +282,58 @@ function log(t){
 
 function send(o){ if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); }
 
+/* ---- access token (only used when the server sets BOSWELL_TOKEN) ---- */
+const TK = {
+  get(){ return localStorage.getItem("boswell_token") || ""; },
+  set(v){ localStorage.setItem("boswell_token", v); },
+  clear(){ localStorage.removeItem("boswell_token"); }
+};
+
+/* Route every request through here so the token travels with all of them. */
+const _fetch = window.fetch.bind(window);
+window.fetch = (url, opt = {}) => {
+  const t = TK.get();
+  if (t && typeof url === "string" && url.startsWith("/")){
+    opt.headers = Object.assign({}, opt.headers, {"X-Boswell-Token": t});
+  }
+  return _fetch(url, opt);
+};
+
+async function ensureAuth(){
+  const r = await fetch("/api/auth");
+  if (r.ok) return true;
+  const t = prompt ? null : null;   // no browser dialogs; use the sheet
+  showTokenGate();
+  return false;
+}
+
+function showTokenGate(){
+  document.querySelector(".wrap").innerHTML = `
+    <header><h1>Bos<span>well</span></h1></header>
+    <div class="card" style="margin-top:20px">
+      <h2>Access token</h2>
+      <p style="font-size:14.5px;color:var(--muted);margin:0 0 12px">
+        This server is protected. Enter the token to continue.</p>
+      <input type="password" id="tokIn" placeholder="token" autocomplete="current-password"
+        style="width:100%;font-size:17px;padding:13px;border-radius:8px;
+               border:1px solid var(--rule);background:var(--paper);color:var(--ink)">
+      <div id="tokErr" style="color:var(--bad);font-family:var(--mono);font-size:12px;
+           min-height:16px;margin-top:8px"></div>
+      <div class="btns" style="margin-top:10px">
+        <button class="pri" id="tokGo">Unlock</button>
+      </div>
+    </div>`;
+  const go = async () => {
+    TK.set(document.getElementById("tokIn").value.trim());
+    const r = await fetch("/api/auth");
+    if (r.ok) location.reload();
+    else { TK.clear(); document.getElementById("tokErr").textContent = "Incorrect token"; }
+  };
+  document.getElementById("tokGo").onclick = go;
+  document.getElementById("tokIn").addEventListener("keydown",
+    e => { if (e.key === "Enter") go(); });
+}
+
 function paint(s){
   connected = s.connected; armed = s.armed;
   const dot = $("dot");
@@ -313,7 +365,9 @@ function paint(s){
 }
 
 function connect(){
-  ws = new WebSocket(`ws://${location.host}/ws`);
+  const t = TK.get();
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  ws = new WebSocket(`${proto}://${location.host}/ws` + (t ? `?token=${encodeURIComponent(t)}` : ""));
   ws.onmessage = e => {
     const m = JSON.parse(e.data);
     if (m.type === "state") paint(m);
