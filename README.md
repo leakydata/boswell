@@ -548,11 +548,15 @@ controlling. Brightness is real PWM — average current tracks duty cycle almost
 exactly, so 10% brightness costs about 10% of the current, and it is not burnt
 off as heat.
 
-There is a floor, though: the PWM peripheral itself draws roughly 50–100 µA, so
-below a few percent it costs more than the light does. **Blink** mode exists for
-that case — a 25 ms flash every 3 seconds is under 1% duty with no PWM running
-at all, which beats any practical dim setting while still showing the device is
-alive and what it is doing. Off costs nothing.
+**Blinking is the default.** A 25 ms flash every 3 seconds is under 1% duty
+with no PWM running at all, which beats any practical dim setting while still
+showing the device is alive and what it is doing. Leaving the LED lit costs
+roughly a quarter of the whole device budget for an indicator nobody watches
+most of the time, so steady is available but is not the sensible default for
+something meant to run all day.
+
+Dimming has a floor: the PWM peripheral itself draws roughly 50–100 µA, so
+below a few percent it costs more than the light does. Off costs nothing.
 
 ## The agent
 

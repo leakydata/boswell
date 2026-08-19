@@ -349,13 +349,15 @@ button.who{font-size:11px}
         <input type="range" id="led" min="0" max="255" value="255" step="15" disabled>
         <span class="val" id="ledv">full</span>
       </label>
-      <label class="row">Blink instead of stay lit
-        <span class="switch" id="ledpulse" role="switch" aria-checked="false" tabindex="0"></span>
+      <label class="row">Keep the light on
+        <span class="switch" id="ledsteady" role="switch" aria-checked="false" tabindex="0"></span>
       </label>
       <div style="font-size:12.5px;color:var(--muted);margin-top:-4px">
-        Dimming is real PWM, so current falls with brightness. Below a few percent
-        the PWM hardware costs more than the light does — blinking briefly is
-        cheaper than a very dim steady glow, and off costs nothing at all.
+        The light blinks briefly by default — under 1% of the power a steady one
+        uses, and still enough to show what the device is doing. Turn this on to
+        keep it lit, and use the slider to dim it: dimming is real PWM, so
+        current falls with brightness, though below a few percent the PWM
+        hardware costs more than the light does. Off costs nothing.
       </div>
       <label class="row">Play catch-up live
         <span class="switch" id="blmode" role="switch" aria-checked="false" tabindex="0"></span>
@@ -658,7 +660,7 @@ function paint(s){
   $("led").disabled = !s.connected;
   if (document.activeElement !== $("led")) $("led").value = s.led_level ?? 255;
   $("ledv").textContent = ledLabel(s.led_level ?? 255);
-  $("ledpulse").setAttribute("aria-checked", !!s.led_mode);
+  $("ledsteady").setAttribute("aria-checked", !s.led_mode);
   $("err").textContent = s.error || "";
 }
 
@@ -1464,17 +1466,18 @@ function ledLabel(v){
 }
 const led = $("led");
 led.oninput = () => { $("ledv").textContent = ledLabel(+led.value); };
+// The switch reads as "keep it on", so it is the inverse of pulse mode.
 led.onchange = () => send({cmd:"led", level:+led.value,
-                           pulse: $("ledpulse").getAttribute("aria-checked") === "true"});
+                           pulse: $("ledsteady").getAttribute("aria-checked") !== "true"});
 
-const ledpulse = $("ledpulse");
-function toggleLedPulse(){
-  const on = ledpulse.getAttribute("aria-checked") !== "true";
-  ledpulse.setAttribute("aria-checked", on);
-  send({cmd:"led", level:+led.value, pulse:on});
+const ledsteady = $("ledsteady");
+function toggleLedSteady(){
+  const steady = ledsteady.getAttribute("aria-checked") !== "true";
+  ledsteady.setAttribute("aria-checked", steady);
+  send({cmd:"led", level:+led.value, pulse: !steady});
 }
-ledpulse.onclick = toggleLedPulse;
-ledpulse.onkeydown = e => { if (e.key === " " || e.key === "Enter"){ e.preventDefault(); toggleLedPulse(); } };
+ledsteady.onclick = toggleLedSteady;
+ledsteady.onkeydown = e => { if (e.key === " " || e.key === "Enter"){ e.preventDefault(); toggleLedSteady(); } };
 
 const fastchg = $("fastchg");
 fastchg.onclick = () => {

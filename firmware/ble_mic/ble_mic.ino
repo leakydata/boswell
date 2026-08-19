@@ -133,7 +133,12 @@ static uint8_t  backlogMode = 0;
  * at full brightness is on the order of 2 mA, against a whole-device budget
  * near 8 mA, so this is worth having. */
 static uint8_t  ledLevel = 255;      // 0 = off, 255 = full
-static uint8_t  ledMode  = 0;        // 0 steady, 1 brief pulse
+/* Blink by default. A 25 ms flash every 3 s is under 1% duty with no PWM
+ * running, against roughly 2 mA for a steady LED on a device budget near
+ * 8 mA -- so leaving it lit costs a quarter of the power for an indicator
+ * nobody watches most of the time. Steady is available, it is just not the
+ * sensible default for something meant to run all day. */
+static uint8_t  ledMode  = 1;        // 0 steady, 1 brief pulse
 #define LED_PULSE_ON_MS    25
 #define LED_PULSE_EVERY_MS 3000
 static bool     ledWantR = false, ledWantG = false, ledWantB = false;

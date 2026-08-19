@@ -49,7 +49,7 @@ class Device:
             "peak": 0, "rms": 0.0, "level": 0.0, "error": None,
             "clip_seconds": 0.0, "source": None,
             "recovered_seconds": 0.0, "backlog_mode": 0,
-            "led_level": 255, "led_mode": 0,
+            "led_level": 255, "led_mode": 1,
             "ring_overruns": 0,
             "battery_mv": 0, "battery_pct": 0, "charging": False,
             "fast_charge": False, "mic_running": True,
