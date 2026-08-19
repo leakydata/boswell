@@ -305,6 +305,20 @@ def token_ok(supplied: str | None) -> bool:
 
 
 @app.middleware("http")
+async def no_cache(request: Request, call_next):
+    """The UI changes constantly during development. Without this the browser
+    caches index.html indefinitely and a refresh silently serves the old
+    copy -- edits appear to do nothing."""
+    resp = await call_next(request)
+    path = request.url.path
+    if path == "/" or path.startswith("/static") or path.startswith("/api"):
+        resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        resp.headers["Pragma"] = "no-cache"
+        resp.headers["Expires"] = "0"
+    return resp
+
+
+@app.middleware("http")
 async def auth_gate(request: Request, call_next):
     path = request.url.path
     # The shell and its assets stay public so the token prompt can render.
