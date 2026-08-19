@@ -29,6 +29,11 @@ bool ble_audio_advertising(void);
  * conflating the two made a perfectly healthy connection look like the
  * unreachable state and sent a diagnosis off in the wrong direction. */
 bool ble_audio_linked(void);
+/* Raw motion goes out on its own characteristic so a host that only wants
+ * audio is not made to decode it, and so losing a motion frame can never
+ * disturb the audio sequence. */
+int  ble_imu_send(const uint8_t *frame, uint16_t len);
+bool ble_imu_ready(void);
 int  ble_audio_advertise_now(void);
 
 #endif

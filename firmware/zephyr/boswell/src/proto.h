@@ -38,6 +38,21 @@
     BT_UUID_128_ENCODE(0x4b1a0003, 0x8f2c, 0x4d5e, 0x9a3b, 0x1c7e6f8d0a21)
 #define BOSWELL_UUID_INFO \
     BT_UUID_128_ENCODE(0x4b1a0004, 0x8f2c, 0x4d5e, 0x9a3b, 0x1c7e6f8d0a21)
+/* Raw motion. Sampled on the device and worked out on the host, the same way
+ * the audio is: what counts as a step, or a gesture, or sitting down is a
+ * question better answered where it can be changed without reflashing. */
+#define BOSWELL_UUID_IMU \
+    BT_UUID_128_ENCODE(0x4b1a0005, 0x8f2c, 0x4d5e, 0x9a3b, 0x1c7e6f8d0a21)
+
+/* IMU frame: [seq:u16][flags:u8][count:u8][hz:u16][t_ms:u32] then `count`
+ * samples of int16 x,y,z -- accelerometer, and gyroscope too when asked.
+ *
+ * Accel-only is about 10 uA on this part and the gyroscope is about 0.9 mA,
+ * roughly a hundred times more, so the gyroscope is off unless something
+ * asks for it. */
+#define IMU_HEADER_LEN   10
+#define IMU_FLAG_GYRO    0x01
+#define IMU_MAX_SAMPLES  10
 
 /* Control opcodes, unchanged from the Arduino build. */
 enum {
@@ -58,11 +73,14 @@ enum {
     /* Reboot into the bootloader. Argument must be 0x5A so a stray write
      * cannot take the device offline. */
     CTRL_DFU          = 0x0F,
+    CTRL_IMU_STREAM   = 0x10,   /* 0 off, else samples per second */
+    CTRL_IMU_GYRO     = 0x11,   /* the expensive half; off by default */
 };
 
 struct boswell_state {
     bool     streaming;
     bool     use16k;
+    uint8_t  imu_hz;        /* 0 = off */
     bool     vad_enabled;
     uint16_t vad_thresh;
     uint8_t  gain;

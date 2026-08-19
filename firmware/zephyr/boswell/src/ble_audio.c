@@ -25,14 +25,23 @@ static struct bt_uuid_128 svc_uuid   = BT_UUID_INIT_128(BOSWELL_UUID_SERVICE);
 static struct bt_uuid_128 audio_uuid = BT_UUID_INIT_128(BOSWELL_UUID_AUDIO);
 static struct bt_uuid_128 ctrl_uuid  = BT_UUID_INIT_128(BOSWELL_UUID_CTRL);
 static struct bt_uuid_128 info_uuid  = BT_UUID_INIT_128(BOSWELL_UUID_INFO);
+static struct bt_uuid_128 imu_uuid   = BT_UUID_INIT_128(BOSWELL_UUID_IMU);
 
 static struct bt_conn *current_conn;
 static bool advertising;
 static bool notify_enabled;
+static bool imu_notify_enabled;
 static ctrl_handler_t ctrl_cb;
 static uint8_t info_buf[40];
 
 static void apply_conn_params(bool streaming);
+
+static void imu_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value)
+{
+    ARG_UNUSED(attr);
+    imu_notify_enabled = (value == BT_GATT_CCC_NOTIFY);
+    LOG_INF("imu notifications %s", imu_notify_enabled ? "on" : "off");
+}
 
 static void ccc_changed(const struct bt_gatt_attr *attr, uint16_t value)
 {
@@ -83,6 +92,9 @@ BT_GATT_SERVICE_DEFINE(boswell_svc,
                            BT_GATT_PERM_WRITE, NULL, ctrl_write, NULL),
     BT_GATT_CHARACTERISTIC(&info_uuid.uuid, BT_GATT_CHRC_READ,
                            BT_GATT_PERM_READ, info_read, NULL, NULL),
+    BT_GATT_CHARACTERISTIC(&imu_uuid.uuid, BT_GATT_CHRC_NOTIFY,
+                           BT_GATT_PERM_NONE, NULL, NULL, NULL),
+    BT_GATT_CCC(imu_ccc_changed, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
 );
 
 static const struct bt_data adv[] = {
@@ -201,6 +213,7 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
         current_conn = NULL;
     }
     notify_enabled = false;
+    imu_notify_enabled = false;
     k_work_reschedule(&adv_restart, K_MSEC(100));
     /* Deliberately stays armed: capture continuing across a dropped link is
      * the whole point of the flash buffer. */
@@ -250,6 +263,27 @@ BT_CONN_CB_DEFINE(conn_callbacks) = {
 bool ble_audio_connected(void)
 {
     return current_conn != NULL && notify_enabled;
+}
+
+bool ble_imu_ready(void)
+{
+    return current_conn != NULL && imu_notify_enabled;
+}
+
+int ble_imu_send(const uint8_t *frame, uint16_t len)
+{
+    if (!ble_imu_ready()) {
+        return -ENOTCONN;
+    }
+    /* Index 8, counting the table above: primary service, then two
+     * attributes for each characteristic and one for each CCC. Attribute 6
+     * is the info declaration, which is where a first attempt at this sent
+     * motion frames.
+     *
+     * One attempt only. Audio retries because a gap in speech matters; a
+     * missing twentieth of a second of accelerometer does not, and blocking
+     * the sampler to retry would skew the timing of everything after it. */
+    return bt_gatt_notify(current_conn, &boswell_svc.attrs[8], frame, len);
 }
 
 bool ble_audio_linked(void)

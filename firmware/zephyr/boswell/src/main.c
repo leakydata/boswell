@@ -295,6 +295,8 @@ static int cmd_status(const struct shell *sh, size_t argc, char **argv)
                 imu_tap_get_debounce());
     shell_print(sh, "advertising=%d  (unreachable = no link and no advertising)",
                 ble_audio_advertising());
+    shell_print(sh, "imu_stream=%u Hz gyro=%d", g_state.imu_hz,
+                imu_gyro_enabled());
     shell_print(sh, "steps=%u tilt=%d motion=%d tap=%d ctrl10=0x%02x",
                 imu_steps(), imu_tilt(), imu_significant_motion(),
                 imu_tap_enabled(), imu_motion_config());
@@ -369,6 +371,8 @@ static void on_ctrl(uint8_t op, uint8_t arg)
     case CTRL_CLEAR_BUFFER: qspi_store_reset();            break;
     case CTRL_FAST_CHARGE:  battery_set_fast_charge(arg != 0); break;
     case CTRL_TX_POWER:     set_tx_power((int8_t)arg);     break;
+    case CTRL_IMU_STREAM:   g_state.imu_hz = arg;          break;
+    case CTRL_IMU_GYRO:     imu_set_gyro(arg != 0);        break;
     case CTRL_LED_LEVEL:
         g_state.led_level = arg;
         led_set_level(arg);
@@ -460,6 +464,68 @@ static void settings_apply(const struct boswell_settings *s)
     }
     if (s->tap_debounce_ms) {
         imu_tap_set_debounce(s->tap_debounce_ms);
+    }
+}
+
+/* ------------------------------------------------------------- imu stream */
+
+/* Raw motion, sampled here and interpreted on the host.
+ *
+ * What counts as a step, or a gesture, or sitting down is a question that
+ * will change, and changing it should not mean reflashing a device somebody
+ * is wearing. The part's own pedometer stays on regardless: it keeps counting
+ * while the device is out of range with nothing to stream to.
+ */
+#define IMU_STACK 1024
+K_THREAD_STACK_DEFINE(imu_stack, IMU_STACK);
+static struct k_thread imu_thread;
+
+static void imu_stream_fn(void *a, void *b, void *c)
+{
+    ARG_UNUSED(a); ARG_UNUSED(b); ARG_UNUSED(c);
+    uint8_t  frame[IMU_HEADER_LEN + IMU_MAX_SAMPLES * 12];
+    uint16_t seq = 0;
+
+    for (;;) {
+        uint8_t hz = g_state.imu_hz;
+        if (hz == 0 || !ble_imu_ready()) {
+            k_sleep(K_MSEC(200));
+            continue;
+        }
+        bool gyro = imu_gyro_enabled();
+        uint8_t stride = gyro ? 12 : 6;
+        uint32_t period_us = 1000000u / hz;
+
+        int n = 0;
+        uint8_t *p = frame + IMU_HEADER_LEN;
+        int64_t t0 = k_uptime_get();
+        while (n < IMU_MAX_SAMPLES) {
+            struct imu_sample s;
+            if (imu_read_motion(&s, gyro)) {
+                const int16_t *src = &s.ax;
+                for (int i = 0; i < (gyro ? 6 : 3); i++) {
+                    *p++ = (uint8_t)(src[i] & 0xFF);
+                    *p++ = (uint8_t)((src[i] >> 8) & 0xFF);
+                }
+                n++;
+            }
+            k_sleep(K_USEC(period_us));
+        }
+
+        frame[0] = (uint8_t)(seq & 0xFF);
+        frame[1] = (uint8_t)(seq >> 8);
+        frame[2] = gyro ? IMU_FLAG_GYRO : 0;
+        frame[3] = (uint8_t)n;
+        frame[4] = (uint8_t)(hz & 0xFF);
+        frame[5] = (uint8_t)(hz >> 8);
+        uint32_t t = (uint32_t)t0;
+        frame[6] = (uint8_t)(t & 0xFF);
+        frame[7] = (uint8_t)((t >> 8) & 0xFF);
+        frame[8] = (uint8_t)((t >> 16) & 0xFF);
+        frame[9] = (uint8_t)((t >> 24) & 0xFF);
+
+        (void)ble_imu_send(frame, IMU_HEADER_LEN + n * stride);
+        seq++;
     }
 }
 
@@ -622,6 +688,11 @@ int main(void)
 
     watchdog_init();
     LOG_INF("watchdog ready");
+
+    k_thread_create(&imu_thread, imu_stack, IMU_STACK,
+                    imu_stream_fn, NULL, NULL, NULL,
+                    K_PRIO_PREEMPT(11), 0, K_NO_WAIT);
+    k_thread_name_set(&imu_thread, "imu");
 
     k_thread_create(&capture_thread, capture_stack, CAPTURE_STACK,
                     capture_fn, NULL, NULL, NULL,

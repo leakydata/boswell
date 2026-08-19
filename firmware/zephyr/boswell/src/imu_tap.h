@@ -50,6 +50,16 @@ void     imu_motion_poll(void);     /* refresh the cached readings */
  * as a pedometer that was never switched on, so the configuration is made
  * observable rather than assumed. */
 uint8_t  imu_motion_config(void);
+
+/* One raw sample. Accelerometer always; gyroscope only when it has been
+ * switched on, because it costs about a hundred times the current. */
+struct imu_sample {
+    int16_t ax, ay, az;
+    int16_t gx, gy, gz;
+};
+bool imu_read_motion(struct imu_sample *out, bool with_gyro);
+void imu_set_gyro(bool on);
+bool imu_gyro_enabled(void);
 bool     imu_tap_enabled(void);
 
 #endif

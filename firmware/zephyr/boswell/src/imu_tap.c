@@ -23,6 +23,9 @@ LOG_MODULE_REGISTER(imu, LOG_LEVEL_INF);
 #define REG_STEP_L      0x4B
 #define REG_STEP_H      0x4C
 #define REG_FUNC_SRC    0x53
+#define REG_CTRL2_G     0x11
+#define REG_OUTX_L_G    0x22
+#define REG_OUTX_L_XL   0x28
 
 /* CTRL10_C: embedded functions on, plus pedometer, tilt and significant
  * motion. FUNC_EN gates all three, so it has to be set alongside them. */
@@ -67,6 +70,7 @@ static uint8_t  tap_thresh = 4;
 static bool     tap_enabled = true;
 static uint32_t step_count;
 static bool     saw_tilt, saw_sign_motion;
+static bool     gyro_on;
 
 /* Two consecutive toggles closer together than this are treated as one event.
  * One physical tap rings the accelerometer into many events: a measured run
@@ -259,6 +263,48 @@ void imu_motion_poll(void)
         if (src & FUNC_SRC_SIGN_MOTION) saw_sign_motion = true;
     }
 }
+
+/* Six consecutive registers per sensor, read in one burst: three separate
+ * two-byte reads per axis would triple the bus traffic for the same data. */
+static bool read_block(uint8_t reg, int16_t *dst)
+{
+    uint8_t raw[6];
+    if (i2c_burst_read(i2c_dev, imu_addr, reg, raw, sizeof(raw)) != 0) {
+        return false;
+    }
+    for (int i = 0; i < 3; i++) {
+        dst[i] = (int16_t)(raw[i * 2] | (raw[i * 2 + 1] << 8));
+    }
+    return true;
+}
+
+bool imu_read_motion(struct imu_sample *out, bool with_gyro)
+{
+    if (!imu_addr || out == NULL) {
+        return false;
+    }
+    memset(out, 0, sizeof(*out));
+    if (!read_block(REG_OUTX_L_XL, &out->ax)) {
+        return false;
+    }
+    if (with_gyro && gyro_on) {
+        (void)read_block(REG_OUTX_L_G, &out->gx);
+    }
+    return true;
+}
+
+void imu_set_gyro(bool on)
+{
+    gyro_on = on;
+    if (imu_addr) {
+        /* 104 Hz, 500 dps when on; powered down when not. The gyroscope is
+         * the expensive half of this part by two orders of magnitude, so it
+         * does not idle -- it stops. */
+        reg_write(REG_CTRL2_G, on ? 0x44 : 0x00);
+    }
+}
+
+bool imu_gyro_enabled(void) { return gyro_on; }
 
 uint32_t imu_steps(void) { return step_count; }
 
