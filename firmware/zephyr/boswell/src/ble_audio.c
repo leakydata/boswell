@@ -252,6 +252,11 @@ bool ble_audio_connected(void)
     return current_conn != NULL && notify_enabled;
 }
 
+bool ble_audio_linked(void)
+{
+    return current_conn != NULL;
+}
+
 int ble_audio_send(const uint8_t *frame, uint16_t len)
 {
     if (!ble_audio_connected()) {

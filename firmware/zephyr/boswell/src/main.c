@@ -276,9 +276,12 @@ static int cmd_reboot(const struct shell *sh, size_t argc, char **argv)
 static int cmd_status(const struct shell *sh, size_t argc, char **argv)
 {
     ARG_UNUSED(argc); ARG_UNUSED(argv);
-    shell_print(sh, "connected=%d streaming=%d gain=%u rate=%s mic=%d",
-                ble_audio_connected(), g_state.streaming, g_state.gain,
-                g_state.use16k ? "16k" : "8k", mic_running());
+    /* link and subscribed are reported apart. A host can hold a connection
+     * without ever enabling notifications, which is a normal transient state
+     * and looks identical to a dead radio if the two are merged. */
+    shell_print(sh, "link=%d subscribed=%d streaming=%d gain=%u rate=%s mic=%d",
+                ble_audio_linked(), ble_audio_connected(), g_state.streaming,
+                g_state.gain, g_state.use16k ? "16k" : "8k", mic_running());
     battery_sample();
     uint32_t qs[4];
     qspi_store_stats(qs);
@@ -290,7 +293,8 @@ static int cmd_status(const struct shell *sh, size_t argc, char **argv)
     shell_print(sh, "cfg store=%d  tap_thresh=%u debounce=%u ms",
                 cfg_store_ready(), imu_tap_get_threshold(),
                 imu_tap_get_debounce());
-    shell_print(sh, "advertising=%d", ble_audio_advertising());
+    shell_print(sh, "advertising=%d  (unreachable = no link and no advertising)",
+                ble_audio_advertising());
     shell_print(sh, "steps=%u tilt=%d motion=%d tap=%d ctrl10=0x%02x",
                 imu_steps(), imu_tilt(), imu_significant_motion(),
                 imu_tap_enabled(), imu_motion_config());

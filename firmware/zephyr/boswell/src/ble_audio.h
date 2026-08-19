@@ -24,6 +24,11 @@ void ble_audio_apply_conn_params(bool streaming);
  * until it is power-cycled, which is the worst state this firmware can be
  * in, so it is made observable and recoverable. */
 bool ble_audio_advertising(void);
+/* A link exists, whether or not the host has subscribed to audio yet.
+ * Distinct from ble_audio_connected(), which means "linked AND subscribed" --
+ * conflating the two made a perfectly healthy connection look like the
+ * unreachable state and sent a diagnosis off in the wrong direction. */
+bool ble_audio_linked(void);
 int  ble_audio_advertise_now(void);
 
 #endif
