@@ -224,6 +224,15 @@ tab:
 Measured in catch-up mode: live audio advanced 5.0 s → 9.5 s of wall clock while
 recovered audio advanced 1.0 s → 5.2 s and the backlog fell 76.1 s → 72.1 s.
 
+Buffering to flash means erasing a 4 kB sector roughly every 0.9 seconds of
+audio, and a NOR erase blocks the CPU for tens of milliseconds — up to 300 ms
+on this part. The microphone keeps producing samples throughout, so the ring
+buffer has to absorb a whole erase or it overruns, and dropped samples are
+audible as a click. At 256 ms of headroom it could not: buffered recordings
+carried 681 discontinuities spaced a mean of 0.93 s apart, against a predicted
+erase period of 0.91 s. The ring is now 16384 samples, just over a second, and
+the same test measures zero.
+
 The status LED reports where audio is going: blue advertising, **magenta
 buffering to flash**, cyan draining the backlog, green streaming live, red
 connected but disarmed.

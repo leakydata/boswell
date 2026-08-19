@@ -49,6 +49,7 @@ class Device:
             "clip_seconds": 0.0, "source": None,
             "recovered_seconds": 0.0, "backlog_mode": 0,
             "led_level": 255, "led_mode": 0,
+            "ring_overruns": 0,
             "battery_mv": 0, "battery_pct": 0, "charging": False,
             "fast_charge": False, "mic_running": True,
         }
@@ -241,6 +242,10 @@ class Device:
             self.state["charging"] = bool(flags & 1)
             self.state["fast_charge"] = bool(flags & 2)
             self.state["mic_running"] = bool(flags & 4)
+        if len(info) >= 39:
+            # Samples the microphone produced with nowhere to put them. Any
+            # value above zero is audible as a click.
+            self.state["ring_overruns"] = info[38]
         if len(info) >= 32:
             pend = info[28] | (info[29] << 8) | (info[30] << 16)
             self.state["backlog_bytes"] = pend

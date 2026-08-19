@@ -44,7 +44,14 @@
 
 #define FRAME_MS        20            // 50 frames/sec
 #define PDM_RATE        16000         // PDM always runs at 16 kHz
-#define RING_SAMPLES    4096          // ~256 ms at 16 kHz
+/* Writing to flash means erasing a sector every ~0.9 s of buffered audio, and
+ * a NOR erase blocks the CPU for tens of milliseconds -- up to 300 ms on this
+ * part. The microphone keeps producing samples throughout, so the ring has to
+ * be able to absorb a whole erase or it overruns and the dropped samples are
+ * audible as a click. At 256 ms of headroom it could not. 16384 samples is
+ * just over a second at 16 kHz, which covers even a worst-case erase, and
+ * costs 32 kB of the 210 kB free. */
+#define RING_SAMPLES    16384         // ~1.02 s at 16 kHz
 
 static const int  DEFAULT_GAIN   = 50;   // +5 dB; measured ~26% peak in-room
 static const bool DEFAULT_16K    = false;   // start at 8 kHz for BT 4.0
@@ -287,7 +294,7 @@ static void applyGain(int gain) {
 }
 
 static void publishInfo() {
-  uint8_t info[38];
+  uint8_t info[39];
   info[0] = 1;                          // codec: 1 = IMA ADPCM
   info[1] = use16k ? 1 : 0;
   info[2] = FRAME_MS;
@@ -320,6 +327,10 @@ static void publishInfo() {
   info[31] = (uint8_t)(qspiOk ? (qspiSizeBytes() >> 16) : 0);   // MiB-ish
   info[32] = ledLevel;
   info[33] = ledMode;
+  {
+    uint32_t ro = ringOverruns;
+    info[38] = (uint8_t)(ro > 255 ? 255 : ro);
+  }
   info[34] = (uint8_t)(batteryMv & 0xFF);
   info[35] = (uint8_t)(batteryMv >> 8);
   info[36] = batteryPercent(batteryMv);
@@ -337,6 +348,7 @@ void ctrl_write_cb(uint16_t handle, BLECharacteristic *chr,
       streaming = data[1] != 0;
       vadHangover = 0;
       preRollCount = 0;
+      ringOverruns = 0;          // count per capture session, not since boot
       updateLed();
       // Stale audio would be sent as if it were live; start from now.
       ringTail = ringHead;
@@ -522,7 +534,7 @@ void setup() {
 
   infoChar.setProperties(CHR_PROPS_READ);
   infoChar.setPermission(SECMODE_OPEN, SECMODE_NO_ACCESS);
-  infoChar.setMaxLen(38);
+  infoChar.setMaxLen(39);
   infoChar.begin();
   publishInfo();
 
@@ -615,6 +627,11 @@ void loop() {
   // Mode 0: finish the backlog first, so the host receives the conversation in
   // order rather than with a hole in the middle. Live audio waits.
   if (haveBacklog && backlogMode == 0) {
+    // Live audio is deliberately discarded while catching up, so keep the
+    // ring drained rather than letting it overflow. Otherwise the overrun
+    // counter fills with events that are expected and harmless, and the one
+    // number that would reveal real dropped audio becomes meaningless.
+    ringTail = ringHead;
     drainBacklog();
     return;
   }
