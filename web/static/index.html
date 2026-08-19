@@ -414,9 +414,15 @@ button.who{font-size:11px}
         <option value="week">Last 7 days</option>
         <option value="old">Older than a week</option>
       </select>
+      <select class="filter" id="fGroup" aria-label="Group recordings">
+        <option value="conv">Conversations</option>
+        <option value="day">By day</option>
+        <option value="flat">All clips</option>
+      </select>
     </div>
     <div class="toolbar2">
       <span class="count" id="clipCount"></span>
+      <span class="count" id="selCount"></span>
       <button id="bSelect">Select</button>
       <button id="bSelAll" hidden>Select all shown</button>
       <button id="bSelNone" hidden>Clear</button>
@@ -904,10 +910,22 @@ async function loadPeople(){
 let clipFilter = "all", dateFilter = "all", query = "";
 let selectMode = false, selected = new Set();
 
-$("fContent").onchange = () => { clipFilter = $("fContent").value; loadClips(); };
-$("fDate").onchange   = () => { dateFilter = $("fDate").value;    loadClips(); };
+/* Bind through this rather than assigning onto $(id) directly.
+   A single missing element used to throw during script setup, and because
+   everything below it was in the same block, that one line took out the
+   waveform, the transport controls, the Back button and the export flow --
+   the page looked broken everywhere except where the fault actually was. */
+function on(id, event, fn){
+  const el = $(id);
+  if (!el){ console.warn(`missing element #${id}; ${event} not bound`); return null; }
+  el.addEventListener(event, fn);
+  return el;
+}
+
 let groupMode = "conv";
-$("fGroup").onchange  = () => { groupMode = $("fGroup").value;    loadClips(); };
+on("fContent", "change", () => { clipFilter = $("fContent").value; loadClips(); });
+on("fDate",    "change", () => { dateFilter = $("fDate").value;    loadClips(); });
+on("fGroup",   "change", () => { groupMode  = $("fGroup").value;   loadClips(); });
 
 function fmtClock(t){
   return new Date(t*1000).toLocaleTimeString([], {hour:"numeric", minute:"2-digit"});
@@ -974,6 +992,62 @@ async function loadConversations(el){
   }
 }
 
+/* Correct one line of transcript, or move it to a different speaker.
+   The line click has always called this; it was never written, so tapping
+   any line in a transcript threw and nothing happened. The server has taken
+   PATCH /api/transcript/{name} the whole time. */
+async function editLine(name, index, seg, ids, named){
+  $("edT").textContent = "Edit line";
+  $("edSub").textContent = `${seg.start.toFixed(0)}s — correct the words, or pick who said it.`;
+  $("editArea").value = seg.text || "";
+  $("edErr").textContent = "";
+  $("edNewName").hidden = false;
+  $("edNewName").value = seg.speaker_name || "";
+
+  /* Chosen here rather than read back from the chips on save: reassigning a
+     line is a different action from renaming a speaker, and mixing them is
+     how a single correction ends up retitling every line in the clip. */
+  let chosen = seg.speaker;
+  $("edSpk").innerHTML = "";
+  for (const id of ids){
+    const b = document.createElement("button");
+    const col = colorOf(spkColors[id]);
+    const nm = (named[id] && named[id].name) ? named[id].name : id;
+    b.className = "who" + (id === chosen ? " named" : "");
+    b.style.borderColor = col; b.style.color = col; b.style.background = "transparent";
+    b.textContent = nm;
+    b.onclick = () => {
+      chosen = id;
+      [...$("edSpk").children].forEach(c => c.classList.remove("named"));
+      b.classList.add("named");
+    };
+    $("edSpk").appendChild(b);
+  }
+
+  $("edSave").textContent = "Save";
+  $("edSave").onclick = async () => {
+    const body = {index, text: $("editArea").value};
+    if (chosen && chosen !== seg.speaker) body.speaker = chosen;
+    const pinned = $("edNewName").value.trim();
+    if (pinned !== (seg.speaker_name || "")) body.speaker_name = pinned;
+    try{
+      const r = await fetch("/api/transcript/" + encodeURIComponent(name), {
+        method: "PATCH", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(body)});
+      if (!r.ok){
+        const e = await r.json().catch(() => ({}));
+        $("edErr").textContent = e.detail || "Could not save that edit";
+        return;
+      }
+      closeEditor();
+      await renderTranscript(name);
+    }catch(e){ $("edErr").textContent = "Could not reach the server"; }
+  };
+
+  $("scrim").classList.add("open");
+  $("editor").classList.add("open");
+}
+
 /* Downloads are blocked in some embedded viewers, so export opens the text
    in place with a copy button rather than relying on a file save. */
 function showText(text, title){
@@ -981,7 +1055,7 @@ function showText(text, title){
   $("edT").textContent = `Export — ${title}`;
   $("edSub").textContent = "Select all and copy, or use the button below.";
   $("edSpk").innerHTML = "";
-  $("edNewName").hidden = true;
+  $("edNewName").hidden = true;   /* the line editor shows this; reset it */
   $("edErr").textContent = "";
   $("edSave").textContent = "Copy";
   $("edSave").onclick = async () => {
@@ -1462,6 +1536,18 @@ function closeNamer(){
   namerCtx = null;
 }
 
+/* Closes the editor/export sheet.
+   This was called from the scrim click and the Escape handler but never
+   defined, so both threw and the sheet had no way out at all: the Cancel
+   button had no handler either, and the scrim sits over the page with
+   pointer-events on. Opening an export was a dead end that needed a reload. */
+function closeEditor(){
+  $("editor").classList.remove("open");
+  if (!$("namer").classList.contains("open")){
+    $("scrim").classList.remove("open");
+  }
+}
+
 async function saveName(){
   if (!namerCtx) return;
   const name = $("namerInput").value.trim();
@@ -1499,6 +1585,7 @@ async function saveName(){
 
 $("namerSave").onclick = saveName;
 $("namerCancel").onclick = closeNamer;
+$("edCancel").onclick = closeEditor;
 $("scrim").onclick = () => { closeNamer(); closeEditor(); };
 addEventListener("keydown", e => {
   if (e.key === "Escape"){ closeNamer(); closeEditor(); }
