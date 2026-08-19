@@ -744,7 +744,7 @@ async function renderTranscript(name){
     d.querySelector(".t").onclick = () => { const p = $("player"); p.currentTime = s.start; p.play(); };
     d.querySelector(".txt").onclick = () => editLine(name, i, s, ids, named);
     $("dSegs").appendChild(d);
-  }
+  });
 }
 
 /* prompt() is blocked or silently ignored by most mobile browsers, so the
