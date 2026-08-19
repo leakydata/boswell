@@ -444,6 +444,10 @@ button.who{font-size:11px}
         <option value="week">Last 7 days</option>
         <option value="old">Older than a week</option>
       </select>
+      <select class="filter" id="fMode" aria-label="Search mode">
+        <option value="words">Match words</option>
+        <option value="meaning">Match meaning</option>
+      </select>
       <select class="filter" id="fGroup" aria-label="Group recordings">
         <option value="conv">Conversations</option>
         <option value="day">By day</option>
@@ -976,6 +980,10 @@ let groupMode = "conv";
 on("fContent", "change", () => { clipFilter = $("fContent").value; loadClips(); });
 on("fDate",    "change", () => { dateFilter = $("fDate").value;    loadClips(); });
 on("fGroup",   "change", () => { groupMode  = $("fGroup").value;   loadClips(); });
+/* Keyword search only finds a conversation if you remember a word from it.
+   Meaning search embeds the query and compares it against every line. */
+let searchMode = "words";
+on("fMode", "change", () => { searchMode = $("fMode").value; loadClips(); });
 
 function fmtClock(t){
   return new Date(t*1000).toLocaleTimeString([], {hour:"numeric", minute:"2-digit"});
@@ -1182,6 +1190,7 @@ $("qClear").onclick = () => {
 };
 
 async function loadSearch(el){
+  if (searchMode === "meaning") return await loadSemanticSearch(el);
   const r = await fetch("/api/search?q=" + encodeURIComponent(query));
   const results = await r.json();
   const dated = results.filter(c => inDateRange(c.modified));
@@ -1373,6 +1382,44 @@ async function openClip(name){
   await renderTranscript(name);
 }
 
+
+/* Meaning search returns lines rather than recordings, because a line is
+   what actually matched -- collapsing them back into clips would throw away
+   the reason each one is here. */
+async function loadSemanticSearch(el){
+  el.innerHTML = '<div class="empty">searching…</div>';
+  let d;
+  try{
+    const r = await fetch("/api/search/semantic?q=" + encodeURIComponent(query) + "&limit=40");
+    d = await r.json();
+  }catch(e){
+    el.innerHTML = '<div class="empty">could not search</div>'; return;
+  }
+  if (d.error){
+    el.innerHTML = `<div class="empty">${esc(d.error)}</div>`; return;
+  }
+  const hits = d.hits || [];
+  $("clipCount").textContent =
+    `${hits.length} line${hits.length===1?"":"s"} close to “${query}”`;
+  if (!hits.length){
+    el.innerHTML = `<div class="empty">Nothing close to “${esc(query)}”.</div>`;
+    return;
+  }
+  el.innerHTML = "";
+  for (const h of hits){
+    const b = document.createElement("button");
+    b.className = "clip";
+    const when = clipTime(h.clip);
+    b.innerHTML = `<div class="ci">
+        <div class="cn">${when ? new Date(when*1000).toLocaleString() : esc(h.clip)}
+          · ${Math.round(h.start)}s${h.speaker ? " · " + esc(h.speaker) : ""}</div>
+        <div class="cp">${esc(h.text)}</div>
+      </div>
+      <span class="cd">${(h.score*100).toFixed(0)}%</span>`;
+    b.onclick = () => openClip(h.clip);
+    el.appendChild(b);
+  }
+}
 
 /* ---- conversation reader ----
    Opening a conversation used to land on its first clip, which meant the

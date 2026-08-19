@@ -626,6 +626,51 @@ async def api_search(q: str, limit: int = 200):
     return index_db.search(q, limit)
 
 
+@app.get("/api/search/semantic")
+async def api_search_semantic(q: str, limit: int = 25):
+    """Search by meaning rather than by word.
+
+    Keyword search only finds a conversation if you remember a word from it.
+    This finds "the bit about the battery connector" without anyone having
+    said "connector".
+    """
+    if not q.strip():
+        return {"hits": []}
+    import semantic
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, semantic.search, q, limit)
+
+
+@app.get("/api/search/semantic/stats")
+async def api_semantic_stats():
+    import semantic
+    return semantic.stats()
+
+
+@app.post("/api/search/semantic/rebuild")
+async def api_semantic_rebuild():
+    """Embed anything not yet indexed. Resumable: already-indexed lines are
+    skipped, so this can be run again after an interrupted pass."""
+    import semantic
+
+    def work():
+        total = 0
+        for f in sorted(os.listdir(pipeline.TRANSCRIPTS)):
+            if not f.endswith(".json"):
+                continue
+            try:
+                t = json.load(open(os.path.join(pipeline.TRANSCRIPTS, f)))
+            except Exception:
+                continue
+            segs = t.get("segments") or []
+            if segs:
+                total += semantic.index_clip(f[:-5] + ".wav", segs)
+        return {"indexed": total, **semantic.stats()}
+
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, work)
+
+
 @app.get("/api/conversations")
 async def api_conversations(gap: int = 300, limit: int = 400):
     return index_db.conversations(gap, limit)

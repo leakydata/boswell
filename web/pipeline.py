@@ -461,6 +461,15 @@ class Worker:
         except Exception:
             pass
 
+        # Embed the lines for meaning-based search. Best effort: if Ollama is
+        # not up, keyword search still works and this clip is picked up by the
+        # next rebuild rather than failing the transcription.
+        try:
+            import semantic
+            semantic.index_clip(clip, segs)
+        except Exception as e:
+            self.notify("log", text=f"semantic index skipped: {str(e)[:80]}")
+
         try:
             self.on_transcript(clip, segs, names)
         except Exception as e:
