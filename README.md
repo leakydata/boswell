@@ -632,18 +632,45 @@ Naming works at two levels, because misattribution has two different causes:
   diarized cluster, so enrolling from one misattributed line would teach the
   wrong voice.
 
+## What Omi does differently
+
+[Omi](https://github.com/BasedHardware/omi) is the closest prior art: the same
+nRF52840, the same problem. Reading their firmware settled several questions.
+
+**They vendor libopus and initialise it statically.**
+
+```c
+static uint8_t m_opus_encoder[OPUS_ENCODER_SIZE];   /* 10916 bytes */
+static OpusEncoder *const m_opus_state = (OpusEncoder *) m_opus_encoder;
+opus_encoder_init(m_opus_state, 16000, 1, OPUS_APPLICATION_RESTRICTED_LOWDELAY);
+```
+
+`opus_encoder_init` on memory the caller owns, never `opus_encoder_create`.
+`create` reaches for `opus_alloc`, and on a build with no allocator the encoder
+quietly fails to link — which is exactly what happened here.
+
+**They run Opus at 32 kbps, 16 kHz, 20 ms frames.** That is the same bitrate
+this firmware already spends on 8 kHz ADPCM. So Opus is not a bandwidth saving
+at their settings; it is roughly double the audio bandwidth for the same cost.
+That matters more for speaker identification than for battery, since voiceprints
+depend on spectral detail that 8 kHz throws away — and identification is the
+weakest part of this system, scoring 0.42–0.74 against a 0.60 threshold.
+
+**Their audio buffer is 16000 samples, one second.** Arrived at here
+independently while chasing a click in flash-buffered recordings: a NOR sector
+erase blocks long enough that anything shorter overruns.
+
+**They build on Zephyr.** That is the real obstacle to Opus here. libopus
+flattens into an Arduino library and compiles, but Arduino cannot pass per-
+library defines, only puts `src/` on the include path, and the resulting
+artifacts could not be measured with any confidence. Under nRF Connect SDK,
+Opus is a supported module and none of that applies. Opus is a good reason to
+finish the move to Zephyr rather than a reason to fight the Arduino build.
+
 ## Roadmap
 
-- Opus encoding for lower power draw. Attempted and abandoned for now:
-  libopus vendors into the Arduino build (132 C files, flattened because only
-  `src/` is on the include path, with a forced config header replacing
-  autotools), and it compiles — but it expects an allocator the Arduino build
-  never supplies, so `opus_alloc` is an implicit declaration and the encoder
-  does not end up in the binary at all. The reported 34 kB against the
-  60–100 kB a real encoder occupies gives it away. Finishing it means
-  supplying the allocator, then validating audio quality, CPU headroom at
-  64 MHz and RAM budget on hardware. Worth doing deliberately rather than
-  shipping 51,000 unvalidated lines into working firmware.
+- Opus encoding. See "What Omi does differently" below — the remaining
+  obstacle is the Arduino build, not the codec.
 - Step counting and activity detection — also hardware features of the
   LSM6DS3TR-C, at almost no CPU or code cost
 - Rolling long-term memory across conversations
