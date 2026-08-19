@@ -157,11 +157,11 @@ class Device:
         async with BleakClient(dev, timeout=30.0) as c:
             self.client = c
             # Counters are per-session: sequence numbers restart at each
-        # connection, so carrying them across made a reconnect look like
-        # tens of thousands of lost frames.
-        self._last_seq = None
-        self.state.update(connected=True, error=None, source="ble",
-                          frames=0, lost=0)
+            # connection, so carrying them across made a reconnect look
+            # like tens of thousands of lost frames.
+            self._last_seq = None
+            self.state.update(connected=True, error=None, source="ble",
+                              frames=0, lost=0)
             await self._read_info(c)
             await c.start_notify(AUDIO_UUID, self._on_audio)
             await self.set_armed(True)
