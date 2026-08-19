@@ -7,6 +7,10 @@ typedef void (*ctrl_handler_t)(uint8_t op, uint8_t arg);
 
 int  ble_audio_init(ctrl_handler_t on_ctrl);
 bool ble_audio_connected(void);
+/* Connected *and* subscribed. A host that has connected but not enabled
+ * notifications cannot receive audio, and buffering is the right move then
+ * just as much as when nothing is connected at all. */
+bool ble_audio_ready(void);
 int  ble_audio_send(const uint8_t *frame, uint16_t len);
 void ble_audio_publish_info(void);
 

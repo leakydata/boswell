@@ -13,6 +13,7 @@
 #include "ble_audio.h"
 #include "imu_tap.h"
 #include "battery.h"
+#include "qspi_store.h"
 
 #include <stdlib.h>
 #include <zephyr/kernel.h>
@@ -34,7 +35,10 @@ struct boswell_state g_state = {
     .gain         = 50,
     .led_level    = 255,
     .led_mode     = 1,           /* blink: ~1% of the power of staying lit */
-    .backlog_mode = 0,
+    /* On by default. The device is meant to be worn out of range of its
+     * host, and buffering is the difference between losing that stretch of
+     * conversation and paying for it in latency. */
+    .backlog_mode = 1,
     .mic_power_save = 1,
     .tx_power     = 4,
 };
@@ -177,6 +181,23 @@ static int cmd_tap(const struct shell *sh, size_t argc, char **argv)
     return 0;
 }
 
+static int cmd_stream(const struct shell *sh, size_t argc, char **argv)
+{
+    if (argc < 2) {
+        shell_print(sh, "streaming=%d", g_state.streaming);
+        return 0;
+    }
+    g_state.streaming = (argv[1][0] == '1' || argv[1][0] == 'o' ? 1 : 0);
+    if (argv[1][0] == 'o' && argv[1][1] == 'f') {
+        g_state.streaming = 0;
+    }
+    ble_audio_apply_conn_params(g_state.streaming);
+    ble_audio_publish_info();
+    led_state();
+    shell_print(sh, "streaming=%d", g_state.streaming);
+    return 0;
+}
+
 static int cmd_status(const struct shell *sh, size_t argc, char **argv)
 {
     ARG_UNUSED(argc); ARG_UNUSED(argv);
@@ -184,6 +205,13 @@ static int cmd_status(const struct shell *sh, size_t argc, char **argv)
                 ble_audio_connected(), g_state.streaming, g_state.gain,
                 g_state.use16k ? "16k" : "8k", mic_running());
     battery_sample();
+    uint32_t qs[4];
+    qspi_store_stats(qs);
+    shell_print(sh, "qspi ready=%d pending=%u B dropped=%u cap=%u KB",
+                qspi_store_ready(), qspi_store_pending(),
+                qspi_store_dropped(), qspi_store_capacity() / 1024);
+    shell_print(sh, "qspi pushes=%u pages=%u erases=%u wake=%u",
+                qs[0], qs[1], qs[2], qs[3]);
     shell_print(sh, "battery=%u mV (%u%%) charging=%d  imu=%d",
                 battery_mv(), battery_percent(), battery_charging(),
                 imu_tap_present());
@@ -193,6 +221,7 @@ static int cmd_status(const struct shell *sh, size_t argc, char **argv)
 SHELL_STATIC_SUBCMD_SET_CREATE(boswell_cmds,
     SHELL_CMD(dfu, NULL, "Reboot into the bootloader for flashing", cmd_dfu),
     SHELL_CMD(status, NULL, "Show capture state", cmd_status),
+    SHELL_CMD(stream, NULL, "Arm/disarm capture (on|off)", cmd_stream),
     SHELL_CMD(imu, NULL, "Re-probe the IMU and report", cmd_imu),
     SHELL_CMD(tap, NULL, "Set double-tap threshold (0-31)", cmd_tap),
     SHELL_CMD(taps, NULL, "Show tap counters", cmd_taps),
@@ -227,6 +256,12 @@ static void on_ctrl(uint8_t op, uint8_t arg)
     }
     ble_audio_publish_info();
     led_state();
+}
+
+/* Hands one replayed record to the link, from the writer thread. */
+static bool drain_to_host(const uint8_t *rec, uint16_t len)
+{
+    return ble_audio_ready() && ble_audio_send(rec, len) == 0;
 }
 
 /* A double tap toggles capture: the device is worn, so the only control that
@@ -317,6 +352,30 @@ static void capture_fn(void *a, void *b, void *c)
 
         uint16_t len = codec_build_frame(frame, count, seq,
                                          k_uptime_get_32(), flags, wire);
+
+        if (!ble_audio_ready()) {
+            /* Nobody to send to. Buffer rather than discard: the point of the
+             * flash is that walking out of range costs latency, not audio. */
+            if (g_state.backlog_mode && qspi_store_ready()) {
+                qspi_store_push(wire, (uint8_t)len);
+            }
+            seq++;
+            continue;
+        }
+
+        /* With a backlog outstanding, the frame just captured joins the back
+         * of the queue rather than going straight out: interleaving live
+         * audio with replayed audio splices two different moments of the
+         * conversation together. The writer thread replays the queue in
+         * order. Strict ordering costs latency, which is the trade the flash
+         * buffer exists to make. */
+        if (qspi_store_pending() > 0 && g_state.backlog_mode &&
+            qspi_store_ready()) {
+            qspi_store_push(wire, (uint8_t)len);
+            seq++;
+            continue;
+        }
+
         if (ble_audio_send(wire, len) == 0) {
             seq++;
         }
@@ -342,6 +401,10 @@ int main(void)
 
     err = ble_audio_init(on_ctrl);
     LOG_INF("ble_audio_init -> %d", err);
+
+    qspi_store_set_drain(drain_to_host, ble_audio_ready);
+    err = qspi_store_init();
+    LOG_INF("qspi_store_init -> %d", err);
 
     err = battery_init();
     LOG_INF("battery_init -> %d", err);

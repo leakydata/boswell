@@ -1,0 +1,61 @@
+/*
+ * Store-and-forward buffer on the 2 MB onboard QSPI flash.
+ *
+ * When capture is armed but no host is connected, encoded frames go here
+ * instead of being thrown away. On reconnect the backlog drains to the host
+ * first, then streaming resumes live. Walking out of Bluetooth range costs
+ * latency rather than the conversation.
+ *
+ * Layout is a circular byte stream of records:
+ *
+ *     [0xB5][len:u8][payload ...]
+ *
+ * The magic byte exists so the reader can resynchronise. When the writer laps
+ * the reader the oldest whole sector is dropped, which can leave the read
+ * pointer mid-record; scanning for 0xB5 and sanity-checking the length
+ * recovers the stream rather than emitting garbage.
+ *
+ * Capacity at 8 kHz ADPCM (88-byte frames, 90 bytes on flash) is roughly
+ * 23,000 frames -- about 7.7 minutes of continuous audio, or well over twice
+ * that with VAD gating on, since silence is never buffered.
+ *
+ * Writing happens while disconnected and draining while connected, so the two
+ * do not interleave; the partial page is flushed once when a drain starts.
+ */
+
+#ifndef BOSWELL_QSPI_STORE_H
+#define BOSWELL_QSPI_STORE_H
+
+#include <stdbool.h>
+#include <stdint.h>
+
+#define QSPI_MAGIC       0xB5
+#define QSPI_MAX_PAYLOAD 200
+
+int      qspi_store_init(void);
+bool     qspi_store_ready(void);
+uint32_t qspi_store_pending(void);     /* bytes not yet drained */
+uint32_t qspi_store_capacity(void);
+uint32_t qspi_store_dropped(void);     /* records lost to lapping */
+
+/* Called from the writer thread to hand a replayed record to the link.
+ * Returns false to stop draining for now (link busy or gone). Draining lives
+ * here rather than in the capture thread because popping takes the same lock
+ * the writer holds across a sector erase, and blocking capture on that
+ * overruns the microphone. */
+typedef bool (*qspi_drain_fn)(const uint8_t *rec, uint16_t len);
+/* Asked before a record is popped. Popping advances the read pointer, so a
+ * record taken out while the link cannot accept it is simply lost -- the
+ * first version discarded about fifty records a second that way, exactly
+ * cancelling out what capture was storing. */
+typedef bool (*qspi_ready_fn)(void);
+void     qspi_store_set_drain(qspi_drain_fn fn, qspi_ready_fn ready);
+
+int      qspi_store_push(const uint8_t *data, uint8_t len);
+/* Returns payload length, or 0 when empty. Flushes any partial page. */
+int      qspi_store_pop(uint8_t *out, uint8_t max_len);
+void     qspi_store_reset(void);
+/* pushes, pages written, sector erases, writer wakeups */
+void     qspi_store_stats(uint32_t out[4]);
+
+#endif

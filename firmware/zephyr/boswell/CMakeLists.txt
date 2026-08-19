@@ -9,5 +9,6 @@ target_sources(app PRIVATE
   src/ble_audio.c
   src/imu_tap.c
   src/battery.c
+  src/qspi_store.c
 )
 target_include_directories(app PRIVATE src)

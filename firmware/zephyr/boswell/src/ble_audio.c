@@ -11,6 +11,7 @@
 #include "imu_tap.h"
 #include "battery.h"
 #include "mic.h"
+#include "qspi_store.h"
 
 #include <zephyr/bluetooth/bluetooth.h>
 #include <zephyr/bluetooth/conn.h>
@@ -61,6 +62,12 @@ static ssize_t ctrl_write(struct bt_conn *conn, const struct bt_gatt_attr *attr,
 static ssize_t info_read(struct bt_conn *conn, const struct bt_gatt_attr *attr,
                          void *buf, uint16_t len, uint16_t offset)
 {
+    /* Refresh on read rather than serving whatever was last published. The
+     * backlog size and battery move continuously, and a host that connected
+     * to a device with 93 KB queued was being told the backlog was empty. */
+    if (offset == 0) {
+        ble_audio_publish_info();
+    }
     return bt_gatt_attr_read(conn, attr, buf, len, offset,
                              info_buf, sizeof(info_buf));
 }
@@ -220,6 +227,11 @@ int ble_audio_send(const uint8_t *frame, uint16_t len)
     return -ENOMEM;
 }
 
+bool ble_audio_ready(void)
+{
+    return current_conn != NULL && notify_enabled;
+}
+
 void ble_audio_publish_info(void)
 {
     uint16_t ns = g_state.use16k ? MAX_SAMPLES : MAX_SAMPLES / 2;
@@ -236,6 +248,12 @@ void ble_audio_publish_info(void)
     info_buf[6] = imu_tap_present() ? 1 : 0;
     info_buf[7] = imu_tap_addr();
     imu_tap_probe(&info_buf[8]);
+    uint32_t pend = qspi_store_pending();
+    info_buf[27] = qspi_store_ready() ? 1 : 0;
+    info_buf[28] = (uint8_t)(pend & 0xFF);
+    info_buf[29] = (uint8_t)((pend >> 8) & 0xFF);
+    info_buf[30] = (uint8_t)((pend >> 16) & 0xFF);
+    info_buf[31] = (uint8_t)(qspi_store_capacity() / 65536);
     info_buf[32] = g_state.led_level;
     info_buf[33] = g_state.led_mode;
     uint16_t mv = battery_mv();

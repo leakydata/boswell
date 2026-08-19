@@ -26,6 +26,33 @@ except Exception:
     pass   # already in the bootloader, or running the Arduino build
 PY
 sleep 5
+# Serial DFU first, then the UF2 mass-storage drive. The bootloader exposes
+# both, and which one answers is not reliable: serial DFU intermittently
+# reports "not in DFU mode" on a board that is plainly sitting in the
+# bootloader with its drive mounted. Falling back beats a failed flash.
 adafruit-nrfutil dfu genpkg --dev-type 0x0052 --sd-req 0x0123 \
   --application "$HEX" /tmp/boswell.zip >/dev/null
-adafruit-nrfutil dfu serial -pkg /tmp/boswell.zip -p /dev/ttyACM0 -b 115200 --singlebank | tail -1
+
+if [ -e /dev/ttyACM0 ] && \
+   adafruit-nrfutil dfu serial -pkg /tmp/boswell.zip -p /dev/ttyACM0 \
+     -b 115200 --singlebank 2>/dev/null | tail -1 | grep -q "Device programmed"; then
+  echo "flashed over serial DFU"
+  exit 0
+fi
+
+UF2=/tmp/boswell-zephyr-build/zephyr/zephyr.uf2
+DEV=""
+for _ in $(seq 1 20); do
+  DEV=$(lsblk -o NAME,LABEL -nr 2>/dev/null | awk '$2 ~ /^(XIAO|NRF52BOOT|FTHR)/ {print "/dev/"$1; exit}')
+  [ -n "$DEV" ] && break
+  sleep 1
+done
+[ -n "$DEV" ] || { echo "no bootloader drive and serial DFU failed" >&2; exit 1; }
+
+sudo mkdir -p /mnt/xiao
+sudo umount /mnt/xiao 2>/dev/null || true
+sudo mount "$DEV" /mnt/xiao
+sudo cp "$UF2" /mnt/xiao/ && sync
+sleep 3
+sudo umount /mnt/xiao 2>/dev/null || true
+echo "flashed over UF2"
