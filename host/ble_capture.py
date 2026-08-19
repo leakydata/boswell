@@ -123,9 +123,13 @@ async def capture(args):
         print(f"connected (mtu={client.mtu_size})")
 
         info = await client.read_gatt_char(INFO_UUID)
-        codec, is16k, frame_ms, ns_lo, ns_hi, vad = info[:6]
+        codec, is16k, frame_ms, ns_lo, ns_hi, flags = info[:6]
+        # One byte carries two flags: bit 0 is VAD gating, bit 1 is whether
+        # the board buffers to flash while no host is connected.
         print(f"  codec={codec} rate={'16k' if is16k else '8k'} "
-              f"frame={frame_ms}ms samples={ns_lo | (ns_hi << 8)} vad={vad}")
+              f"frame={frame_ms}ms samples={ns_lo | (ns_hi << 8)} "
+              f"vad={'on' if flags & 1 else 'off'} "
+              f"backlog={'on' if flags & 2 else 'off'}")
         if len(info) >= 8:
             bus, addr = info[6], info[7]
             # Bus numbering is shared by both firmwares: 1 is the internal sensor
