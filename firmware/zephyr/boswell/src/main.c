@@ -203,6 +203,15 @@ static int cmd_debounce(const struct shell *sh, size_t argc, char **argv)
     return 0;
 }
 
+static int cmd_adv(const struct shell *sh, size_t argc, char **argv)
+{
+    ARG_UNUSED(argc); ARG_UNUSED(argv);
+    int err = ble_audio_advertise_now();
+    shell_print(sh, "advertise -> %d (advertising=%d)", err,
+                ble_audio_advertising());
+    return 0;
+}
+
 static int cmd_steps(const struct shell *sh, size_t argc, char **argv)
 {
     if (argc > 1 && argv[1][0] == 'r') {
@@ -281,6 +290,7 @@ static int cmd_status(const struct shell *sh, size_t argc, char **argv)
     shell_print(sh, "cfg store=%d  tap_thresh=%u debounce=%u ms",
                 cfg_store_ready(), imu_tap_get_threshold(),
                 imu_tap_get_debounce());
+    shell_print(sh, "advertising=%d", ble_audio_advertising());
     shell_print(sh, "steps=%u tilt=%d motion=%d tap=%d ctrl10=0x%02x",
                 imu_steps(), imu_tilt(), imu_significant_motion(),
                 imu_tap_enabled(), imu_motion_config());
@@ -300,6 +310,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(boswell_cmds,
     SHELL_CMD(tap, NULL, "Set double-tap threshold (0-31)", cmd_tap),
     SHELL_CMD(taps, NULL, "Show tap counters", cmd_taps),
     SHELL_CMD(steps, NULL, "Show step count, or 'steps reset'", cmd_steps),
+    SHELL_CMD(adv, NULL, "Force advertising to restart", cmd_adv),
     SHELL_CMD(debounce, NULL, "Get/set tap debounce in ms", cmd_debounce),
     SHELL_SUBCMD_SET_END
 );

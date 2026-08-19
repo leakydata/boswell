@@ -76,6 +76,7 @@ class Device:
             "peak": 0, "rms": 0.0, "level": 0.0, "error": None,
             "clip_seconds": 0.0, "source": None,
             "recovered_seconds": 0.0, "backlog_mode": 0,
+            "steps": 0, "tilt": False, "moving": False, "tap_enabled": True,
             "led_level": 255, "led_mode": 1,
             "ring_overruns": 0,
             "battery_mv": 0, "battery_pct": 0, "charging": False,
@@ -306,6 +307,15 @@ class Device:
             self.state["rate"] = 16000 if info[1] else 8000
         if len(info) >= 8:
             self.state["imu"] = info[6] != 0
+        if len(info) >= 18:
+            # Steps and motion from the IMU's own embedded functions. The
+            # firmware reports them; nothing was reading them.
+            self.state["steps"] = (info[13] | (info[14] << 8)
+                                   | (info[15] << 16) | (info[16] << 24))
+            mflags = info[17]
+            self.state["tilt"] = bool(mflags & 1)
+            self.state["moving"] = bool(mflags & 2)
+            self.state["tap_enabled"] = bool(mflags & 4)
         if len(info) >= 34:
             self.state["led_level"] = info[32]
             self.state["led_mode"] = info[33]

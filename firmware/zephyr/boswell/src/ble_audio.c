@@ -27,6 +27,7 @@ static struct bt_uuid_128 ctrl_uuid  = BT_UUID_INIT_128(BOSWELL_UUID_CTRL);
 static struct bt_uuid_128 info_uuid  = BT_UUID_INIT_128(BOSWELL_UUID_INFO);
 
 static struct bt_conn *current_conn;
+static bool advertising;
 static bool notify_enabled;
 static ctrl_handler_t ctrl_cb;
 static uint8_t info_buf[40];
@@ -130,6 +131,7 @@ static void connected(struct bt_conn *conn, uint8_t err)
         return;
     }
     current_conn = bt_conn_ref(conn);
+    advertising = false;
     struct bt_conn_info info;
     if (bt_conn_get_info(conn, &info) == 0) {
         LOG_INF("connected: interval %u, latency %u, timeout %u",
@@ -154,20 +156,39 @@ static void connected(struct bt_conn *conn, uint8_t err)
  * Done from a work item rather than inside the callback, because the
  * connection is not fully torn down at that point and starting an advertiser
  * there can be rejected. */
-static void adv_restart_fn(struct k_work *work)
+int ble_audio_advertise_now(void)
 {
-    ARG_UNUSED(work);
+    /* Stop first. Zephyr answers -EALREADY when it still holds an advertiser
+     * set from before a connection, and treating that as success left the
+     * board neither connected nor advertising -- unreachable until it was
+     * power-cycled. Stopping is harmless when nothing is running. */
+    (void)bt_le_adv_stop();
+    advertising = false;
+
     int err = bt_le_adv_start(&adv_param, adv, ARRAY_SIZE(adv),
                               scan_rsp, ARRAY_SIZE(scan_rsp));
-    if (err == -EALREADY) {
-        return;
-    }
     if (err) {
-        LOG_ERR("re-advertising failed (%d); retrying", err);
-        k_work_reschedule(k_work_delayable_from_work(work), K_MSEC(500));
-        return;
+        LOG_ERR("advertising failed (%d)", err);
+        return err;
     }
-    LOG_INF("advertising again");
+    advertising = true;
+    LOG_INF("advertising");
+    return 0;
+}
+
+bool ble_audio_advertising(void)
+{
+    return advertising && current_conn == NULL;
+}
+
+static void adv_restart_fn(struct k_work *work)
+{
+    if (current_conn != NULL) {
+        return;                      /* somebody got in first */
+    }
+    if (ble_audio_advertise_now() != 0) {
+        k_work_reschedule(k_work_delayable_from_work(work), K_MSEC(1000));
+    }
 }
 static K_WORK_DELAYABLE_DEFINE(adv_restart, adv_restart_fn);
 
@@ -315,10 +336,8 @@ int ble_audio_init(ctrl_handler_t on_ctrl)
     }
     ble_audio_publish_info();
 
-    err = bt_le_adv_start(&adv_param, adv, ARRAY_SIZE(adv),
-                          scan_rsp, ARRAY_SIZE(scan_rsp));
+    err = ble_audio_advertise_now();
     if (err) {
-        LOG_ERR("advertising failed (%d)", err);
         return err;
     }
     LOG_INF("advertising as %s", CONFIG_BT_DEVICE_NAME);

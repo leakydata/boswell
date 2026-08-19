@@ -368,6 +368,7 @@ button.who{font-size:11px}
         <dt>Flash · IMU</dt><dd id="hw">—</dd>
         <dt>Battery</dt><dd id="batt">—</dd>
         <dt>Microphone</dt><dd id="micstate">—</dd>
+        <dt>Steps · motion</dt><dd id="motion">—</dd>
       </dl>
     </div>
 
@@ -706,6 +707,15 @@ function paint(s){
     : (s.connected ? "USB only" : "—");
   $("micstate").textContent = !s.connected ? "—"
     : (s.mic_running ? "running" : "powered down");
+  /* From the IMU's embedded pedometer and motion detectors, which run in the
+     part itself rather than costing samples on the CPU. */
+  if (st.steps !== undefined){
+    const bits = [];
+    if (st.moving) bits.push("moving");
+    if (st.tilt) bits.push("tilt");
+    $("motion").textContent = `${st.steps} step${st.steps === 1 ? "" : "s"}`
+      + (bits.length ? " · " + bits.join(" · ") : "");
+  }
   $("fastchg").setAttribute("aria-checked", !!s.fast_charge);
   const m = $("meter");
   m.style.width = Math.round((s.level||0)*100) + "%";
