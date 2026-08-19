@@ -12,6 +12,7 @@
 #include "mic.h"
 #include "ble_audio.h"
 #include "imu_tap.h"
+#include "battery.h"
 
 #include <stdlib.h>
 #include <zephyr/kernel.h>
@@ -182,6 +183,10 @@ static int cmd_status(const struct shell *sh, size_t argc, char **argv)
     shell_print(sh, "connected=%d streaming=%d gain=%u rate=%s mic=%d",
                 ble_audio_connected(), g_state.streaming, g_state.gain,
                 g_state.use16k ? "16k" : "8k", mic_running());
+    battery_sample();
+    shell_print(sh, "battery=%u mV (%u%%) charging=%d  imu=%d",
+                battery_mv(), battery_percent(), battery_charging(),
+                imu_tap_present());
     return 0;
 }
 
@@ -338,6 +343,9 @@ int main(void)
     err = ble_audio_init(on_ctrl);
     LOG_INF("ble_audio_init -> %d", err);
 
+    err = battery_init();
+    LOG_INF("battery_init -> %d", err);
+
     err = imu_tap_init(on_double_tap);
     LOG_INF("imu_tap_init -> %d", err);
 
@@ -352,9 +360,14 @@ int main(void)
                     K_PRIO_PREEMPT(10), 0, K_NO_WAIT);
     k_thread_name_set(&capture_thread, "capture");
 
+    int ticks = 0;
     while (1) {
         watchdog_feed();
         led_state();
+        if (++ticks >= 60) {        /* every ~30 s */
+            ticks = 0;
+            battery_sample();
+        }
         k_sleep(K_MSEC(500));
     }
     return 0;

@@ -113,21 +113,27 @@ int imu_tap_init(void (*cb)(void))
         return -ENODEV;
     }
 
-    /* The regulator powering the part has a 3 ms startup delay in the board
-     * devicetree; it is enabled at boot, but give the part time to answer. */
-    k_sleep(K_MSEC(20));
-
-    /* Probe both addresses. The host prints four slots because the Arduino
-     * build has two candidate buses; Zephyr routes the sensors to i2c0 only,
-     * so slots 0 and 1 are the real ones and 2 and 3 stay 0xFF. */
+    /* Probe both addresses, retrying. The supply has a startup delay and the
+     * part does not answer the instant the rail comes up: probing once at a
+     * fixed offset after boot made detection depend on how much init ran
+     * first, so adding an unrelated driver ahead of this silently broke it.
+     * Retrying removes the ordering dependency instead of hiding it.
+     *
+     * The host prints four slots because the Arduino build has two candidate
+     * buses; Zephyr routes the sensors to i2c0 only, so slots 0 and 1 are the
+     * real ones and 2 and 3 stay 0xFF. */
     const uint8_t candidates[2] = { IMU_ADDR_A, IMU_ADDR_B };
-    for (int i = 0; i < 2; i++) {
-        uint8_t who = 0xFF;
-        if (reg_read(candidates[i], REG_WHO_AM_I, &who) == 0) {
-            probe_results[i] = who;
-            /* LSM6DS3 reports 0x69, LSM6DS3TR-C reports 0x6A. */
-            if ((who == 0x6A || who == 0x69) && imu_addr == 0) {
-                imu_addr = candidates[i];
+    for (int attempt = 0; attempt < 10 && imu_addr == 0; attempt++) {
+        k_sleep(K_MSEC(20));
+        for (int i = 0; i < 2; i++) {
+            uint8_t who = 0xFF;
+            if (reg_read(candidates[i], REG_WHO_AM_I, &who) == 0) {
+                probe_results[i] = who;
+                /* LSM6DS3 reports 0x69, LSM6DS3TR-C reports 0x6A. */
+                if ((who == 0x6A || who == 0x69) && imu_addr == 0) {
+                    imu_addr = candidates[i];
+                    LOG_INF("IMU answered on attempt %d", attempt + 1);
+                }
             }
         }
     }
@@ -157,6 +163,9 @@ int imu_tap_init(void (*cb)(void))
     }
     gpio_pin_configure_dt(&irq_pin, GPIO_INPUT);
     gpio_pin_interrupt_configure_dt(&irq_pin, GPIO_INT_EDGE_TO_ACTIVE);
+    /* Remove first: reprobe() calls back into here, and adding the same
+     * callback node twice corrupts the driver's list. */
+    gpio_remove_callback(irq_pin.port, &irq_cb_data);
     gpio_init_callback(&irq_cb_data, irq_handler, BIT(irq_pin.pin));
     gpio_add_callback(irq_pin.port, &irq_cb_data);
 

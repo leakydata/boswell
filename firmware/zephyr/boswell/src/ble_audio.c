@@ -9,6 +9,8 @@
 
 #include "ble_audio.h"
 #include "imu_tap.h"
+#include "battery.h"
+#include "mic.h"
 
 #include <zephyr/bluetooth/bluetooth.h>
 #include <zephyr/bluetooth/conn.h>
@@ -236,6 +238,11 @@ void ble_audio_publish_info(void)
     imu_tap_probe(&info_buf[8]);
     info_buf[32] = g_state.led_level;
     info_buf[33] = g_state.led_mode;
+    uint16_t mv = battery_mv();
+    info_buf[34] = (uint8_t)(mv & 0xFF);
+    info_buf[35] = (uint8_t)(mv >> 8);
+    info_buf[36] = battery_percent();
+    info_buf[37] = (uint8_t)((battery_charging() ? 1 : 0) | (mic_running() ? 4 : 0));
     info_buf[39] = (uint8_t)g_state.tx_power;
 }
 
