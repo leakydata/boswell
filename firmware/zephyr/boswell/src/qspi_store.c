@@ -6,6 +6,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/ring_buffer.h>
+#include <zephyr/pm/device.h>
 
 LOG_MODULE_REGISTER(qspi, LOG_LEVEL_INF);
 
@@ -52,6 +53,41 @@ static struct k_sem    writer_wake;
 static uint32_t        stage_drops;
 static uint32_t        n_pages, n_erases, n_wake, n_pushes;
 
+/* The flash is put to sleep when there is nothing to write and nothing left
+ * to replay, which on a device streaming live is nearly all the time.
+ *
+ * Suspended deliberately rather than through runtime PM: this part wants
+ * about 8 ms to leave deep power-down, and paying that per page write would
+ * cost more throughput than the writer has to spare. Idle is the only safe
+ * place to spend it. */
+#define FLASH_IDLE_MS 5000
+static bool    flash_suspended;
+static int64_t last_io_ms;
+
+static void flash_wake(void)
+{
+    last_io_ms = k_uptime_get();
+    if (!flash_suspended) {
+        return;
+    }
+    if (pm_device_action_run(flash_dev, PM_DEVICE_ACTION_RESUME) == 0) {
+        flash_suspended = false;
+    }
+}
+
+static void flash_maybe_sleep(void)
+{
+    if (flash_suspended || (w_pos - r_pos) > 0 || !ring_buf_is_empty(&stage)) {
+        return;
+    }
+    if (k_uptime_get() - last_io_ms < FLASH_IDLE_MS) {
+        return;
+    }
+    if (pm_device_action_run(flash_dev, PM_DEVICE_ACTION_SUSPEND) == 0) {
+        flash_suspended = true;
+    }
+}
+
 static void writer_fn(void *a, void *b, void *cc);
 static qspi_drain_fn drain_cb;
 static qspi_ready_fn ready_cb;
@@ -73,6 +109,7 @@ static uint32_t addr_of(int64_t pos)
 
 static int read_wrapped(int64_t pos, uint8_t *dst, uint32_t len)
 {
+    flash_wake();
     uint32_t at    = addr_of(pos);
     uint32_t first = capacity - at;
 
@@ -97,6 +134,7 @@ static int read_wrapped(int64_t pos, uint8_t *dst, uint32_t len)
  */
 static int erase_ahead(void)
 {
+    flash_wake();
     while (w_pos + PAGE > erased_pos) {
         int err = flash_erase(flash_dev, addr_of(erased_pos), SECTOR);
         if (err) {
@@ -127,6 +165,7 @@ static int flush_page(void)
     if (err) {
         return err;
     }
+    flash_wake();
     err = flash_write(flash_dev, addr_of(w_pos), page_buf, PAGE);
     if (err) {
         LOG_ERR("write at 0x%x failed (%d)", addr_of(w_pos), err);
@@ -256,6 +295,8 @@ static void writer_fn(void *a, void *b, void *cc)
                 break;
             }
         }
+
+        flash_maybe_sleep();
     }
 }
 
