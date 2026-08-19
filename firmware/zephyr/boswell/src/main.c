@@ -16,6 +16,9 @@
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/watchdog.h>
 #include <zephyr/usb/usb_device.h>
+#include <zephyr/sys/reboot.h>
+#include <hal/nrf_power.h>
+#include <zephyr/shell/shell.h>
 #include <zephyr/logging/log.h>
 
 LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
@@ -96,20 +99,71 @@ static inline void watchdog_feed(void)
     }
 }
 
+/* ---------------------------------------------------------------- dfu
+
+ * Zephyr does not implement the 1200-baud touch the Arduino core used, so
+ * without this every firmware update needs someone physically double-tapping
+ * RESET. The Adafruit bootloader checks GPREGRET on boot: 0x57 keeps it in
+ * UF2 mode instead of jumping to the application. Setting that and resetting
+ * makes flashing scriptable again.
+ */
+#define DFU_MAGIC_UF2 0x57
+
+static void reboot_to_bootloader(void)
+{
+    LOG_INF("rebooting into the bootloader");
+    nrf_power_gpregret_set(NRF_POWER, 0, DFU_MAGIC_UF2);
+    k_sleep(K_MSEC(100));
+    sys_reboot(SYS_REBOOT_COLD);
+}
+
+/* Shell commands, so the board can be driven without Bluetooth. */
+static int cmd_dfu(const struct shell *sh, size_t argc, char **argv)
+{
+    ARG_UNUSED(argc); ARG_UNUSED(argv);
+    shell_print(sh, "rebooting into the bootloader");
+    reboot_to_bootloader();
+    return 0;
+}
+
+static int cmd_status(const struct shell *sh, size_t argc, char **argv)
+{
+    ARG_UNUSED(argc); ARG_UNUSED(argv);
+    shell_print(sh, "connected=%d streaming=%d gain=%u rate=%s mic=%d",
+                ble_audio_connected(), g_state.streaming, g_state.gain,
+                g_state.use16k ? "16k" : "8k", mic_running());
+    return 0;
+}
+
+SHELL_STATIC_SUBCMD_SET_CREATE(boswell_cmds,
+    SHELL_CMD(dfu, NULL, "Reboot into the bootloader for flashing", cmd_dfu),
+    SHELL_CMD(status, NULL, "Show capture state", cmd_status),
+    SHELL_SUBCMD_SET_END
+);
+SHELL_CMD_REGISTER(boswell, &boswell_cmds, "Boswell commands", NULL);
+
 /* ---------------------------------------------------------------- control */
 
 static void on_ctrl(uint8_t op, uint8_t arg)
 {
     switch (op) {
-    case CTRL_STREAM:       g_state.streaming = arg != 0; break;
+    case CTRL_STREAM:
+        g_state.streaming = arg != 0;
+        ble_audio_apply_conn_params(g_state.streaming);
+        break;
     case CTRL_RATE:         g_state.use16k = arg != 0;    break;
-    case CTRL_GAIN:         g_state.gain = arg;           break;
+    case CTRL_GAIN:         g_state.gain = arg; mic_set_gain(arg); break;
     case CTRL_VAD:          g_state.vad_enabled = arg != 0; break;
     case CTRL_VAD_THRESH:   g_state.vad_thresh = arg * 32; break;
     case CTRL_BACKLOG_MODE: g_state.backlog_mode = arg ? 1 : 0; break;
     case CTRL_LED_LEVEL:    g_state.led_level = arg;      break;
     case CTRL_LED_MODE:     g_state.led_mode = arg ? 1 : 0; break;
     case CTRL_MIC_SAVE:     g_state.mic_power_save = arg ? 1 : 0; break;
+    case CTRL_DFU:
+        if (arg == 0x5A) {          /* deliberately awkward, not a stray write */
+            reboot_to_bootloader();
+        }
+        break;
     default: break;
     }
     ble_audio_publish_info();
@@ -142,13 +196,19 @@ static void capture_fn(void *a, void *b, void *c)
             k_sleep(K_MSEC(50));
             continue;
         }
-        if (!mic_running() && mic_start() != 0) {
-            k_sleep(K_MSEC(200));
-            continue;
+        if (!mic_running()) {
+            if (mic_start() != 0) {
+                k_sleep(K_MSEC(200));
+                continue;
+            }
+            mic_set_gain(g_state.gain);   /* configuration resets it */
         }
 
         int got = mic_read_frame(raw, MAX_SAMPLES, K_MSEC(200));
         if (got <= 0) {
+            /* Must sleep, not just continue. dmic_read can fail immediately,
+             * and a bare continue here spins without ever yielding. */
+            k_sleep(K_MSEC(5));
             continue;
         }
 
@@ -204,6 +264,7 @@ int main(void)
     (void)usb_enable(NULL);
     k_sleep(K_MSEC(1500));          /* let a host enumerate before we talk */
     LOG_INF("Boswell starting");
+    LOG_INF("shell ready: 'boswell dfu' reboots for flashing");
 
     int err = mic_init();
     LOG_INF("mic_init -> %d", err);
@@ -216,7 +277,10 @@ int main(void)
 
     k_thread_create(&capture_thread, capture_stack, CAPTURE_STACK,
                     capture_fn, NULL, NULL, NULL,
-                    K_PRIO_COOP(7), 0, K_NO_WAIT);
+                    /* Preemptible, and deliberately below the Bluetooth RX
+                     * thread. As a cooperative thread it outranked the host
+                     * stack and could only be descheduled by blocking. */
+                    K_PRIO_PREEMPT(10), 0, K_NO_WAIT);
     k_thread_name_set(&capture_thread, "capture");
 
     while (1) {

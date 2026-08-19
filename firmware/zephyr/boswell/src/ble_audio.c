@@ -27,10 +27,18 @@ static bool notify_enabled;
 static ctrl_handler_t ctrl_cb;
 static uint8_t info_buf[40];
 
+static void apply_conn_params(bool streaming);
+
 static void ccc_changed(const struct bt_gatt_attr *attr, uint16_t value)
 {
     ARG_UNUSED(attr);
     notify_enabled = (value == BT_GATT_CCC_NOTIFY);
+    LOG_INF("notifications %s", notify_enabled ? "on" : "off");
+    /* Deliberately does not renegotiate here. The host subscribes and then
+     * immediately sends CTRL_STREAM, and Zephyr rejects a second parameter
+     * update while the first is still in flight (-EBUSY). Firing one here
+     * meant the streaming request was silently dropped and the link ran the
+     * whole capture at the 200 ms idle interval. */
 }
 
 static ssize_t ctrl_write(struct bt_conn *conn, const struct bt_gatt_attr *attr,
@@ -83,6 +91,11 @@ static const struct bt_data scan_rsp[] = {
 
 /* Audio wants a tight connection interval; an idle link does not, and holding
  * one spends radio power on nothing. */
+void ble_audio_apply_conn_params(bool streaming)
+{
+    apply_conn_params(streaming);
+}
+
 static void apply_conn_params(bool streaming)
 {
     if (!current_conn) {
@@ -91,7 +104,13 @@ static void apply_conn_params(bool streaming)
     struct bt_le_conn_param p = streaming
         ? *BT_LE_CONN_PARAM(6, 12, 0, 400)      /* 7.5-15 ms */
         : *BT_LE_CONN_PARAM(80, 160, 0, 400);   /* 100-200 ms */
-    bt_conn_le_param_update(current_conn, &p);
+    int err = bt_conn_le_param_update(current_conn, &p);
+    if (err) {
+        LOG_WRN("conn param update (%u-%u) rejected: %d",
+                p.interval_min, p.interval_max, err);
+    } else {
+        LOG_INF("requested interval %u-%u", p.interval_min, p.interval_max);
+    }
 }
 
 static void connected(struct bt_conn *conn, uint8_t err)
@@ -101,8 +120,18 @@ static void connected(struct bt_conn *conn, uint8_t err)
         return;
     }
     current_conn = bt_conn_ref(conn);
-    LOG_INF("connected");
-    apply_conn_params(g_state.streaming);
+    struct bt_conn_info info;
+    if (bt_conn_get_info(conn, &info) == 0) {
+        LOG_INF("connected: interval %u, latency %u, timeout %u",
+                info.le.interval, info.le.latency, info.le.timeout);
+    } else {
+        LOG_INF("connected");
+    }
+    /* Deliberately does NOT touch connection parameters here. The central is
+     * still doing ATT service discovery, and dropping to a 200 ms interval
+     * mid-discovery stretches it past the host's connect timeout, so the link
+     * comes up and then appears to hang. Renegotiate once the client
+     * subscribes, which means discovery has finished. */
 }
 
 static void disconnected(struct bt_conn *conn, uint8_t reason)
@@ -118,9 +147,28 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
      * the whole point of the flash buffer. */
 }
 
+static bool le_param_req(struct bt_conn *conn, struct bt_le_conn_param *param)
+{
+    ARG_UNUSED(conn);
+    LOG_INF("param request: interval %u-%u latency %u timeout %u",
+            param->interval_min, param->interval_max,
+            param->latency, param->timeout);
+    return true;
+}
+
+static void le_param_updated(struct bt_conn *conn, uint16_t interval,
+                             uint16_t latency, uint16_t timeout)
+{
+    ARG_UNUSED(conn);
+    LOG_INF("params now: interval %u latency %u timeout %u",
+            interval, latency, timeout);
+}
+
 BT_CONN_CB_DEFINE(conn_callbacks) = {
     .connected = connected,
     .disconnected = disconnected,
+    .le_param_req = le_param_req,
+    .le_param_updated = le_param_updated,
 };
 
 bool ble_audio_connected(void)
@@ -133,9 +181,23 @@ int ble_audio_send(const uint8_t *frame, uint16_t len)
     if (!ble_audio_connected()) {
         return -ENOTCONN;
     }
-    /* Attribute 1 is the audio value. A full queue returns -ENOMEM and the
-     * caller keeps the frame rather than dropping it silently. */
-    return bt_gatt_notify(current_conn, &boswell_svc.attrs[1], frame, len);
+    /* Attribute 1 is the audio value.
+     *
+     * A full transmit queue returns -ENOMEM. Returning that to the caller and
+     * moving on drops the frame, and because the sequence number does not
+     * advance the host sees no gap -- it reported zero loss while half the
+     * audio never left the device. Wait for a slot instead: the microphone
+     * slab holds about a second, so brief backpressure costs latency rather
+     * than audio. */
+    for (int attempt = 0; attempt < 20; attempt++) {
+        int err = bt_gatt_notify(current_conn, &boswell_svc.attrs[1], frame, len);
+        if (err != -ENOMEM && err != -EAGAIN) {
+            return err;
+        }
+        k_sleep(K_MSEC(2));
+    }
+    LOG_WRN("notify queue stayed full; dropping a frame");
+    return -ENOMEM;
 }
 
 void ble_audio_publish_info(void)

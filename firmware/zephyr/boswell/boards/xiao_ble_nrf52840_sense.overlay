@@ -22,3 +22,21 @@
 		compatible = "zephyr,cdc-acm-uart";
 	};
 };
+
+/*
+ * Power the microphone.
+ *
+ * The board's own DTS declares the mic's supply as a regulator-fixed node on
+ * P1.10, but -- unlike the IMU's, right next to it -- without regulator-boot-on,
+ * and nothing references it: the PDM driver has no regulator support and the
+ * pdm0 node has no supply property. So the regulator is never enabled, the
+ * microphone stays unpowered, and PDM samples a floating pin. That reads as
+ * full-scale noise, which is exactly the 99.7% clipping measured on the first
+ * Zephyr captures. Enable it the same way the board enables the IMU's.
+ */
+&{/msm261d3526hicpm-c-en} {
+	compatible = "regulator-fixed-sync", "regulator-fixed";
+	regulator-boot-on;
+	regulator-always-on;
+	startup-delay-us = <3000>;
+};

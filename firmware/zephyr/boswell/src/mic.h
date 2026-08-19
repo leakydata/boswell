@@ -6,6 +6,7 @@
 int  mic_init(void);
 int  mic_start(void);
 void mic_stop(void);
+void mic_set_gain(uint8_t gain);
 bool mic_running(void);
 
 /* Pull one frame of PCM. Blocks up to `timeout` for the DMIC driver to hand

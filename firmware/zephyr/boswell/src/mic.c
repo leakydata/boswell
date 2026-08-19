@@ -12,6 +12,7 @@
 #include "mic.h"
 
 #include <zephyr/audio/dmic.h>
+#include <nrfx_pdm.h>
 #include <zephyr/device.h>
 #include <zephyr/logging/log.h>
 
@@ -66,6 +67,20 @@ int mic_init(void)
     return 0;
 }
 
+/* The DMIC API has no gain control and the devicetree binding exposes none,
+ * so the PDM peripheral's gain register is set directly. Same units as the
+ * Arduino build: 0x00 is -20 dB, 0x28 is 0 dB, 0x50 is +20 dB, half a dB per
+ * step. Must be applied after configuration, which resets it. */
+void mic_set_gain(uint8_t gain)
+{
+    if (gain > 0x50) {
+        gain = 0x50;
+    }
+    nrf_pdm_gain_set(NRF_PDM0, gain, gain);
+    LOG_INF("PDM gain %u (%d.%u dB)", gain,
+            ((int)gain - 0x28) / 2, (((int)gain - 0x28) & 1) ? 5 : 0);
+}
+
 int mic_start(void)
 {
     if (running) {
@@ -106,7 +121,13 @@ int mic_read_frame(int16_t *dst, int max_samples, k_timeout_t timeout)
     if (err) {
         return 0;
     }
-    int samples = MIN((int)(size / sizeof(int16_t)), max_samples);
+    int samples = (int)(size / sizeof(int16_t));
+    if (samples > max_samples) {
+        /* Would silently discard the tail of the block, which is lost audio.
+         * Loud rather than quiet: the frame size and block size must agree. */
+        LOG_WRN("block of %d samples exceeds frame of %d", samples, max_samples);
+        samples = max_samples;
+    }
     memcpy(dst, buf, samples * sizeof(int16_t));
     k_mem_slab_free(&mic_slab, buf);
     return samples;

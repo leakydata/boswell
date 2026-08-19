@@ -33,7 +33,7 @@ for i in $(seq 1 "$ITERS"); do
   # Serial DFU: CDC only, no drive.
   if lsusb 2>/dev/null | grep -q "2886:0045" && [ -e /dev/ttyACM0 ]; then
     echo "[$((i/10))s] serial DFU on /dev/ttyACM0"
-    sleep 1
+    sleep 3          # the CDC port needs a moment before DFU will talk to it
     if adafruit-nrfutil dfu serial -pkg "$ZIP" -p /dev/ttyACM0 -b 115200 --singlebank; then
       echo "flashed via serial DFU"
       exit 0

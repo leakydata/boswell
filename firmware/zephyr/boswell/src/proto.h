@@ -55,6 +55,9 @@ enum {
     CTRL_FAST_CHARGE  = 0x0C,
     CTRL_MIC_SAVE     = 0x0D,
     CTRL_TX_POWER     = 0x0E,
+    /* Reboot into the bootloader. Argument must be 0x5A so a stray write
+     * cannot take the device offline. */
+    CTRL_DFU          = 0x0F,
 };
 
 struct boswell_state {
