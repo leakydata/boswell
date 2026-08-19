@@ -739,6 +739,58 @@ async def api_transcript(name: str):
     return JSONResponse(json.load(open(tp)))
 
 
+def _rematch_clips(names=None):
+    """Re-run speaker matching from stored voiceprint embeddings.
+
+    Diarized ids are per-clip: SPEAKER_00 in one clip is not SPEAKER_00 in the
+    next. What ties a voice together across a conversation is the voiceprint,
+    and that comparison only happened at transcription time -- so naming
+    someone labelled the one clip the chip was tapped on and left the other
+    fifty-three saying SPEAKER_00.
+
+    Every transcript keeps its embeddings, so this is a few hundred dot
+    products rather than a re-transcription. Names set by hand are never
+    overwritten by a guess.
+    """
+    if names is None:
+        names = [f[:-5] + ".wav" for f in os.listdir(pipeline.TRANSCRIPTS)
+                 if f.endswith(".json")] if os.path.isdir(pipeline.TRANSCRIPTS) else []
+    changed = 0
+    for name in names:
+        tp = pipeline.transcript_path(name)
+        if not os.path.exists(tp):
+            continue
+        try:
+            t = json.load(open(tp))
+        except Exception:
+            continue
+        emb = t.get("embeddings")
+        if not emb:
+            continue
+        ident = pipeline.identify(emb)
+        dirty = False
+        for sid, rec in ident.items():
+            cur = t.setdefault("speakers", {}).setdefault(sid, {})
+            if cur.get("manual"):
+                continue                      # a hand-set name always wins
+            if rec.get("name") != cur.get("name") or rec.get("score") != cur.get("score"):
+                cur["name"] = rec.get("name")
+                cur["score"] = rec.get("score")
+                dirty = True
+        if dirty:
+            json.dump(t, open(tp, "w"))
+            index_db.upsert_clip(name)
+            changed += 1
+    return changed
+
+
+@app.post("/api/rematch")
+async def api_rematch(body: dict | None = None):
+    names = (body or {}).get("names") if isinstance(body, dict) else None
+    changed = _rematch_clips(names)
+    return {"rematched": changed}
+
+
 @app.post("/api/conversation")
 async def api_conversation(body: dict):
     """Every transcribed line of one conversation, in order.
@@ -757,7 +809,7 @@ async def api_conversation(body: dict):
         raise HTTPException(400, "need a list of clip names")
 
     segments, clips = [], []
-    speakers: dict = {}
+    clip_speakers: dict = {}
     missing = 0
 
     for name in names:
@@ -784,27 +836,60 @@ async def api_conversation(body: dict):
         clips.append({"name": name, "started": started, "seconds": round(dur, 2),
                       "transcribed": True, "lines": len(segs)})
 
-        # Merge speaker records. A later clip's score wins only if it is more
-        # confident, so one weak match cannot rename a whole conversation.
-        for sid, rec in (t.get("speakers") or {}).items():
-            cur = speakers.get(sid)
-            if cur is None or (rec.get("score") or 0) > (cur.get("score") or 0):
-                speakers[sid] = rec
+        # Speaker records are kept per clip, not merged into one map.
+        #
+        # A diarized id only means something inside the clip it came from:
+        # SPEAKER_00 here is not SPEAKER_00 in the next clip. Merging them
+        # made one clip's SPEAKER_00 being Nathan label every other clip's
+        # SPEAKER_00 as Nathan too, which put the wrong name on other
+        # people's speech -- three different ids in one conversation all
+        # resolved to the same person.
+        clip_speakers[name] = t.get("speakers") or {}
 
         for i, seg in enumerate(segs):
+            sid = seg.get("speaker")
+            rec = (t.get("speakers") or {}).get(sid) or {}
             segments.append({
                 "clip": name,
                 "index": i,
                 "start": seg.get("start", 0.0),
                 "end": seg.get("end", 0.0),
                 "text": seg.get("text", ""),
-                "speaker": seg.get("speaker"),
+                "speaker": sid,
                 "speaker_name": seg.get("speaker_name"),
+                # Resolved against this line's own clip, so the reader never
+                # has to guess which clip an id belonged to.
+                "name": seg.get("speaker_name") or rec.get("name"),
+                "score": rec.get("score"),
                 "edited": bool(seg.get("edited")),
             })
 
-    return {"clips": clips, "segments": segments, "speakers": speakers,
-            "not_transcribed": missing}
+    # Voices offered for naming. People already identified collapse to one
+    # entry each; anyone still unknown stays tied to the clip and id that can
+    # actually be named, since that pair is what /api/label takes.
+    voices: dict = {}
+    for seg in segments:
+        secs = max(0.0, (seg["end"] or 0) - (seg["start"] or 0))
+        # A line diarization gave no speaker at all cannot be named: there is
+        # no id for /api/label to attach a name to. Offering it as a voice
+        # produced a chip reading "null".
+        if not seg["name"] and not seg["speaker"]:
+            continue
+        if seg["name"]:
+            key = "name:" + seg["name"]
+            v = voices.setdefault(key, {"name": seg["name"], "seconds": 0.0,
+                                        "clip": seg["clip"], "speaker": seg["speaker"]})
+        else:
+            key = f"{seg['clip']}:{seg['speaker']}"
+            v = voices.setdefault(key, {"name": None, "seconds": 0.0,
+                                        "clip": seg["clip"], "speaker": seg["speaker"]})
+        v["seconds"] += secs
+    for v in voices.values():
+        v["seconds"] = round(v["seconds"], 1)
+    ranked = sorted(voices.values(), key=lambda v: -v["seconds"])
+
+    return {"clips": clips, "segments": segments, "voices": ranked,
+            "clip_speakers": clip_speakers, "not_transcribed": missing}
 
 
 @app.delete("/api/clip/{name}")
@@ -1151,11 +1236,24 @@ async def api_label(body: dict):
     json.dump(t, open(tp, "w"), indent=2, allow_nan=False)
     index_db.upsert_clip(clip)
 
+    # A name is only useful once it reaches the rest of the recordings. The
+    # voiceprint that was just enrolled is what ties this voice to the other
+    # clips it appears in, so re-resolve them from their stored embeddings --
+    # otherwise naming somebody labelled one clip out of fifty-four and every
+    # other line kept saying SPEAKER_00.
+    propagated = 0
+    if enrolled:
+        try:
+            propagated = _rematch_clips()
+        except Exception as e:
+            print(f"rematch after naming failed: {e}", flush=True)
+
     device.event("log", text=(f"named {spk} as {name}"
                               + (f", voiceprint now {count} sample(s)" if enrolled
                                  else " (voiceprint unchanged)")))
     return {"named": True, "name": name, "enrolled": enrolled,
-            "samples": count, "reason": reason, "speakers": t["speakers"]}
+            "samples": count, "reason": reason, "speakers": t["speakers"],
+            "propagated": propagated}
 
 
 @app.websocket("/ingest")

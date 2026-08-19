@@ -1409,31 +1409,36 @@ async function openConversation(conv){
     return;
   }
 
-  const named = data.speakers || {};
-  const ids = [...new Set(data.segments.map(x => x.speaker).filter(Boolean))];
+  const voices = data.voices || [];
+  /* Colour by the resolved identity, not by the diarized id: the same id
+     means different people in different clips, so colouring by id put one
+     colour on several voices. */
+  const keyOf = seg => seg.name || `${seg.clip}:${seg.speaker}`;
+  const ids = [...new Set(data.segments.map(keyOf))];
   assignSpeakerColors(ids);
 
-  /* Same chips as a single clip, so naming someone works from here too. */
-  for (const id of ids){
+  /* One chip per voice. A named person appears once however many clips they
+     turn up in; anyone still unknown stays attached to the clip and id that
+     can actually be named, because that pair is what naming takes. */
+  for (const v of voices){
     const chip = document.createElement("button");
-    const known = named[id] && named[id].name;
-    const col = colorOf(spkColors[id]);
-    chip.className = "who" + (known ? " named" : "");
+    const key = v.name || `${v.clip}:${v.speaker}`;
+    const col = colorOf(spkColors[key]);
+    chip.className = "who" + (v.name ? " named" : "");
     chip.style.borderColor = col; chip.style.color = col;
     chip.style.background = "transparent";
-    const secs = data.segments.filter(x => x.speaker === id)
-                              .reduce((a, x) => a + (x.end - x.start), 0);
-    chip.textContent = known ? `${known} · ${secs.toFixed(0)}s`
-                             : `${id} · ${secs.toFixed(0)}s · tap to name`;
-    /* Naming re-reads the conversation rather than a clip, so the new name
-       shows on every line it applies to and not just the one clip it came
-       from. */
-    chip.onclick = () => nameSpeaker(data.segments.find(x => x.speaker === id).clip,
-                                     id, known || "", () => openConversation(conv));
+    const secs = v.seconds < 10 ? v.seconds.toFixed(1) : v.seconds.toFixed(0);
+    chip.textContent = v.name ? `${v.name} · ${secs}s`
+                              : `${v.speaker} · ${secs}s · tap to name`;
+    chip.title = v.name ? "" : `unnamed in ${v.clip}`;
+    /* Re-reads the whole conversation afterwards: enrolling a voiceprint
+       propagates the name to every clip it matches, not just this one. */
+    chip.onclick = () => nameSpeaker(v.clip, v.speaker, v.name || "",
+                                     () => openConversation(conv));
     $("cvSpeakers").appendChild(chip);
   }
 
-  if (!ids.length && data.segments.length){
+  if (!voices.length && data.segments.length){
     const note = document.createElement("div");
     note.className = "empty";
     note.style.textAlign = "left";
@@ -1485,9 +1490,8 @@ async function openConversation(conv){
 
     const line = document.createElement("div");
     line.className = "cvline";
-    const who = seg.speaker_name || (named[seg.speaker] && named[seg.speaker].name)
-                || seg.speaker || "";
-    const col = seg.speaker ? colorOf(spkColors[seg.speaker]) : "var(--faint)";
+    const who = seg.name || seg.speaker || "";
+    const col = seg.speaker ? colorOf(spkColors[keyOf(seg)]) : "var(--faint)";
 
     const t = document.createElement("button");
     t.className = "cvt";
@@ -1503,7 +1507,9 @@ async function openConversation(conv){
     /* Clicking the words edits the line, the same as in a single clip. */
     body.querySelector(".cvtext").style.cursor = "text";
     body.querySelector(".cvtext").onclick = () =>
-      editLine(seg.clip, seg.index, seg, ids, named);
+      editLine(seg.clip, seg.index, seg,
+               Object.keys(data.clip_speakers[seg.clip] || {}),
+               data.clip_speakers[seg.clip] || {});
 
     line.appendChild(t);
     line.appendChild(body);
