@@ -47,11 +47,17 @@ class Device:
             "backlog_seconds": 0.0, "qspi_mb": 0, "imu": False,
             "peak": 0, "rms": 0.0, "level": 0.0, "error": None,
             "clip_seconds": 0.0, "source": None,
+            "recovered_seconds": 0.0, "backlog_mode": 0,
         }
         self.relay: WebSocket | None = None
         self.listeners: set[asyncio.Queue] = set()
         self.client: BleakClient | None = None
         self._pcm: list[np.ndarray] = []
+        # Frames recovered from flash arrive out of order relative to live
+        # audio, so they are collected separately and written as their own
+        # clip rather than spliced into the middle of a conversation.
+        self._recovered: list[np.ndarray] = []
+        self._recovered_at = 0.0
         self._last_seq = None
         self._want = False
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -79,6 +85,17 @@ class Device:
         phone relaying on our behalf. The format is identical either way."""
         self._on_audio(None, data)
 
+    def take_recovered(self):
+        if not self._recovered:
+            return None
+        audio = np.concatenate(self._recovered)
+        self._recovered = []
+        self.state["recovered_seconds"] = 0.0
+        os.makedirs(DATA, exist_ok=True)
+        path = os.path.join(DATA, f"recovered_{int(time.time())}.wav")
+        sf.write(path, audio, self.state["rate"], subtype="PCM_16")
+        return path
+
     def maybe_rotate(self):
         """Close off a clip once it is long enough. Runs for every source, so
         relayed audio is segmented and transcribed exactly like local audio."""
@@ -92,6 +109,23 @@ class Device:
             if auto_transcribe:
                 worker.submit(name)
         return path
+
+    def maybe_rotate_recovered(self):
+        """Close a recovered clip once the flash has stopped feeding us, or
+        once it has grown long enough to stand on its own."""
+        if not self._recovered:
+            return
+        secs = sum(len(p) for p in self._recovered) / self.state["rate"]
+        quiet_for = time.time() - self._recovered_at
+        if secs < SEG_SECONDS and quiet_for < 3.0:
+            return
+        path = self.take_recovered()
+        if path:
+            name = os.path.basename(path)
+            self.event("clip", path=name)
+            self.event("log", text=f"recovered {secs:.0f}s from device flash")
+            if auto_transcribe:
+                worker.submit(name)
 
     def _on_audio(self, _sender, data: bytearray):
         if len(data) < HEADER_LEN:
@@ -107,6 +141,12 @@ class Device:
         self._last_seq = seq
 
         pcm = decode_block(payload, predictor, index, nsamples)
+        if flags & 0x08:                     # recovered from device flash
+            self._recovered.append(pcm)
+            self._recovered_at = time.time()
+            self.state["recovered_seconds"] = round(
+                sum(len(p) for p in self._recovered) / self.state["rate"], 1)
+            return
         self._pcm.append(pcm)
         self.state["frames"] += 1
 
@@ -216,6 +256,18 @@ class Device:
         if await self._ctrl(0x03, max(0, min(80, g))):
             self.event("log", text=f"gain set to {g}")
 
+    async def clear_buffer(self):
+        if await self._ctrl(0x08, 1):
+            self.event("log", text="discarded the device buffer")
+
+    async def set_backlog_mode(self, live_first: bool):
+        self.state["backlog_mode"] = 1 if live_first else 0
+        if await self._ctrl(0x09, 1 if live_first else 0):
+            self.event("log", text="backlog: " +
+                       ("live first, recover alongside" if live_first
+                        else "drain before live audio"))
+        self.publish()
+
     async def set_vad(self, on: bool):
         if await self._ctrl(0x04, 1 if on else 0):
             self.event("log", text=f"VAD {'on' if on else 'off'}")
@@ -274,6 +326,7 @@ async def rotator():
         await asyncio.sleep(0.5)
         try:
             device.maybe_rotate()
+            device.maybe_rotate_recovered()
         except Exception:
             pass
 
@@ -648,6 +701,10 @@ async def ws(sock: WebSocket):
                 await device.set_gain(int(msg.get("value", 50)))
             elif cmd == "vad":
                 await device.set_vad(bool(msg.get("on", False)))
+            elif cmd == "clear_buffer":
+                await device.clear_buffer()
+            elif cmd == "backlog_mode":
+                await device.set_backlog_mode(bool(msg.get("live_first")))
             elif cmd == "save":
                 path = device.take_clip()
                 device.event("log", text=f"saved {os.path.basename(path)}" if path

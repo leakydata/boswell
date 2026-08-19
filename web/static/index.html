@@ -207,6 +207,9 @@ audio{display:none}
       <div id="drainWrap" hidden>
         <div class="barlabel"><span>Buffered on device</span><span id="drainNote"></span></div>
         <div class="meter drain"><i id="drainBar"></i></div>
+        <div class="btns" style="margin-top:10px">
+          <button id="bDiscard" class="dang">Discard buffer</button>
+        </div>
       </div>
     </div>
 
@@ -237,6 +240,14 @@ audio{display:none}
       <label class="row">Voice activity gating
         <span class="switch" id="vad" role="switch" aria-checked="false" tabindex="0"></span>
       </label>
+      <label class="row">Play catch-up live
+        <span class="switch" id="blmode" role="switch" aria-checked="false" tabindex="0"></span>
+      </label>
+      <div style="font-size:12.5px;color:var(--muted);margin-top:-4px">
+        Off: finish the buffered audio first, so the conversation stays in order.
+        On: hear live audio immediately and recover the buffer alongside it —
+        recovered audio is saved as its own clip.
+      </div>
       <div class="err" id="err"></div>
     </div>
 
@@ -399,7 +410,9 @@ function paint(s){
     $("drainWrap").hidden = false;
     const doneFrac = drainPeak > 0 ? 1 - (left / drainPeak) : 0;
     $("drainBar").style.width = Math.round(Math.max(0, Math.min(1, doneFrac)) * 100) + "%";
-    $("drainNote").textContent = `${left.toFixed(0)}s left · ${Math.round(doneFrac*100)}%`;
+    const rec = s.recovered_seconds || 0;
+    $("drainNote").textContent = `${left.toFixed(0)}s left · ${Math.round(doneFrac*100)}%`
+      + (rec > 0.5 ? ` · recovering ${rec.toFixed(0)}s` : "");
   } else {
     $("drainWrap").hidden = true;
     drainPeak = 0;
@@ -410,6 +423,8 @@ function paint(s){
   $("bDis").disabled = !s.connected && !s.scanning;
   $("gain").disabled = !s.connected;
   $("bConn").disabled = s.connected || s.scanning;
+  $("bDiscard").disabled = !s.connected;
+  $("blmode").setAttribute("aria-checked", !!s.backlog_mode);
   $("err").textContent = s.error || "";
 }
 
@@ -807,6 +822,20 @@ function toggleVad(){
   send({cmd:"vad", on});
 }
 vad.onclick = toggleVad;
+
+$("bDiscard").onclick = () => {
+  send({cmd:"clear_buffer"});
+  log("discarding the device buffer");
+};
+
+const blmode = $("blmode");
+function toggleBl(){
+  const on = blmode.getAttribute("aria-checked") !== "true";
+  blmode.setAttribute("aria-checked", on);
+  send({cmd:"backlog_mode", live_first:on});
+}
+blmode.onclick = toggleBl;
+blmode.onkeydown = e => { if (e.key === " " || e.key === "Enter"){ e.preventDefault(); toggleBl(); } };
 vad.onkeydown = e => { if (e.key === " " || e.key === "Enter") { e.preventDefault(); toggleVad(); } };
 </script>
 </body>

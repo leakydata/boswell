@@ -133,6 +133,23 @@ matters: when the writer laps the reader the oldest sector is dropped, which
 can leave the read pointer mid-record, and scanning for the magic recovers the
 stream instead of emitting garbage.
 
+When a host reconnects to a backlog you choose what happens, from the Device
+tab:
+
+- **Drain first** (default) — finish the buffered audio before any live audio,
+  so the conversation reaches you in order. Live capture waits, which on a long
+  outage means a real delay before you hear the present.
+- **Play catch-up live** — live audio starts immediately and one buffered frame
+  is sent alongside each live frame, so the backlog empties at roughly realtime
+  without ever starving the live stream. Recovered frames are flagged and saved
+  as their own `recovered_*.wav`, since they belong to an earlier moment and
+  splicing them into live audio would produce a recording of something that
+  never happened.
+- **Discard buffer** — throw the backlog away and go live at once.
+
+Measured in catch-up mode: live audio advanced 5.0 s → 9.5 s of wall clock while
+recovered audio advanced 1.0 s → 5.2 s and the backlog fell 76.1 s → 72.1 s.
+
 The status LED reports where audio is going: blue advertising, **magenta
 buffering to flash**, cyan draining the backlog, green streaming live, red
 connected but disarmed.

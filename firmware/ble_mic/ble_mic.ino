@@ -112,6 +112,10 @@ static uint32_t lastTapMs   = 0;
 static bool     qspiOk      = false;
 static uint8_t  drainBuf[MAX_FRAME_LEN];
 static uint8_t  drainLen    = 0;
+/* 0 = drain the backlog before any live audio (conversation stays in order)
+ * 1 = live audio first, backlog trickled out alongside it (hear the present
+ *     immediately; recovered audio arrives out of order and flagged). */
+static uint8_t  backlogMode = 0;
 
 // ---------------------------------------------------------------- pdm
 
@@ -197,6 +201,7 @@ static void publishInfo() {
   info[24] = (uint8_t)(az & 0xFF);
   info[25] = (uint8_t)((az >> 8) & 0xFF);
   info[26] = accelPeakByte();
+  info[5] |= (uint8_t)(backlogMode << 1);   // bit1 carries the backlog mode
   info[27] = qspiOk ? 1 : 0;
   uint32_t pend = qspiOk ? qspiPendingBytes() : 0;
   info[28] = (uint8_t)(pend & 0xFF);
@@ -237,6 +242,13 @@ void ctrl_write_cb(uint16_t handle, BLECharacteristic *chr,
       break;
     case 0x07:
       imuSetTapThreshold(data[1]);
+      break;
+    case 0x08:                      // discard whatever is buffered on flash
+      if (qspiOk) qspiClear();
+      drainLen = 0;
+      break;
+    case 0x09:
+      backlogMode = data[1] ? 1 : 0;
       break;
   }
   publishInfo();
@@ -301,9 +313,20 @@ static void drainBacklog() {
       drainLen = qspiPop(drainBuf, sizeof(drainBuf));
       if (drainLen == 0) return;
     }
+    drainBuf[2] |= 0x08;          // flag: this frame came out of flash
     if (audioChar.notify(drainBuf, drainLen)) drainLen = 0;
     else return;
   }
+}
+
+/* One frame only, so live audio keeps its slot on the radio. */
+static void drainOne() {
+  if (drainLen == 0) {
+    drainLen = qspiPop(drainBuf, sizeof(drainBuf));
+    if (drainLen == 0) return;
+  }
+  drainBuf[2] |= 0x08;
+  if (audioChar.notify(drainBuf, drainLen)) drainLen = 0;
 }
 
 static void stashPreRoll(const int16_t *samples, int n, uint16_t sq) {
@@ -418,9 +441,11 @@ void loop() {
     return;
   }
 
-  // Clear the backlog before resuming live audio, so the host receives the
-  // conversation in order rather than with a hole in the middle.
-  if (connected && qspiOk && (qspiPendingBytes() || drainLen)) {
+  const bool haveBacklog = connected && qspiOk && (qspiPendingBytes() || drainLen);
+
+  // Mode 0: finish the backlog first, so the host receives the conversation in
+  // order rather than with a hole in the middle. Live audio waits.
+  if (haveBacklog && backlogMode == 0) {
     drainBacklog();
     return;
   }
@@ -480,4 +505,8 @@ void loop() {
 
   emitFrame(frameSamples, outSamples, seq, voiced);
   seq++;
+
+  // Mode 1: one recovered frame per live frame, so the backlog empties at
+  // roughly realtime without ever starving the live stream.
+  if (haveBacklog && backlogMode == 1) drainOne();
 }
