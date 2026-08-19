@@ -63,6 +63,10 @@ class Device:
         # clip rather than spliced into the middle of a conversation.
         self._recovered: list[np.ndarray] = []
         self._recovered_at = 0.0
+        self._recovered_start = None
+        # Mapping between the device's uptime clock and wall time.
+        self._clock_host = None
+        self._clock_dev = 0
         self._last_seq = None
         self._want = False
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -97,8 +101,16 @@ class Device:
         self._recovered = []
         self.state["recovered_seconds"] = 0.0
         os.makedirs(DATA, exist_ok=True)
-        path = os.path.join(DATA, f"recovered_{int(time.time())}.wav")
+        # Name it for when it was spoken, not when it reached us.
+        when = int(self._recovered_start or time.time())
+        self._recovered_start = None
+        path = os.path.join(DATA, f"recovered_{when}.wav")
         sf.write(path, audio, self.state["rate"], subtype="PCM_16")
+        # Set the file's mtime too, since the UI orders and dates by it.
+        try:
+            os.utime(path, (when, when))
+        except OSError:
+            pass
         return path
 
     def maybe_rotate(self):
@@ -135,7 +147,8 @@ class Device:
     def _on_audio(self, _sender, data: bytearray):
         if len(data) < HEADER_LEN:
             return
-        seq, flags, index, predictor, nsamples = struct.unpack("<HBBhH", data[:HEADER_LEN])
+        seq, flags, index, predictor, nsamples, t_ms = struct.unpack(
+            "<HBBhHI", data[:HEADER_LEN])
         payload = data[HEADER_LEN:]
         if len(payload) < nsamples // 2:
             return
@@ -145,10 +158,20 @@ class Device:
                 self.state["lost"] += gap
         self._last_seq = seq
 
+        # Anchor the device clock to ours on the first live frame, so a frame
+        # replayed from flash can be placed at the moment it was captured
+        # rather than the moment it was recovered.
+        if not (flags & 0x08):
+            self._clock_host = time.time()
+            self._clock_dev = t_ms
+
         pcm = decode_block(payload, predictor, index, nsamples)
         if flags & 0x08:                     # recovered from device flash
             self._recovered.append(pcm)
             self._recovered_at = time.time()
+            if self._clock_host is not None:
+                when = self._clock_host - (self._clock_dev - t_ms) / 1000.0
+                self._recovered_start = min(self._recovered_start or when, when)
             self.state["recovered_seconds"] = round(
                 sum(len(p) for p in self._recovered) / self.state["rate"], 1)
             return

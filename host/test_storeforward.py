@@ -44,7 +44,7 @@ async def main(a):
     def on_audio(_s, data):
         nonlocal t_first
         if len(data) < HEADER_LEN: return
-        _q, _f, idx, pred, ns = struct.unpack("<HBBhH", data[:HEADER_LEN])
+        _q, _f, idx, pred, ns, _t = struct.unpack("<HBBhHI", data[:HEADER_LEN])
         p = data[HEADER_LEN:]
         if len(p) >= ns // 2:
             if t_first is None: t_first = time.time()

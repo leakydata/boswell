@@ -24,7 +24,7 @@ CTRL_UUID    = "4b1a0003-8f2c-4d5e-9a3b-1c7e6f8d0a21"
 INFO_UUID    = "4b1a0004-8f2c-4d5e-9a3b-1c7e6f8d0a21"
 
 DEVICE_NAME = "XIAO-MIC"
-HEADER_LEN = 8
+HEADER_LEN = 12   # seq,flags,state,nsamples,t_ms
 
 INDEX_TABLE = [-1, -1, -1, -1, 2, 4, 6, 8, -1, -1, -1, -1, 2, 4, 6, 8]
 
@@ -98,7 +98,8 @@ async def capture(args):
     def on_audio(_sender, data: bytearray):
         if len(data) < HEADER_LEN:
             return
-        seq, flags, index, predictor, nsamples = struct.unpack("<HBBhH", data[:HEADER_LEN])
+        seq, flags, index, predictor, nsamples, t_ms = struct.unpack(
+            "<HBBhHI", data[:HEADER_LEN])
 
         payload = data[HEADER_LEN:]
         if len(payload) < nsamples // 2:

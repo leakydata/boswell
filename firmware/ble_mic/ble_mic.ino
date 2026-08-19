@@ -31,12 +31,21 @@
  *   [3] stepIndex u8   ADPCM state for THIS frame
  *   [4] predictor i16  ADPCM state for THIS frame
  *   [6] nsamples  u16
- *   [8] nibbles   nsamples/2 bytes
+ *   [8] t_ms      u32  device uptime when this frame was captured
+ *  [12] nibbles   nsamples/2 bytes
+ *
+ * The timestamp is what makes recovered audio land in the right place. Without
+ * it the host can only stamp arrival time, so a conversation buffered to flash
+ * at 2pm and drained at 4pm is filed as 4pm -- wrong for the one thing this
+ * device exists to do.
  */
 
 #include <bluefruit.h>
+#include <Adafruit_LittleFS.h>
+#include <InternalFileSystem.h>
 #include <PDM.h>
 #include "ima_adpcm.h"
+#include "settings.h"
 #include "imu_tap.h"
 #include "qspi_store.h"
 
@@ -67,7 +76,7 @@ static const int  DEFAULT_VAD_TH = 1120;  // measured: otsu split +3 dB
 
 // 320 samples = 20 ms @ 16 kHz; 160 bytes of nibbles + 8 byte header
 #define MAX_SAMPLES     (PDM_RATE / 1000 * FRAME_MS)
-#define HEADER_LEN      8
+#define HEADER_LEN      12
 #define MAX_FRAME_LEN   (HEADER_LEN + MAX_SAMPLES / 2)
 
 // ---------------------------------------------------------------- uuids
@@ -110,6 +119,7 @@ static bool     connected   = false;
 static int      vadHangover = 0;
 static int16_t  preRoll[PREROLL_FRAMES][MAX_SAMPLES];
 static uint16_t preRollSeq[PREROLL_FRAMES];
+static uint32_t preRollStamp[PREROLL_FRAMES];
 static int      preRollLen[PREROLL_FRAMES];
 static int      preRollCount = 0;
 static int      preRollHead  = 0;
@@ -228,6 +238,46 @@ static inline uint32_t ringAvailable() {
   return (h >= t) ? (h - t) : (RING_SAMPLES - t + h);
 }
 
+// ---------------------------------------------------------------- settings
+
+/* Everything tunable lives here so it survives a reboot. Re-tuning gain and
+ * thresholds every time the battery runs down is the kind of friction that
+ * makes a device annoying to actually wear. */
+static int8_t txPower = 4;
+static uint32_t settingsDirtyAt = 0;
+
+static void settingsSave() {
+  Settings cfg = { SETTINGS_MAGIC, SETTINGS_VER, (uint8_t)currentGain,
+                   (uint8_t)use16k, (uint8_t)vadEnabled, (uint16_t)vadThresh,
+                   ledLevel, ledMode, backlogMode, micPowerSave,
+                   (uint8_t)tapEnabled, (uint8_t)fastCharge, txPower };
+  InternalFS.remove(SETTINGS_PATH);
+  Adafruit_LittleFS_Namespace::File f(InternalFS);
+  if (f.open(SETTINGS_PATH, Adafruit_LittleFS_Namespace::FILE_O_WRITE)) {
+    f.write((const uint8_t *)&cfg, sizeof(cfg));
+    f.close();
+  }
+}
+
+/* Coalesce writes: a slider dragged across its range should cost one flash
+ * write when it settles, not forty on the way. */
+static void settingsTouch() { settingsDirtyAt = millis(); }
+
+static void settingsService() {
+  if (settingsDirtyAt && millis() - settingsDirtyAt > 3000) {
+    settingsDirtyAt = 0;
+    settingsSave();
+  }
+}
+
+static bool settingsLoad(Settings *out) {
+  Adafruit_LittleFS_Namespace::File f(InternalFS);
+  if (!f.open(SETTINGS_PATH, Adafruit_LittleFS_Namespace::FILE_O_READ)) return false;
+  bool ok = f.read((uint8_t *)out, sizeof(*out)) == (int)sizeof(*out);
+  f.close();
+  return ok && out->magic == SETTINGS_MAGIC && out->version == SETTINGS_VER;
+}
+
 // ---------------------------------------------------------------- leds
 
 /* XIAO RGB LED is common-anode: LOW lights a channel, so PWM is inverted. */
@@ -299,7 +349,7 @@ static void applyGain(int gain) {
 }
 
 static void publishInfo() {
-  uint8_t info[39];
+  uint8_t info[40];
   info[0] = 1;                          // codec: 1 = IMA ADPCM
   info[1] = use16k ? 1 : 0;
   info[2] = FRAME_MS;
@@ -332,6 +382,7 @@ static void publishInfo() {
   info[31] = (uint8_t)(qspiOk ? (qspiSizeBytes() >> 16) : 0);   // MiB-ish
   info[32] = ledLevel;
   info[33] = ledMode;
+  info[39] = (uint8_t)txPower;
   {
     uint32_t ro = ringOverruns;
     info[38] = (uint8_t)(ro > 255 ? 255 : ro);
@@ -354,6 +405,7 @@ void ctrl_write_cb(uint16_t handle, BLECharacteristic *chr,
       vadHangover = 0;
       preRollCount = 0;
       ringOverruns = 0;          // count per capture session, not since boot
+      applyConnInterval();
       updateLed();
       // Stale audio would be sent as if it were live; start from now.
       ringTail = ringHead;
@@ -383,6 +435,12 @@ void ctrl_write_cb(uint16_t handle, BLECharacteristic *chr,
     case 0x09:
       backlogMode = data[1] ? 1 : 0;
       break;
+    case 0x0E: {                     // radio transmit power, dBm
+      int8_t p = (int8_t)data[1];
+      txPower = p;
+      Bluefruit.setTxPower(p);
+      break;
+    }
     case 0x0A:                       // brightness, 0 = off
       ledLevel = data[1];
       updateLed();
@@ -400,7 +458,17 @@ void ctrl_write_cb(uint16_t handle, BLECharacteristic *chr,
       updateLed();
       break;
   }
+  settingsTouch();
   publishInfo();
+}
+
+/* Audio needs a tight connection interval; an idle link does not. Holding
+ * 7.5-15 ms while disarmed spends radio power on nothing. */
+static void applyConnInterval() {
+  BLEConnection *conn = Bluefruit.Connection(0);
+  if (!conn) return;
+  if (streaming) conn->requestConnectionParameter(6, 12);      // 7.5-15 ms
+  else           conn->requestConnectionParameter(80, 160);    // 100-200 ms
 }
 
 void connect_cb(uint16_t handle) {
@@ -408,7 +476,7 @@ void connect_cb(uint16_t handle) {
   connected = true;
   // 244 bytes of ATT payload covers the largest 16 kHz frame in one packet.
   conn->requestMtuExchange(247);
-  conn->requestConnectionParameter(6, 12);   // 7.5–15 ms, units of 1.25 ms
+  applyConnInterval();
   updateLed();
 }
 
@@ -422,6 +490,10 @@ void disconnect_cb(uint16_t handle, uint8_t reason) {
 
 
 // ---------------------------------------------------------------- framing
+
+/* Capture time for the frame being built. Set from millis() for live audio;
+ * for a frame replayed from flash it is whatever was stored with it. */
+static uint32_t frameStampMs = 0;
 
 static uint16_t buildFrame(const int16_t *samples, int n, uint16_t sq, bool voiced) {
   AdpcmState st = { samples[0], 0 };
@@ -443,12 +515,18 @@ static uint16_t buildFrame(const int16_t *samples, int n, uint16_t sq, bool voic
   frameBuf[5] = (predictor0 >> 8) & 0xFF;
   frameBuf[6] = n & 0xFF;
   frameBuf[7] = (n >> 8) & 0xFF;
+  uint32_t ts = frameStampMs;
+  frameBuf[8]  = (uint8_t)(ts & 0xFF);
+  frameBuf[9]  = (uint8_t)((ts >> 8) & 0xFF);
+  frameBuf[10] = (uint8_t)((ts >> 16) & 0xFF);
+  frameBuf[11] = (uint8_t)((ts >> 24) & 0xFF);
 
   return (uint16_t)(HEADER_LEN + n / 2);
 }
 
 /* Live to the host when there is one, otherwise into flash. */
 static void emitFrame(const int16_t *samples, int n, uint16_t sq, bool voiced) {
+  frameStampMs = millis();
   uint16_t len = buildFrame(samples, n, sq, voiced);
   if (connected) audioChar.notify(frameBuf, len);
   else if (qspiOk) qspiPush(frameBuf, (uint8_t)len);
@@ -480,6 +558,7 @@ static void drainOne() {
 
 static void stashPreRoll(const int16_t *samples, int n, uint16_t sq) {
   memcpy(preRoll[preRollHead], samples, n * sizeof(int16_t));
+  preRollStamp[preRollHead] = millis();
   preRollSeq[preRollHead] = sq;
   preRollLen[preRollHead] = n;
   preRollHead = (preRollHead + 1) % PREROLL_FRAMES;
@@ -488,6 +567,12 @@ static void stashPreRoll(const int16_t *samples, int n, uint16_t sq) {
 
 /* Emit the buffered pre-speech frames oldest-first, so their sequence numbers
  * stay contiguous with the frame that opened the gate. */
+static void sendFrame(const int16_t *samples, int n, uint16_t sq, bool voiced) {
+  uint16_t len = buildFrame(samples, n, sq, voiced);
+  if (connected) audioChar.notify(frameBuf, len);
+  else if (qspiOk) qspiPush(frameBuf, (uint8_t)len);
+}
+
 static void flushPreRoll() {
   int start = (preRollHead - preRollCount + PREROLL_FRAMES) % PREROLL_FRAMES;
   for (int i = 0; i < preRollCount; i++) {
@@ -498,6 +583,21 @@ static void flushPreRoll() {
 }
 
 // ---------------------------------------------------------------- setup
+
+/* Two firmware hangs during development left the board dark with no way back
+ * except a manual reset. A watchdog turns that into a two-second gap. The
+ * timeout is generous so a slow flash erase or a DFU session is never mistaken
+ * for a hang; the bootloader feeds it during an update. */
+#define WDT_SECONDS 30
+
+static void watchdogBegin() {
+  NRF_WDT->CONFIG = (WDT_CONFIG_HALT_Pause << WDT_CONFIG_HALT_Pos) |
+                    (WDT_CONFIG_SLEEP_Run  << WDT_CONFIG_SLEEP_Pos);
+  NRF_WDT->CRV = (32768UL * WDT_SECONDS) - 1;      // 32.768 kHz clock
+  NRF_WDT->RREN = (WDT_RREN_RR0_Enabled << WDT_RREN_RR0_Pos);
+  NRF_WDT->TASKS_START = 1;
+}
+static inline void watchdogFeed() { NRF_WDT->RR[0] = WDT_RR_RR_Reload; }
 
 void setup() {
   Serial.begin(115200);
@@ -512,13 +612,13 @@ void setup() {
     Serial.println("ERR: PDM.begin failed");
     while (1) { delay(100); }
   }
-  PDM.setGain(DEFAULT_GAIN);   // must follow begin() -- see applyGain()
+  PDM.setGain(currentGain);    // must follow begin() -- see applyGain()
 
   // Must precede begin(): raises the SoftDevice event length and queue depth,
   // without which sustained notify throughput collapses.
   Bluefruit.configPrphBandwidth(BANDWIDTH_MAX);
   Bluefruit.begin(1, 0);
-  Bluefruit.setTxPower(4);
+  Bluefruit.setTxPower(txPower);
   Bluefruit.setName("XIAO-MIC");
   Bluefruit.autoConnLed(false);   // we drive the RGB LED ourselves
   Bluefruit.Periph.setConnectCallback(connect_cb);
@@ -539,7 +639,7 @@ void setup() {
 
   infoChar.setProperties(CHR_PROPS_READ);
   infoChar.setPermission(SECMODE_OPEN, SECMODE_NO_ACCESS);
-  infoChar.setMaxLen(39);
+  infoChar.setMaxLen(40);
   infoChar.begin();
   publishInfo();
 
@@ -553,15 +653,39 @@ void setup() {
   Bluefruit.Advertising.start(0);
 
   updateLed();
+  watchdogBegin();
   Serial.println("XIAO-MIC advertising");
 
   // Last, deliberately: the radio must come up even if the IMU misbehaves.
+  InternalFS.begin();
+  {
+    Settings cfg;
+    if (settingsLoad(&cfg)) {
+      currentGain  = cfg.gain;
+      use16k       = cfg.use16k;
+      vadEnabled   = cfg.vadEnabled;
+      vadThresh    = cfg.vadThresh;
+      ledLevel     = cfg.ledLevel;
+      ledMode      = cfg.ledMode;
+      backlogMode  = cfg.backlogMode;
+      micPowerSave = cfg.micPowerSave;
+      tapEnabled   = cfg.tapEnabled;
+      txPower      = cfg.txPower;
+      Serial.println("settings: restored");
+    } else {
+      Serial.println("settings: defaults");
+    }
+  }
+
   pinMode(VBAT_ENABLE, OUTPUT);
   digitalWrite(VBAT_ENABLE, HIGH);
   pinMode(PIN_CHG, INPUT);
   analogReference(AR_INTERNAL_3_0);
   analogReadResolution(12);
-  setFastCharge(false);
+  {
+    Settings cfg;
+    setFastCharge(settingsLoad(&cfg) ? cfg.fastCharge : false);
+  }
   batteryMv = readBatteryMv();
 
   qspiOk = qspiBegin();
@@ -599,6 +723,8 @@ void loop() {
       ringTail = ringHead;
       vadHangover = 0;
       preRollCount = 0;
+      applyConnInterval();
+      settingsTouch();
       updateLed();
     }
   }
