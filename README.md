@@ -554,6 +554,27 @@ that case — a 25 ms flash every 3 seconds is under 1% duty with no PWM running
 at all, which beats any practical dim setting while still showing the device is
 alive and what it is doing. Off costs nothing.
 
+## The agent
+
+Transcripts are reviewed by a local LLM without being asked, and whatever is
+worth keeping is filed as a task, a calendar event, a durable fact or a note.
+Everything lands in `data/agent/*.jsonl` and shows up under **Notes**.
+
+**It waits for the conversation to end rather than firing per clip.** Clips are
+30 seconds, which is half a sentence with no context; reasoning over that
+produces sixty disconnected passes instead of one useful one. Transcripts
+accumulate and the agent runs after 90 seconds of quiet — or after 15 minutes
+regardless, for someone who does not stop talking.
+
+Model defaults to `gpt-oss:20b`. It is not the strongest option available, but
+it is ~13 GB and fits beside Whisper's ~9 GB on a 24 GB card; `glm-4.7-flash`
+is the better MoE and at 19 GB the two cannot coexist. Any tool-capable Ollama
+model can be selected from the Notes tab.
+
+From a single 35-second test conversation it produced three tasks, one calendar
+event and two facts, correctly separating "order a battery" from "order a
+charger rated for 100 mA" and attributing each to the speaker who said it.
+
 ## Correcting transcripts
 
 Tap any line to fix the words. Corrections are safe: voiceprints come from

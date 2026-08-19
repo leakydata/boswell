@@ -337,9 +337,12 @@ def transcript_path(clip):
 
 
 class Worker:
-    def __init__(self, notify=None):
+    def __init__(self, notify=None, on_transcript=None):
         self.q: queue.Queue = queue.Queue()
         self.notify = notify or (lambda *a, **k: None)
+        # Called with a finished transcript so downstream consumers -- the
+        # agent -- do not have to poll the filesystem for new work.
+        self.on_transcript = on_transcript or (lambda *a, **k: None)
         self.busy = None
         self._asr = None
         self._align = None
@@ -445,3 +448,8 @@ class Worker:
         json.dump({"clip": clip, "created": time.time(), "segments": segs,
                    "speakers": names, "embeddings": embeddings},
                   open(transcript_path(clip), "w"), indent=2, allow_nan=False)
+
+        try:
+            self.on_transcript(clip, segs, names)
+        except Exception as e:
+            self.notify("log", text=f"agent intake failed: {str(e)[:100]}")

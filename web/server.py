@@ -30,6 +30,7 @@ from ble_capture import (AUDIO_UUID, CTRL_UUID, INFO_UUID, DEVICE_NAME,
                          HEADER_LEN, decode_block)
 from bleak import BleakClient, BleakScanner
 
+import agent_runner
 import pipeline
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -315,7 +316,11 @@ class Device:
 
 auto_transcribe = True
 device = Device()
-worker = pipeline.Worker(notify=lambda kind, **kw: device.event(kind, **kw))
+agent = agent_runner.ConversationAgent(
+    notify=lambda kind, **kw: device.event(kind, **kw))
+worker = pipeline.Worker(
+    notify=lambda kind, **kw: device.event(kind, **kw),
+    on_transcript=agent.add)
 
 
 def clip_info(name):
@@ -756,6 +761,51 @@ async def api_revert_edits(name: str):
     t["edited"] = False
     json.dump(t, open(tp, "w"), indent=2)
     return {"reverted": n}
+
+
+@app.get("/api/agent")
+async def api_agent_status():
+    st = agent.status()
+    st["last_result"] = agent.last_result
+    return st
+
+
+@app.post("/api/agent")
+async def api_agent_config(body: dict):
+    if "enabled" in body:
+        agent.enabled = bool(body["enabled"])
+        device.event("log", text=f"agent {'on' if agent.enabled else 'off'}")
+    if "model" in body and body["model"]:
+        agent.model = str(body["model"])
+    if "idle_seconds" in body:
+        agent.idle_seconds = max(10.0, float(body["idle_seconds"]))
+    return agent.status()
+
+
+@app.post("/api/agent/run")
+async def api_agent_run():
+    """Stop waiting for silence and review what has accumulated now."""
+    if not agent.pending_chars():
+        raise HTTPException(400, "nothing waiting to be reviewed")
+    agent.flush_now()
+    return {"ok": True, "pending_chars": agent.pending_chars()}
+
+
+@app.get("/api/agent/items")
+async def api_agent_items(kind: str | None = None, limit: int = 200):
+    return agent_runner.load_items(kind, limit)
+
+
+@app.get("/api/models")
+async def api_models():
+    """Ollama models that support tool calling."""
+    try:
+        import requests as rq
+        r = rq.get("http://localhost:11434/api/tags", timeout=5)
+        names = [m["name"] for m in r.json().get("models", [])]
+    except Exception:
+        return {"models": [], "error": "ollama not reachable"}
+    return {"models": sorted(names)}
 
 
 @app.get("/api/speakers")

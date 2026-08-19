@@ -217,6 +217,16 @@ button.who{font-size:11px}
 .who:hover{border-color:var(--accent)}
 .spk{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px}
 .empty{color:var(--muted);font-size:14.5px;padding:22px 0;text-align:center}
+.item{border:1px solid var(--rule);border-radius:8px;padding:13px;margin-bottom:9px}
+.item .k{font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;
+  padding:2px 7px;border-radius:3px;font-weight:600;margin-right:8px}
+.item .k.tasks{background:color-mix(in srgb,var(--accent) 18%,transparent);color:var(--accent)}
+.item .k.events{background:color-mix(in srgb,var(--warn) 18%,transparent);color:var(--warn)}
+.item .k.notes{background:var(--sunk);color:var(--muted)}
+.item .k.facts{background:color-mix(in srgb,var(--ok) 18%,transparent);color:var(--ok)}
+.item .t1{font-weight:600;font-size:15px;margin-bottom:3px}
+.item .t2{font-size:14px;color:var(--ink-2)}
+.item .meta{font-family:var(--mono);font-size:11px;color:var(--faint);margin-top:6px}
 .person{border:1px solid var(--rule);border-radius:8px;padding:14px;margin-bottom:12px}
 .person h3{font-size:17px;font-weight:600;margin:0 0 2px;display:flex;
   justify-content:space-between;align-items:baseline;gap:10px}
@@ -268,6 +278,7 @@ button.who{font-size:11px}
     <button id="tabDev" role="tab" aria-selected="true">Device</button>
     <button id="tabRec" role="tab" aria-selected="false">Recordings</button>
     <button id="tabPpl" role="tab" aria-selected="false">People</button>
+    <button id="tabNotes" role="tab" aria-selected="false">Notes</button>
   </nav>
 
   <div class="view" id="viewDev">
@@ -453,6 +464,39 @@ button.who{font-size:11px}
     </div>
   </div>
 
+  <div class="view" id="viewNotes" hidden>
+    <div class="card">
+      <h2>From your conversations</h2>
+      <p class="intro" style="font-size:14px;color:var(--muted);margin:0 0 12px">
+        Transcripts are reviewed automatically once a conversation ends — after a
+        stretch of silence, not per clip, so the model sees a whole exchange
+        rather than half a sentence.</p>
+      <div class="toolbar2" style="margin-bottom:12px">
+        <span class="count" id="agentState"></span>
+        <button id="bAgentRun">Review now</button>
+        <button id="bAgentRefresh">Refresh</button>
+      </div>
+      <label class="row" style="margin-top:0">Review conversations automatically
+        <span class="switch" id="agentOn" role="switch" aria-checked="true" tabindex="0"></span>
+      </label>
+      <label class="row">Model
+        <select class="filter" id="agentModel" aria-label="Agent model"></select>
+      </label>
+    </div>
+    <div class="card">
+      <div class="toolbar" style="margin-bottom:12px">
+        <select class="filter" id="itemKind" aria-label="Filter by type">
+          <option value="">Everything</option>
+          <option value="tasks">Tasks</option>
+          <option value="events">Events</option>
+          <option value="notes">Notes</option>
+          <option value="facts">Facts</option>
+        </select>
+      </div>
+      <div id="itemList"><div class="empty">loading…</div></div>
+    </div>
+  </div>
+
 <div id="scrim"></div>
 <div id="editor" role="dialog" aria-modal="true" aria-labelledby="edT">
   <h3 id="edT">Correct this line</h3>
@@ -622,6 +666,11 @@ function connect(){
     else if (m.type === "log") log(m.text);
     else if (m.type === "clip"){ log("clip written: " + m.path);
       if (!$("viewRec").hidden && $("detail").hidden) loadClips(); }
+    else if (m.type === "agent"){
+      if (m.status === "running") log(`reviewing ${m.clips} clip(s)…`);
+      else log(`review done — ${m.actions} item(s)` + (m.said ? `: ${m.said}` : ""));
+      if (!$("viewNotes").hidden){ loadAgent(); loadItems(); }
+    }
     else if (m.type === "job"){
       log(`transcription ${m.status}: ${m.clip}` + (m.error ? " — " + m.error : ""));
       if (m.status === "done"){
@@ -638,16 +687,89 @@ connect();
 let current = null;
 function showTab(which){
   for (const [t, v, k] of [["tabDev","viewDev","dev"],["tabRec","viewRec","rec"],
-                           ["tabPpl","viewPpl","ppl"]]){
+                           ["tabPpl","viewPpl","ppl"],["tabNotes","viewNotes","notes"]]){
     $(t).setAttribute("aria-selected", which === k);
     $(v).hidden = which !== k;
   }
   if (which === "rec") loadClips();
   if (which === "ppl"){ loadPeople(); loadVocab(); }
+  if (which === "notes"){ loadAgent(); loadItems(); }
 }
 $("tabDev").onclick = () => showTab("dev");
 $("tabRec").onclick = () => showTab("rec");
 $("tabPpl").onclick = () => showTab("ppl");
+$("tabNotes").onclick = () => showTab("notes");
+
+async function loadAgent(){
+  try{
+    const a = await (await fetch("/api/agent")).json();
+    $("agentOn").setAttribute("aria-checked", !!a.enabled);
+    const waiting = a.pending_clips
+      ? `${a.pending_clips} clip(s) waiting` +
+        (a.seconds_idle != null
+          ? ` · reviewing after ${Math.max(0, Math.round(a.idle_seconds - a.seconds_idle))}s of quiet`
+          : "")
+      : "nothing waiting";
+    $("agentState").textContent = a.busy ? `reviewing ${a.busy}…` : waiting;
+    $("bAgentRun").disabled = !a.pending_clips || !!a.busy;
+    const sel = $("agentModel");
+    if (!sel.options.length){
+      const m = await (await fetch("/api/models")).json();
+      for (const name of (m.models || [])){
+        const o = document.createElement("option");
+        o.value = o.textContent = name;
+        sel.appendChild(o);
+      }
+    }
+    sel.value = a.model;
+  }catch(e){}
+}
+
+$("agentOn").onclick = async () => {
+  const on = $("agentOn").getAttribute("aria-checked") !== "true";
+  $("agentOn").setAttribute("aria-checked", on);
+  await fetch("/api/agent", {method:"POST", headers:{"Content-Type":"application/json"},
+                             body: JSON.stringify({enabled:on})});
+};
+$("agentModel").onchange = async () => {
+  await fetch("/api/agent", {method:"POST", headers:{"Content-Type":"application/json"},
+                             body: JSON.stringify({model: $("agentModel").value})});
+  log(`agent model: ${$("agentModel").value}`);
+};
+$("bAgentRun").onclick = async () => {
+  const r = await fetch("/api/agent/run", {method:"POST"});
+  log(r.ok ? "reviewing now" : "nothing waiting to review");
+  loadAgent();
+};
+$("bAgentRefresh").onclick = () => { loadAgent(); loadItems(); };
+$("itemKind").onchange = () => loadItems();
+
+async function loadItems(){
+  const el = $("itemList");
+  try{
+    const kind = $("itemKind").value;
+    const items = await (await fetch("/api/agent/items" + (kind ? `?kind=${kind}` : ""))).json();
+    if (!items.length){
+      el.innerHTML = '<div class="empty">Nothing yet. Have a conversation near the device.</div>';
+      return;
+    }
+    el.innerHTML = "";
+    for (const it of items){
+      const d = document.createElement("div");
+      d.className = "item";
+      const title = it.title || it.text || it.subject || "(untitled)";
+      const body  = it.body || it.fact || [it.start, it.due, it.owner].filter(Boolean).join(" · ") || "";
+      d.innerHTML =
+        `<div class="t1"><span class="k ${it._kind}">${it._kind.replace(/s$/,"")}</span>${esc(title)}</div>` +
+        (body ? `<div class="t2">${esc(body)}</div>` : "") +
+        `<div class="meta">${esc(it._recorded_at || "")}` +
+        (it.tags && it.tags.length ? " · " + esc(it.tags.join(", ")) : "") + `</div>`;
+      el.appendChild(d);
+    }
+  }catch(e){ el.innerHTML = '<div class="empty">could not load</div>'; }
+}
+
+setInterval(() => { if (!$("viewNotes").hidden) loadAgent(); }, 5000);
 
 async function loadVocab(){
   try{

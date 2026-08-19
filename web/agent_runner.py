@@ -1,0 +1,203 @@
+#!/usr/bin/env python3
+"""
+Runs the local LLM over finished conversations, without being asked.
+
+Clips arrive every 30 seconds, which is far too small a unit to reason over —
+half a sentence, no context. So transcripts accumulate instead, and the agent
+fires when the conversation actually ends: a stretch of silence long enough
+that whatever came before is complete. That produces one coherent pass over a
+real exchange rather than sixty disconnected ones.
+"""
+
+import json
+import os
+import threading
+import time
+
+import requests
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+DATA = os.path.abspath(os.path.join(HERE, "..", "data"))
+STORE = os.path.join(DATA, "agent")
+OLLAMA = "http://localhost:11434/api/chat"
+
+# gpt-oss:20b is ~13 GB and fits beside Whisper's ~9 GB on a 24 GB card.
+# glm-4.7-flash is the stronger MoE but at 19 GB the two do not coexist.
+DEFAULT_MODEL = "gpt-oss:20b"
+IDLE_SECONDS = 90.0        # silence that marks the end of a conversation
+MAX_WAIT = 900.0           # fire anyway if someone talks continuously
+MIN_CHARS = 120            # below this there is nothing worth reasoning about
+
+SYSTEM = """You are reviewing a transcript of a real conversation captured by a \
+wearable microphone. Speakers are named where known, or SPEAKER_xx where not.
+
+Record only what was actually said and is worth keeping:
+- something someone committed to doing  -> add_task
+- a meeting, deadline or date mentioned -> add_calendar_event
+- a durable fact about a person/project -> remember_fact
+- context worth keeping that is none of the above -> add_note
+
+Rules:
+- Never invent details. If it was not said, do not record it.
+- Skip smalltalk, filler and thinking aloud. Most conversation is not worth saving.
+- If nothing is worth recording, call no tools and say so in one short sentence.
+- Attribute owners by the speaker name shown.
+- Transcription is imperfect; ignore garbled fragments rather than guessing."""
+
+
+class ConversationAgent:
+    def __init__(self, notify=None):
+        self.notify = notify or (lambda *a, **k: None)
+        self.model = DEFAULT_MODEL
+        self.enabled = True
+        self.idle_seconds = IDLE_SECONDS
+        # Reentrant: status() holds the lock and calls pending_chars(), which
+        # takes it again. A plain Lock deadlocks the request thread there.
+        self._lock = threading.RLock()
+        self._pending = []          # [(clip, [segments...], names)]
+        self._first_at = None
+        self._last_at = None
+        self.busy = None
+        self.last_result = None
+        threading.Thread(target=self._loop, daemon=True).start()
+
+    # ---- intake -------------------------------------------------------
+    def add(self, clip, segments, names):
+        """Called when a clip finishes transcribing. Silence is ignored."""
+        if not segments:
+            return
+        with self._lock:
+            self._pending.append((clip, segments, names or {}))
+            now = time.time()
+            self._first_at = self._first_at or now
+            self._last_at = now
+
+    def pending_chars(self):
+        with self._lock:
+            return sum(len(s.get("text", "")) for _, segs, _ in self._pending for s in segs)
+
+    def status(self):
+        with self._lock:
+            return {
+                "enabled": self.enabled,
+                "model": self.model,
+                "pending_clips": len(self._pending),
+                "pending_chars": self.pending_chars(),
+                "seconds_idle": round(time.time() - self._last_at, 1) if self._last_at else None,
+                "idle_seconds": self.idle_seconds,
+                "busy": self.busy,
+            }
+
+    def flush_now(self):
+        with self._lock:
+            self._last_at = 0        # make it look long idle; the loop picks it up
+
+    # ---- scheduling ---------------------------------------------------
+    def _loop(self):
+        while True:
+            time.sleep(3)
+            if not self.enabled:
+                continue
+            with self._lock:
+                if not self._pending:
+                    continue
+                idle = time.time() - (self._last_at or 0)
+                waited = time.time() - (self._first_at or time.time())
+                if idle < self.idle_seconds and waited < MAX_WAIT:
+                    continue
+                batch = self._pending
+                self._pending = []
+                self._first_at = self._last_at = None
+            try:
+                self._run(batch)
+            except Exception as e:
+                self.notify("log", text=f"agent failed: {str(e)[:140]}")
+
+    # ---- execution ----------------------------------------------------
+    def _render(self, batch):
+        lines = []
+        for clip, segs, names in batch:
+            for s in segs:
+                spk = s.get("speaker")
+                who = s.get("speaker_name") or (names.get(spk, {}) or {}).get("name") or spk or "UNKNOWN"
+                lines.append(f"{who}: {s['text'].strip()}")
+        return "\n".join(lines)
+
+    def _run(self, batch):
+        import sys
+        sys.path.insert(0, os.path.join(HERE, "..", "host"))
+        from tools_impl import REGISTRY, SCHEMAS
+
+        text = self._render(batch)
+        if len(text) < MIN_CHARS:
+            return
+
+        clips = [c for c, _, _ in batch]
+        self.busy = f"{len(clips)} clip(s)"
+        self.notify("agent", status="running", clips=len(clips), chars=len(text))
+
+        messages = [{"role": "system", "content": SYSTEM},
+                    {"role": "user", "content": f"Conversation transcript:\n\n{text}"}]
+        actions, said = [], ""
+        try:
+            for _ in range(6):
+                r = requests.post(OLLAMA, json={
+                    "model": self.model, "messages": messages,
+                    "tools": SCHEMAS, "stream": False,
+                    "options": {"temperature": 0.2},
+                }, timeout=600)
+                r.raise_for_status()
+                msg = r.json().get("message", {})
+                messages.append(msg)
+                said = msg.get("content") or said
+                calls = msg.get("tool_calls") or []
+                if not calls:
+                    break
+                for c in calls:
+                    fn = c.get("function", {})
+                    name = fn.get("name")
+                    raw = fn.get("arguments", {})
+                    args = json.loads(raw) if isinstance(raw, str) else (raw or {})
+                    if name not in REGISTRY:
+                        result = {"ok": False, "error": f"unknown tool {name}"}
+                    else:
+                        try:
+                            args.setdefault("_source_clips", clips) if False else None
+                            result = REGISTRY[name](**args)
+                        except Exception as e:
+                            result = {"ok": False, "error": str(e)}
+                    actions.append({"tool": name, "args": args, "result": result})
+                    messages.append({"role": "tool", "name": name,
+                                     "content": json.dumps(result)})
+        finally:
+            self.busy = None
+
+        self.last_result = {"clips": clips, "actions": len(actions),
+                            "said": said.strip()[:300], "at": time.time()}
+        self.notify("agent", status="done", clips=len(clips), actions=len(actions),
+                    said=said.strip()[:200])
+        if actions:
+            self.notify("log", text=f"agent recorded {len(actions)} item(s) "
+                                    f"from {len(clips)} clip(s)")
+
+
+def load_items(kind=None, limit=200):
+    """Everything the agent has recorded, newest first."""
+    kinds = [kind] if kind else ["tasks", "events", "notes", "facts"]
+    out = []
+    for k in kinds:
+        p = os.path.join(STORE, f"{k}.jsonl")
+        if not os.path.exists(p):
+            continue
+        for line in open(p):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                d = json.loads(line)
+            except Exception:
+                continue
+            d["_kind"] = k
+            out.append(d)
+    out.sort(key=lambda d: d.get("_recorded_at", ""), reverse=True)
+    return out[:limit]
