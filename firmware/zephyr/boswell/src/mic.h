@@ -1,0 +1,15 @@
+#ifndef BOSWELL_MIC_H
+#define BOSWELL_MIC_H
+
+#include "proto.h"
+
+int  mic_init(void);
+int  mic_start(void);
+void mic_stop(void);
+bool mic_running(void);
+
+/* Pull one frame of PCM. Blocks up to `timeout` for the DMIC driver to hand
+ * over a block. Returns the sample count, or 0 on timeout. */
+int  mic_read_frame(int16_t *dst, int max_samples, k_timeout_t timeout);
+
+#endif

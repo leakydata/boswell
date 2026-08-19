@@ -257,6 +257,38 @@ or radio matches nobody enrolled, scores below threshold, and is reported as
 
 ---
 
+## Two firmwares, one protocol
+
+`firmware/ble_mic/` is the **Arduino** build: complete, supported, and what to
+flash first. `arduino-cli` and a core install is minutes of setup.
+
+`firmware/zephyr/` is the **Zephyr / nRF Connect SDK** build, where new work
+happens — it needs a multi-gigabyte SDK and toolchain, which is a real barrier
+if you only want a working device.
+
+They share `proto.h` and `ima_adpcm.h`: the same service UUIDs, the same
+12-byte frame header, the same codec. **The host cannot tell which one is
+running**, so every host tool works against either without changes. That shared
+contract is what keeps two firmwares from drifting into two projects.
+
+Zephyr is where Opus belongs — see the note on Omi below — and it gets several
+things right that had to be discovered by hand under Arduino. The IMU's
+high-drive supply requirement, for instance, is simply declared in the board's
+devicetree:
+
+```dts
+lsm6ds3tr-c-en {
+    enable-gpios = <&gpio1 8 (NRF_GPIO_DRIVE_S0H1 | GPIO_ACTIVE_HIGH)>;
+    regulator-boot-on;
+    startup-delay-us = <3000>;
+};
+```
+
+```bash
+firmware/zephyr/build.sh            # build
+firmware/zephyr/build.sh --flash    # build and flash
+```
+
 ## Quick start
 
 ```bash

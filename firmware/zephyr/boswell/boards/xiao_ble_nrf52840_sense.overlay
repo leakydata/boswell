@@ -1,0 +1,9 @@
+/*
+ * The board declares the PDM pins and clock source but leaves the peripheral
+ * disabled, so an application that wants the microphone opts in here. Nothing
+ * about the wiring is repeated -- that already lives in the board definition.
+ */
+
+&pdm0 {
+	status = "okay";
+};
