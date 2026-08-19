@@ -285,6 +285,18 @@ button.who{font-size:11px}
       <label class="row">Voice activity gating
         <span class="switch" id="vad" role="switch" aria-checked="false" tabindex="0"></span>
       </label>
+      <label class="row">Status light
+        <input type="range" id="led" min="0" max="255" value="255" step="15" disabled>
+        <span class="val" id="ledv">full</span>
+      </label>
+      <label class="row">Blink instead of stay lit
+        <span class="switch" id="ledpulse" role="switch" aria-checked="false" tabindex="0"></span>
+      </label>
+      <div style="font-size:12.5px;color:var(--muted);margin-top:-4px">
+        Dimming is real PWM, so current falls with brightness. Below a few percent
+        the PWM hardware costs more than the light does — blinking briefly is
+        cheaper than a very dim steady glow, and off costs nothing at all.
+      </div>
       <label class="row">Play catch-up live
         <span class="switch" id="blmode" role="switch" aria-checked="false" tabindex="0"></span>
       </label>
@@ -351,6 +363,25 @@ button.who{font-size:11px}
         as you add more. Remove a sample if it was the wrong person or too short —
         the reference is rebuilt without it.</p>
       <div id="pplList"><div class="empty">loading…</div></div>
+    </div>
+
+    <div class="card">
+      <h2>Custom words</h2>
+      <p class="intro" style="font-size:14px;color:var(--muted);margin:0 0 12px">
+        Names, jargon, drug names — anything the transcriber gets wrong. These are
+        boosted while it listens and corrected afterwards, so
+        <em>met form in</em> comes back as the real word. Enrolled people are
+        included automatically. One per line.</p>
+      <textarea id="vocabBox" rows="7" placeholder="Metformin&#10;Vinod&#10;nRF52840"
+        spellcheck="false" autocapitalize="off"
+        style="width:100%;font-family:var(--mono);font-size:14px;padding:11px;
+               border-radius:8px;border:1px solid var(--rule);background:var(--paper);
+               color:var(--ink);resize:vertical"></textarea>
+      <div class="btns" style="margin-top:10px">
+        <button class="pri" id="bVocabSave">Save Word List</button>
+      </div>
+      <div id="vocabMsg" style="font-family:var(--mono);font-size:12px;
+           color:var(--muted);min-height:16px;margin-top:8px"></div>
     </div>
   </div>
 
@@ -499,6 +530,10 @@ function paint(s){
   $("bConn").disabled = s.connected || s.scanning;
   $("bDiscard").disabled = !s.connected;
   $("blmode").setAttribute("aria-checked", !!s.backlog_mode);
+  $("led").disabled = !s.connected;
+  if (document.activeElement !== $("led")) $("led").value = s.led_level ?? 255;
+  $("ledv").textContent = ledLabel(s.led_level ?? 255);
+  $("ledpulse").setAttribute("aria-checked", !!s.led_mode);
   $("err").textContent = s.error || "";
 }
 
@@ -533,11 +568,37 @@ function showTab(which){
     $(v).hidden = which !== k;
   }
   if (which === "rec") loadClips();
-  if (which === "ppl") loadPeople();
+  if (which === "ppl"){ loadPeople(); loadVocab(); }
 }
 $("tabDev").onclick = () => showTab("dev");
 $("tabRec").onclick = () => showTab("rec");
 $("tabPpl").onclick = () => showTab("ppl");
+
+async function loadVocab(){
+  try{
+    const v = await (await fetch("/api/vocabulary")).json();
+    $("vocabBox").value = (v.terms || []).join("\n");
+    const auto = (v.effective || []).filter(t => !(v.terms || []).includes(t));
+    $("vocabMsg").textContent = auto.length
+      ? `plus enrolled names: ${auto.join(", ")}` : "";
+  }catch(e){}
+}
+
+$("bVocabSave").onclick = async () => {
+  const terms = $("vocabBox").value.split("\n").map(t => t.trim()).filter(Boolean);
+  const r = await fetch("/api/vocabulary", {
+    method:"PUT", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({terms})
+  });
+  if (r.ok){
+    const v = await r.json();
+    log(`word list saved (${v.terms.length} term${v.terms.length===1?"":"s"})`);
+    $("vocabMsg").textContent =
+      "Saved. Applies to clips transcribed from now on; re-transcribe an old clip to use it.";
+  } else {
+    $("vocabMsg").textContent = "Could not save the word list";
+  }
+};
 
 async function loadPeople(){
   const el = $("pplList");
@@ -1025,6 +1086,25 @@ $("bDiscard").onclick = () => {
   send({cmd:"clear_buffer"});
   log("discarded the buffered audio on the device");
 };
+
+function ledLabel(v){
+  if (v <= 0) return "off";
+  if (v >= 255) return "full";
+  return Math.round(v / 255 * 100) + "%";
+}
+const led = $("led");
+led.oninput = () => { $("ledv").textContent = ledLabel(+led.value); };
+led.onchange = () => send({cmd:"led", level:+led.value,
+                           pulse: $("ledpulse").getAttribute("aria-checked") === "true"});
+
+const ledpulse = $("ledpulse");
+function toggleLedPulse(){
+  const on = ledpulse.getAttribute("aria-checked") !== "true";
+  ledpulse.setAttribute("aria-checked", on);
+  send({cmd:"led", level:+led.value, pulse:on});
+}
+ledpulse.onclick = toggleLedPulse;
+ledpulse.onkeydown = e => { if (e.key === " " || e.key === "Enter"){ e.preventDefault(); toggleLedPulse(); } };
 
 const blmode = $("blmode");
 function toggleBl(){

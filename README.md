@@ -392,6 +392,42 @@ recognised in some clips and missed in others when the enrolment came from a
 single session. Label long clips with clear speech, and use **split by voice**
 first so the voiceprint comes from one person rather than a conversation.
 
+## Custom words
+
+Names, jargon and drug names are what a general transcriber gets wrong, so the
+**People** tab takes a word list. Terms are applied twice:
+
+- **While listening** — passed as `hotwords` and woven into `initial_prompt`, so
+  the decoder is biased toward them. This makes a term likelier, not certain.
+- **Afterwards** — near-misses are repaired. A single mangled word is matched
+  fuzzily, and runs of two or three words are re-joined, so *"she prescribed met
+  form in"* comes back as *"she prescribed Metformin"* and *"the boss well
+  project"* as *"the Boswell project"*.
+
+Correction is deliberately conservative: only terms of five characters or more
+are fuzzy-matched, and phrase merges need a closer match than single words.
+*"He met Foreman at the office"* is left alone, which is the point — a wrong
+correction is worse than a missed one.
+
+Enrolled people are added to the list automatically, since their names are
+exactly the words that get mangled.
+
+Changing the list rebuilds the ASR model, which takes a few seconds, and applies
+to clips transcribed from then on. Re-transcribe an older clip to apply it there.
+
+## Status light
+
+The LED is roughly 2 mA against a whole-device budget near 8 mA, so it is worth
+controlling. Brightness is real PWM — average current tracks duty cycle almost
+exactly, so 10% brightness costs about 10% of the current, and it is not burnt
+off as heat.
+
+There is a floor, though: the PWM peripheral itself draws roughly 50–100 µA, so
+below a few percent it costs more than the light does. **Blink** mode exists for
+that case — a 25 ms flash every 3 seconds is under 1% duty with no PWM running
+at all, which beats any practical dim setting while still showing the device is
+alive and what it is doing. Off costs nothing.
+
 ## Correcting transcripts
 
 Tap any line to fix the words. Corrections are safe: voiceprints come from

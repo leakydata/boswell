@@ -48,6 +48,7 @@ class Device:
             "peak": 0, "rms": 0.0, "level": 0.0, "error": None,
             "clip_seconds": 0.0, "source": None,
             "recovered_seconds": 0.0, "backlog_mode": 0,
+            "led_level": 255, "led_mode": 0,
         }
         self.relay: WebSocket | None = None
         self.listeners: set[asyncio.Queue] = set()
@@ -227,6 +228,9 @@ class Device:
             self.state["rate"] = 16000 if info[1] else 8000
         if len(info) >= 8:
             self.state["imu"] = info[6] != 0
+        if len(info) >= 34:
+            self.state["led_level"] = info[32]
+            self.state["led_mode"] = info[33]
         if len(info) >= 32:
             pend = info[28] | (info[29] << 8) | (info[30] << 16)
             self.state["backlog_bytes"] = pend
@@ -255,6 +259,13 @@ class Device:
     async def set_gain(self, g: int):
         if await self._ctrl(0x03, max(0, min(80, g))):
             self.event("log", text=f"gain set to {g}")
+
+    async def set_led(self, level: int, pulse: bool):
+        self.state["led_level"] = max(0, min(255, int(level)))
+        self.state["led_mode"] = 1 if pulse else 0
+        await self._ctrl(0x0A, self.state["led_level"])
+        await self._ctrl(0x0B, self.state["led_mode"])
+        self.publish()
 
     async def clear_buffer(self):
         if await self._ctrl(0x08, 1):
@@ -696,6 +707,24 @@ async def api_speakers():
     return pipeline.list_speakers()
 
 
+@app.get("/api/vocabulary")
+async def api_get_vocab():
+    stored = []
+    if os.path.exists(pipeline.VOCAB_PATH):
+        try:
+            stored = json.load(open(pipeline.VOCAB_PATH)).get("terms", [])
+        except Exception:
+            stored = []
+    return {"terms": stored, "effective": pipeline.load_vocabulary()}
+
+
+@app.put("/api/vocabulary")
+async def api_put_vocab(body: dict):
+    terms = pipeline.save_vocabulary(body.get("terms") or [])
+    device.event("log", text=f"word list saved ({len(terms)} term(s))")
+    return {"terms": terms, "effective": pipeline.load_vocabulary()}
+
+
 @app.delete("/api/speaker/{name}")
 async def api_delete_speaker(name: str):
     if not pipeline.delete_speaker(name):
@@ -830,6 +859,9 @@ async def ws(sock: WebSocket):
                 await device.set_vad(bool(msg.get("on", False)))
             elif cmd == "clear_buffer":
                 await device.clear_buffer()
+            elif cmd == "led":
+                await device.set_led(int(msg.get("level", 255)),
+                                     bool(msg.get("pulse")))
             elif cmd == "backlog_mode":
                 await device.set_backlog_mode(bool(msg.get("live_first")))
             elif cmd == "save":

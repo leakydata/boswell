@@ -117,6 +117,18 @@ static uint8_t  drainLen    = 0;
  *     immediately; recovered audio arrives out of order and flagged). */
 static uint8_t  backlogMode = 0;
 
+/* LED power. Brightness is real PWM, so average current tracks duty cycle
+ * almost exactly -- 10% brightness costs about 10% of the current. The PWM
+ * peripheral itself draws roughly 50-100 uA though, so below a few percent it
+ * costs more than the light does; that is what pulse mode is for. A steady LED
+ * at full brightness is on the order of 2 mA, against a whole-device budget
+ * near 8 mA, so this is worth having. */
+static uint8_t  ledLevel = 255;      // 0 = off, 255 = full
+static uint8_t  ledMode  = 0;        // 0 steady, 1 brief pulse
+#define LED_PULSE_ON_MS    25
+#define LED_PULSE_EVERY_MS 3000
+static bool     ledWantR = false, ledWantG = false, ledWantB = false;
+
 // ---------------------------------------------------------------- pdm
 
 void onPDMdata() {
@@ -147,11 +159,48 @@ static inline uint32_t ringAvailable() {
 
 // ---------------------------------------------------------------- leds
 
-/* XIAO RGB LED is common-anode: LOW lights a channel. */
+/* XIAO RGB LED is common-anode: LOW lights a channel, so PWM is inverted. */
+static void ledChannel(uint8_t pin, bool want) {
+  if (!want || ledLevel == 0) {
+    pinMode(pin, OUTPUT);
+    digitalWrite(pin, HIGH);                 // off, and no PWM running
+  } else if (ledLevel >= 255) {
+    pinMode(pin, OUTPUT);
+    digitalWrite(pin, LOW);                  // full, still no PWM needed
+  } else {
+    analogWrite(pin, 255 - ledLevel);
+  }
+}
+
+static void applyLed(bool r, bool g, bool b) {
+  ledChannel(LED_RED, r);
+  ledChannel(LED_GREEN, g);
+  ledChannel(LED_BLUE, b);
+}
+
+/* Remember what the state *should* look like; pulse mode shows it briefly. */
 static void setLed(bool r, bool g, bool b) {
-  digitalWrite(LED_RED,   r ? LOW : HIGH);
-  digitalWrite(LED_GREEN, g ? LOW : HIGH);
-  digitalWrite(LED_BLUE,  b ? LOW : HIGH);
+  ledWantR = r; ledWantG = g; ledWantB = b;
+  if (ledMode == 1) return;                  // the pulse timer drives it
+  applyLed(r, g, b);
+}
+
+/* In pulse mode the LED is dark almost all the time: a 25 ms flash every 3 s
+ * is under 1% duty, which beats any practical PWM level and still tells you
+ * the device is alive and what it is doing. */
+static void servicePulse() {
+  if (ledMode != 1) return;
+  static uint32_t last = 0;
+  static bool lit = false;
+  uint32_t now = millis();
+  if (!lit && now - last >= LED_PULSE_EVERY_MS) {
+    applyLed(ledWantR, ledWantG, ledWantB);
+    lit = true;
+    last = now;
+  } else if (lit && now - last >= LED_PULSE_ON_MS) {
+    applyLed(false, false, false);
+    lit = false;
+  }
 }
 
 /* Capture is "armed" independently of the link, so the LED has to show both:
@@ -178,7 +227,7 @@ static void applyGain(int gain) {
 }
 
 static void publishInfo() {
-  uint8_t info[32];
+  uint8_t info[34];
   info[0] = 1;                          // codec: 1 = IMA ADPCM
   info[1] = use16k ? 1 : 0;
   info[2] = FRAME_MS;
@@ -201,6 +250,7 @@ static void publishInfo() {
   info[24] = (uint8_t)(az & 0xFF);
   info[25] = (uint8_t)((az >> 8) & 0xFF);
   info[26] = accelPeakByte();
+
   info[5] |= (uint8_t)(backlogMode << 1);   // bit1 carries the backlog mode
   info[27] = qspiOk ? 1 : 0;
   uint32_t pend = qspiOk ? qspiPendingBytes() : 0;
@@ -208,6 +258,8 @@ static void publishInfo() {
   info[29] = (uint8_t)((pend >> 8) & 0xFF);
   info[30] = (uint8_t)((pend >> 16) & 0xFF);
   info[31] = (uint8_t)(qspiOk ? (qspiSizeBytes() >> 16) : 0);   // MiB-ish
+  info[32] = ledLevel;
+  info[33] = ledMode;
   infoChar.write(info, sizeof(info));
 }
 
@@ -249,6 +301,16 @@ void ctrl_write_cb(uint16_t handle, BLECharacteristic *chr,
       break;
     case 0x09:
       backlogMode = data[1] ? 1 : 0;
+      break;
+    case 0x0A:                       // brightness, 0 = off
+      ledLevel = data[1];
+      updateLed();
+      break;
+    case 0x0B:                       // 0 = steady, 1 = pulse
+      ledMode = data[1] ? 1 : 0;
+      if (ledMode == 0) applyLed(ledWantR, ledWantG, ledWantB);
+      else applyLed(false, false, false);
+      updateLed();
       break;
   }
   publishInfo();
@@ -390,7 +452,7 @@ void setup() {
 
   infoChar.setProperties(CHR_PROPS_READ);
   infoChar.setPermission(SECMODE_OPEN, SECMODE_NO_ACCESS);
-  infoChar.setMaxLen(32);
+  infoChar.setMaxLen(34);
   infoChar.begin();
   publishInfo();
 
@@ -418,6 +480,8 @@ void setup() {
 // ---------------------------------------------------------------- loop
 
 void loop() {
+  servicePulse();
+
   static uint32_t lastInfoMs = 0;
   if (millis() - lastInfoMs > 500) { lastInfoMs = millis(); publishInfo(); }
 

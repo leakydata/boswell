@@ -227,6 +227,110 @@ def identify(embeddings):
     return out
 
 
+VOCAB_PATH = os.path.join(DATA, "vocabulary.json")
+# Below this, a fuzzy match is more likely to corrupt a correct word than to
+# fix a wrong one.
+FUZZY_CUTOFF = 0.82
+MIN_FUZZY_LEN = 5
+
+
+def load_vocabulary():
+    """Domain words the model would otherwise mangle: drug names, project
+    names, jargon, and the people you have enrolled."""
+    terms = []
+    if os.path.exists(VOCAB_PATH):
+        try:
+            terms = list(json.load(open(VOCAB_PATH)).get("terms", []))
+        except Exception:
+            terms = []
+    # Enrolled names are exactly the words an ASR model gets wrong, so they
+    # are always boosted without needing to be typed in twice.
+    try:
+        for p in list_speakers():
+            if p["name"] not in terms:
+                terms.append(p["name"])
+    except Exception:
+        pass
+    return [t.strip() for t in terms if t and t.strip()]
+
+
+def save_vocabulary(terms):
+    os.makedirs(DATA, exist_ok=True)
+    clean, seen = [], set()
+    for t in terms:
+        t = (t or "").strip()
+        if t and t.lower() not in seen:
+            seen.add(t.lower())
+            clean.append(t)
+    json.dump({"terms": clean}, open(VOCAB_PATH, "w"), indent=2)
+    return clean
+
+
+def vocabulary_signature(terms):
+    return "|".join(sorted(t.lower() for t in terms))
+
+
+def apply_vocabulary(text, terms):
+    """Fix near-misses the decoder bias did not catch.
+
+    Boosting makes a term likelier, it does not guarantee it, so "Metformin"
+    can still land as "metformen" or, worse, be split into "met foreman".
+    Two passes handle those separately: a phrase pass that re-joins runs of
+    words, then a word pass. Only reasonably long terms are fuzzy-matched --
+    a wrong correction on a short word does more damage than a missed one.
+    """
+    import difflib
+    import re as _re
+
+    if not terms:
+        return text
+
+    exact = {t.lower(): t for t in terms}
+    letters = lambda w: _re.sub(r"[^a-z0-9]", "", w.lower())
+    # Terms worth trying to reassemble from several words.
+    joined = {letters(t): t for t in terms if len(letters(t)) >= MIN_FUZZY_LEN}
+
+    token = _re.compile(r"[A-Za-z][A-Za-z0-9'-]*")
+
+    # Pass 1: windows of 3 then 2 words, in case the term was split apart.
+    for width in (3, 2):
+        while True:
+            toks = list(token.finditer(text))
+            replaced = False
+            for i in range(len(toks) - width + 1):
+                span = toks[i:i + width]
+                # Only merge words that are adjacent with plain spaces.
+                between = text[span[0].end():span[-1].start()]
+                if _re.search(r"[^ ]", between):
+                    continue
+                cand = letters("".join(m.group(0) for m in span))
+                if len(cand) < MIN_FUZZY_LEN:
+                    continue
+                hit = difflib.get_close_matches(cand, joined.keys(), n=1, cutoff=0.87)
+                if hit:
+                    text = text[:span[0].start()] + joined[hit[0]] + text[span[-1].end():]
+                    replaced = True
+                    break
+            if not replaced:
+                break
+
+    # Pass 2: single words.
+    def fix(m):
+        w = m.group(0)
+        low = w.lower()
+        if low in exact:
+            return exact[low]
+        key = letters(w)
+        if key in joined:
+            return joined[key]
+        if len(w) < MIN_FUZZY_LEN:
+            return w
+        hit = difflib.get_close_matches(key, joined.keys(), n=1, cutoff=FUZZY_CUTOFF)
+        return joined[hit[0]] if hit else w
+
+    return token.sub(fix, text)
+
+
 def transcript_path(clip):
     return os.path.join(TRANSCRIPTS, os.path.splitext(clip)[0] + ".json")
 
@@ -239,18 +343,35 @@ class Worker:
         self._asr = None
         self._align = None
         self._diar = None
+        self._vocab_sig = None
         threading.Thread(target=self._run, daemon=True).start()
 
     def submit(self, clip):
         self.q.put(clip)
 
     def _load(self):
-        if self._asr is not None:
+        terms = load_vocabulary()
+        sig = vocabulary_signature(terms)
+        # Boosting is baked in when the model is built, so a changed word list
+        # means rebuilding it. Cheap relative to how often the list changes.
+        if self._asr is not None and sig == self._vocab_sig:
             return
-        self.notify("log", text="loading transcription models (first run, ~20s)")
+        reloading = self._asr is not None
+        self.notify("log", text=("reloading ASR with the updated word list"
+                                 if reloading else
+                                 "loading transcription models (first run, ~20s)"))
         import whisperx
+        asr_options = {}
+        if terms:
+            asr_options["hotwords"] = " ".join(terms)
+            # A natural-sounding prompt biases the decoder harder than a bare
+            # list, which Whisper tends to treat as noise.
+            asr_options["initial_prompt"] = (
+                "The following conversation may mention: " + ", ".join(terms) + ".")
+        self._vocab_sig = sig
         self._asr = whisperx.load_model("large-v3", "cuda",
-                                        compute_type="float16", language="en")
+                                        compute_type="float16", language="en",
+                                        asr_options=asr_options or None)
         self._align = whisperx.load_align_model(language_code="en", device="cuda")
         token = os.environ.get("HF_TOKEN")
         if token:
@@ -294,10 +415,11 @@ class Worker:
                           for k, v in (emb or {}).items()}
             names = identify(emb or {})
 
+        terms = load_vocabulary()
         segs = [{"start": round(float(s["start"]), 2),
                  "end": round(float(s["end"]), 2),
                  "speaker": s.get("speaker"),
-                 "text": s["text"].strip()}
+                 "text": apply_vocabulary(s["text"].strip(), terms)}
                 for s in res["segments"] if s.get("text", "").strip()]
 
         os.makedirs(TRANSCRIPTS, exist_ok=True)
