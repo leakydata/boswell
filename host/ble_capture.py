@@ -93,7 +93,12 @@ async def capture(args):
     print(f"found {dev.address}, connecting ...")
 
     frames = []
-    stats = {"frames": 0, "gaps": 0, "bytes": 0, "last_seq": None, "vad_skipped": 0}
+    # Replayed frames are tracked apart from live ones. They carry the
+    # sequence numbers they were captured with, so mixing the two streams
+    # into one gap count makes the sequence look like it jumps backwards.
+    stats = {"frames": 0, "gaps": 0, "bytes": 0, "last_seq": None,
+             "vad_skipped": 0, "replayed": 0, "replay_last_seq": None,
+             "replay_gaps": 0}
 
     def on_audio(_sender, data: bytearray):
         if len(data) < HEADER_LEN:
@@ -105,7 +110,16 @@ async def capture(args):
         if len(payload) < nsamples // 2:
             return
 
-        if stats["last_seq"] is not None:
+        from_flash = bool(flags & 0x08)
+        if from_flash:
+            stats["replayed"] += 1
+            if stats["replay_last_seq"] is not None:
+                g = (seq - stats["replay_last_seq"] - 1) & 0xFFFF
+                if g < 1000:
+                    stats["replay_gaps"] += g
+            stats["replay_last_seq"] = seq
+
+        if not from_flash and stats["last_seq"] is not None:
             gap = (seq - stats["last_seq"] - 1) & 0xFFFF
             if gap:
                 # With VAD on, gaps are intentional silence, not packet loss.
@@ -113,7 +127,8 @@ async def capture(args):
                     stats["vad_skipped"] += gap
                 else:
                     stats["gaps"] += gap
-        stats["last_seq"] = seq
+        if not from_flash:
+            stats["last_seq"] = seq
 
         frames.append(decode_block(payload, predictor, index, nsamples))
         stats["frames"] += 1
@@ -188,7 +203,10 @@ async def capture(args):
     sf.write(args.out, audio, rate, subtype="PCM_16")
 
     kbps = stats["bytes"] * 8 / elapsed / 1000
-    expected = stats["frames"] + stats["gaps"]
+    # Only live frames count toward the loss rate; replayed ones have their
+    # own gap tally and would otherwise inflate the denominator.
+    live = stats["frames"] - stats["replayed"]
+    expected = live + stats["gaps"]
     loss = 100.0 * stats["gaps"] / expected if expected else 0.0
     peak = int(np.abs(audio).max())
 
@@ -197,6 +215,9 @@ async def capture(args):
     print(f"  sample rate  {rate} Hz")
     print(f"  frames       {stats['frames']}")
     print(f"  lost frames  {stats['gaps']}  ({loss:.2f}%)")
+    if stats["replayed"]:
+        print(f"  replayed     {stats['replayed']} frames from flash "
+              f"({stats['replay_gaps']} gaps)")
     if stats["vad_skipped"]:
         print(f"  vad skipped  {stats['vad_skipped']} frames of silence")
     print(f"  throughput   {kbps:.1f} kbps over the air")

@@ -269,10 +269,25 @@ static void on_ctrl(uint8_t op, uint8_t arg)
     cfg_store_touch();
 }
 
-/* Hands one replayed record to the link, from the writer thread. */
+/* Hands one replayed record to the link, from the writer thread.
+ *
+ * The frame is stamped as coming from flash on the way out. Replayed frames
+ * carry the sequence numbers they were captured with, so a host that cannot
+ * tell them from live audio sees the sequence jump backwards and reports
+ * nonsense packet loss. Flags are not part of the ADPCM state, so setting
+ * the bit here cannot affect decoding. */
 static bool drain_to_host(const uint8_t *rec, uint16_t len)
 {
-    return ble_audio_ready() && ble_audio_send(rec, len) == 0;
+    if (len <= 2 || !ble_audio_ready()) {
+        return false;
+    }
+    uint8_t stamped[MAX_FRAME_LEN];
+    if (len > sizeof(stamped)) {
+        return false;
+    }
+    memcpy(stamped, rec, len);
+    stamped[2] |= FLAG_FROM_FLASH;
+    return ble_audio_send(stamped, len) == 0;
 }
 
 /* A double tap toggles capture: the device is worn, so the only control that
