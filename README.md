@@ -194,15 +194,34 @@ uv run host/agent.py data/voice.wav
 uv run web/server.py     # then open http://localhost:8000
 ```
 
-A small local service that owns the Bluetooth link and serves a responsive
-front end — connect, arm and disarm capture, set microphone gain and VAD live,
-watch the input level and the device's flash backlog, and save clips.
+A local service that owns the Bluetooth link and serves the interface. It
+connects to the board on startup, so a restart resumes capture without
+intervention.
 
-It is split deliberately so a phone app is a transport swap rather than a
-rewrite: every piece of device state and every action is JSON over a single
-WebSocket, and the browser holds no logic a native client could not
-reimplement in a few dozen lines. The layout is mobile-first and reachable
-from a phone on the same network.
+**Device** — connection and capture state, input level, and the device's flash
+backlog with drain progress. Microphone gain and VAD are adjustable live over
+GATT, no reflash.
+
+**Recordings** — every clip, newest first, with a preview of what was said.
+Clips are written every 30 seconds and transcribed automatically; nothing needs
+a tap per clip.
+
+Opening a clip gives you:
+
+- a **waveform coloured by speaker** — each voice a different colour, everything
+  that is not speech grey. Colour comes from the transcript, never from
+  loudness, so a slammed door stays grey.
+- **playback in the waveform itself** — play/pause, elapsed and total time, and
+  tapping the waveform seeks there.
+- the **transcript**, tinted to match, with clickable timestamps.
+- **speaker chips** showing who spoke, for how long, and the match confidence.
+  Tapping one names that voice.
+- **split by voice**, which writes one single-voice clip per speaker. The
+  original is untouched; the splits exist because a voiceprint taken from one
+  person alone is much stronger than one taken from overlapping speech.
+- **delete**, which also removes the transcript and cached waveform.
+
+All device state and every action cross a single WebSocket as JSON.
 
 ### Remote access
 
@@ -319,6 +338,21 @@ real responsibility.
   microphone is the only mute anyone should have to trust.
 
 ---
+
+## Naming voices
+
+Diarization gives per-file labels (`SPEAKER_00`) that mean nothing across
+recordings. Tapping a speaker chip attaches a name, and every later clip
+resolves that voice on its own.
+
+Enrolment is a running mean in embedding space, not training: it works from the
+first sample, sharpens with each label, and costs no GPU time.
+
+Quality matters more than quantity. Measured on short real-world clips,
+identification scores 0.42–0.74 against a 0.60 threshold — the same voice is
+recognised in some clips and missed in others when the enrolment came from a
+single session. Label long clips with clear speech, and use **split by voice**
+first so the voiceprint comes from one person rather than a conversation.
 
 ## Roadmap
 
