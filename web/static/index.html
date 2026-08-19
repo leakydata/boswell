@@ -116,6 +116,35 @@ nav.tabs button[aria-selected=true]{background:var(--surface);color:var(--ink);
   box-shadow:0 1px 3px #0002}
 .view[hidden]{display:none}
 
+/* toolbar: compact controls, not a stack of full-width buttons */
+.toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:10px}
+.search{flex:1 1 220px;min-width:0;position:relative;display:flex;align-items:center}
+.search svg{position:absolute;left:10px;width:15px;height:15px;fill:var(--faint);
+  pointer-events:none}
+.search input{width:100%;font-family:var(--sans);font-size:15px;
+  padding:9px 30px 9px 31px;border-radius:7px;border:1px solid var(--rule);
+  background:var(--surface);color:var(--ink);min-height:40px}
+.search input:focus{outline:2px solid var(--accent);outline-offset:-1px;
+  border-color:var(--accent)}
+/* Suppress the native search clear so it does not sit beside our own. */
+.search input::-webkit-search-cancel-button,
+.search input::-webkit-search-decoration{-webkit-appearance:none;appearance:none}
+.search .clr{position:absolute;right:4px;min-height:30px;width:26px;padding:0;
+  border:none;background:none;color:var(--faint);font-size:16px;flex:none}
+select.filter{font-family:var(--sans);font-size:14px;padding:9px 30px 9px 11px;
+  border-radius:7px;border:1px solid var(--rule);
+  /* explicit both, or Windows dark mode renders these unreadable */
+  background:var(--surface);color:var(--ink);min-height:40px;flex:0 0 auto;
+  appearance:none;-webkit-appearance:none;cursor:pointer;
+  background-image:linear-gradient(45deg,transparent 50%,var(--faint) 50%),
+                   linear-gradient(135deg,var(--faint) 50%,transparent 50%);
+  background-position:calc(100% - 15px) 18px,calc(100% - 10px) 18px;
+  background-size:5px 5px,5px 5px;background-repeat:no-repeat}
+select.filter:focus{outline:2px solid var(--accent);outline-offset:-1px}
+.toolbar2{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:14px}
+.toolbar2 button{flex:0 0 auto;min-height:38px;padding:8px 14px;font-size:14px}
+.count{font-family:var(--mono);font-size:12px;color:var(--muted);margin-right:auto}
+
 /* clip list */
 .clip{display:flex;gap:12px;align-items:center;width:100%;text-align:left;
   padding:13px 12px;background:var(--surface);border:1px solid var(--rule);
@@ -123,6 +152,8 @@ nav.tabs button[aria-selected=true]{background:var(--surface);color:var(--ink);
 .clip:hover{border-color:var(--accent)}
 .clip .ci{flex:1;min-width:0}
 .clip .cn{font-family:var(--mono);font-size:12px;color:var(--muted)}
+.clip mark{background:color-mix(in srgb,var(--accent) 35%,transparent);
+  color:inherit;border-radius:2px;padding:0 1px}
 .clip .cp{font-size:14px;margin-top:3px;overflow:hidden;text-overflow:ellipsis;
   display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
 .clip .cd{font-family:var(--mono);font-size:12px;color:var(--faint);flex:none}
@@ -329,28 +360,34 @@ button.who{font-size:11px}
   </div>
 
   <div class="view" id="viewRec" hidden>
-    <div class="btns" style="margin-bottom:10px">
-      <button class="pri" id="bAll">Transcribe all</button>
-      <button id="bRefresh">Refresh</button>
-      <span class="val" id="qdepth" style="align-self:center"></span>
+    <div class="toolbar">
+      <span class="search">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15.5 14h-.79l-.28-.27A6.47 6.47 0 0016 9.5 6.5 6.5 0 109.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
+        <input type="search" id="q" placeholder="Search transcripts…"
+               autocomplete="off" spellcheck="false" aria-label="Search transcripts">
+        <button class="clr" id="qClear" hidden aria-label="Clear search">×</button>
+      </span>
+      <select class="filter" id="fContent" aria-label="Filter by content">
+        <option value="all">All recordings</option>
+        <option value="voice">With voice</option>
+        <option value="silent">Silent</option>
+      </select>
+      <select class="filter" id="fDate" aria-label="Filter by date">
+        <option value="all">Any time</option>
+        <option value="today">Today</option>
+        <option value="week">Last 7 days</option>
+        <option value="old">Older than a week</option>
+      </select>
     </div>
-    <div class="btns" style="margin-bottom:8px" role="group" aria-label="Filter by content">
-      <button id="fAll" aria-pressed="true">All</button>
-      <button id="fVoice" aria-pressed="false">With voice</button>
-      <button id="fSilent" aria-pressed="false">Silent</button>
-    </div>
-    <div class="btns" style="margin-bottom:8px" role="group" aria-label="Filter by date">
-      <button id="dAll" aria-pressed="true">Any time</button>
-      <button id="dToday" aria-pressed="false">Today</button>
-      <button id="dWeek" aria-pressed="false">Last 7 days</button>
-      <button id="dOld" aria-pressed="false">Older</button>
-    </div>
-    <div class="btns" style="margin-bottom:14px">
+    <div class="toolbar2">
+      <span class="count" id="clipCount"></span>
       <button id="bSelect">Select</button>
       <button id="bSelAll" hidden>Select all shown</button>
       <button id="bSelNone" hidden>Clear</button>
       <button class="dang" id="bDelSel" hidden>Delete</button>
-      <span class="val" id="selCount" style="align-self:center"></span>
+      <button id="bAll">Transcribe all</button>
+      <button id="bRefresh">Refresh</button>
+      <span class="val" id="qdepth"></span>
     </div>
     <div class="card" id="clipList" style="border:none;background:transparent;padding:0">
       <div class="empty">loading…</div>
@@ -691,28 +728,37 @@ async function loadPeople(){
 }
 
 /* ---- recordings ---- */
-let clipFilter = "all", dateFilter = "all";
+let clipFilter = "all", dateFilter = "all", query = "";
 let selectMode = false, selected = new Set();
 
-function setFilter(f){
-  clipFilter = f;
-  for (const [id, key] of [["fAll","all"],["fVoice","voice"],["fSilent","silent"]])
-    $(id).setAttribute("aria-pressed", key === f);
-  loadClips();
+$("fContent").onchange = () => { clipFilter = $("fContent").value; loadClips(); };
+$("fDate").onchange   = () => { dateFilter = $("fDate").value;    loadClips(); };
+
+// Debounced so a fast typist does not trigger a render per keystroke.
+let qTimer;
+$("q").addEventListener("input", () => {
+  $("qClear").hidden = !$("q").value;
+  clearTimeout(qTimer);
+  qTimer = setTimeout(() => { query = $("q").value.trim().toLowerCase(); loadClips(); }, 180);
+});
+$("qClear").onclick = () => {
+  $("q").value = ""; $("qClear").hidden = true; query = ""; loadClips(); $("q").focus();
+};
+
+function esc(t){ return (t||"").replace(/[&<>]/g, ch => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[ch])); }
+function highlight(text){
+  const t = esc(text);
+  if (!query) return t;
+  return query.split(/\s+/).filter(Boolean).reduce((acc, w) =>
+    acc.replace(new RegExp(`(${w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})`, "gi"),
+                '<mark>$1</mark>'), t);
 }
-function setDate(f){
-  dateFilter = f;
-  for (const [id, key] of [["dAll","all"],["dToday","today"],["dWeek","week"],["dOld","old"]])
-    $(id).setAttribute("aria-pressed", key === f);
-  loadClips();
+
+function matchesQuery(c){
+  if (!query) return true;
+  const hay = [c.preview || "", c.name, ...(c.speakers || [])].join(" ").toLowerCase();
+  return query.split(/\s+/).every(w => hay.includes(w));
 }
-$("fAll").onclick = () => setFilter("all");
-$("fVoice").onclick = () => setFilter("voice");
-$("fSilent").onclick = () => setFilter("silent");
-$("dAll").onclick = () => setDate("all");
-$("dToday").onclick = () => setDate("today");
-$("dWeek").onclick = () => setDate("week");
-$("dOld").onclick = () => setDate("old");
 
 function inDateRange(modified){
   if (dateFilter === "all") return true;
@@ -770,11 +816,21 @@ async function loadClips(){
     const clips = all
       .filter(c => clipFilter === "all" ? true
         : clipFilter === "voice" ? c.has_speech === true : c.has_speech === false)
-      .filter(c => inDateRange(c.modified));
-    if (!all.length){ el.innerHTML = '<div class="empty">No recordings yet. Capture some audio on the Device tab.</div>'; return; }
+      .filter(c => inDateRange(c.modified))
+      .filter(matchesQuery);
+    if (!all.length){
+      $("clipCount").textContent = "";
+      el.innerHTML = '<div class="empty">No recordings yet. Capture some audio on the Device tab.</div>';
+      return;
+    }
+    $("clipCount").textContent =
+      clips.length === all.length
+        ? `${all.length} recording${all.length===1?"":"s"}`
+        : `${clips.length} of ${all.length}`;
     if (!clips.length){
       const n = all.filter(c => c.has_speech === null).length;
-      el.innerHTML = `<div class="empty">Nothing matches this filter.` +
+      el.innerHTML = `<div class="empty">` +
+        (query ? `Nothing matches “${query}”.` : "Nothing matches these filters.") +
         (n ? ` ${n} clip${n===1?"":"s"} not transcribed yet.` : "") + `</div>`;
       return;
     }
@@ -790,7 +846,7 @@ async function loadClips(){
           ? `<span class="box">${selected.has(c.name) ? "✓" : ""}</span>` : "") +
         `<div class="ci">
           <div class="cn">${new Date(c.modified*1000).toLocaleString()}</div>
-          <div class="cp">${c.preview || "<i style='opacity:.6'>not transcribed</i>"}</div>
+          <div class="cp">${highlight(c.preview) || "<i style='opacity:.6'>not transcribed</i>"}</div>
         </div>
         <span class="cd">${c.seconds.toFixed(0)}s</span>
         <span class="tag ${c.status}">${c.status === "none" ? "new"
