@@ -450,6 +450,12 @@ class Worker:
                   open(transcript_path(clip), "w"), indent=2, allow_nan=False)
 
         try:
+            import index_db
+            index_db.upsert_clip(clip)
+        except Exception:
+            pass
+
+        try:
             self.on_transcript(clip, segs, names)
         except Exception as e:
             self.notify("log", text=f"agent intake failed: {str(e)[:100]}")

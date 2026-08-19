@@ -302,7 +302,21 @@ intervention.
 backlog with drain progress. Microphone gain and VAD are adjustable live over
 GATT, no reflash.
 
-**Recordings** — every clip, newest first, with a preview of what was said.
+**Recordings** — grouped into conversations by default, because a 30-second
+clip is a storage unit and not a human one. Contiguous clips are gathered and a
+gap longer than five minutes starts a new conversation, so the list reads as
+"11:00, 2.5 minutes, Nathan and Blase" rather than as five fragments. Flat and
+by-day views are also available.
+
+Search runs over **every segment** on the server and returns the matching lines
+with timestamps, so a word spoken thirty seconds into a conversation is
+findable. It previously matched a 180-character preview, which looked like
+full-text search and was not.
+
+Any selection, or a whole conversation, can be exported as plain text; single
+clips also export as JSON or SRT.
+
+Every clip, newest first, with a preview of what was said.
 Clips are written every 30 seconds and transcribed automatically; nothing needs
 a tap per clip.
 
@@ -444,6 +458,18 @@ real responsibility.
   microphone is the only mute anyone should have to trust.
 
 ---
+
+## Storage
+
+Audio, transcripts, voiceprints and agent output are plain files under `data/`.
+They are the source of truth and are meant to be readable, movable and
+deletable with ordinary tools.
+
+`data/index.db` is a SQLite index over those files, with an FTS5 table for
+search. It is derived, never authoritative: delete it and it rebuilds on the
+next start. It exists because listing recordings used to open and parse every
+transcript on disk on every request — fine at ten clips, untenable at a few
+thousand, which is about a week of continuous use.
 
 ## Naming voices
 

@@ -152,6 +152,9 @@ select.filter:focus{outline:2px solid var(--accent);outline-offset:-1px}
 .clip:hover{border-color:var(--accent)}
 .clip .ci{flex:1;min-width:0}
 .clip .cn{font-family:var(--mono);font-size:12px;color:var(--muted)}
+.hits{margin-top:6px;display:flex;flex-direction:column;gap:3px}
+.hits .h{font-size:13px;color:var(--ink-2);display:flex;gap:8px}
+.hits .h b{font-family:var(--mono);font-size:11px;color:var(--faint);font-weight:400;flex:none}
 .clip mark{background:color-mix(in srgb,var(--accent) 35%,transparent);
   color:inherit;border-radius:2px;padding:0 1px}
 .clip .cp{font-size:14px;margin-top:3px;overflow:hidden;text-overflow:ellipsis;
@@ -159,6 +162,21 @@ select.filter:focus{outline:2px solid var(--accent);outline-offset:-1px}
 .clip .cd{font-family:var(--mono);font-size:12px;color:var(--faint);flex:none}
 .clip .box{flex:none;width:20px;height:20px;border-radius:4px;border:1.5px solid var(--rule);
   display:grid;place-items:center;font-size:13px;color:var(--surface)}
+.daygroup{font-family:var(--mono);font-size:11px;letter-spacing:.12em;
+  text-transform:uppercase;color:var(--accent);margin:18px 0 8px;
+  display:flex;align-items:baseline;gap:10px}
+.daygroup:first-child{margin-top:0}
+.daygroup span{color:var(--faint);letter-spacing:0;text-transform:none;font-size:11px}
+.conv{border:1px solid var(--rule);border-radius:8px;padding:13px;margin-bottom:9px;
+  background:var(--surface)}
+.conv .ch{display:flex;justify-content:space-between;gap:12px;align-items:baseline}
+.conv .cw{font-weight:600;font-size:15px}
+.conv .cm{font-family:var(--mono);font-size:11.5px;color:var(--faint);flex:none}
+.conv .cpv{font-size:14px;color:var(--ink-2);margin-top:5px;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.conv .parts{display:flex;flex-wrap:wrap;gap:6px;margin-top:9px}
+.conv .parts button{min-height:30px;padding:4px 9px;font-size:11.5px;
+  font-family:var(--mono);flex:0 0 auto}
 .clip.sel{border-color:var(--accent)}
 .clip.sel .box{background:var(--accent);border-color:var(--accent);color:#fff}
 .tag{font-family:var(--mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase;
@@ -403,6 +421,7 @@ button.who{font-size:11px}
       <button id="bSelAll" hidden>Select all shown</button>
       <button id="bSelNone" hidden>Clear</button>
       <button class="dang" id="bDelSel" hidden>Delete</button>
+      <button id="bExport" hidden>Export</button>
       <button id="bAll">Transcribe all</button>
       <button id="bRefresh">Refresh</button>
       <span class="val" id="qdepth"></span>
@@ -887,6 +906,91 @@ let selectMode = false, selected = new Set();
 
 $("fContent").onchange = () => { clipFilter = $("fContent").value; loadClips(); };
 $("fDate").onchange   = () => { dateFilter = $("fDate").value;    loadClips(); };
+let groupMode = "conv";
+$("fGroup").onchange  = () => { groupMode = $("fGroup").value;    loadClips(); };
+
+function fmtClock(t){
+  return new Date(t*1000).toLocaleTimeString([], {hour:"numeric", minute:"2-digit"});
+}
+function fmtDay(t){
+  const d = new Date(t*1000), today = new Date();
+  const y = new Date(today); y.setDate(today.getDate()-1);
+  const same = (a,b) => a.toDateString() === b.toDateString();
+  if (same(d, today)) return "Today";
+  if (same(d, y)) return "Yesterday";
+  return d.toLocaleDateString([], {weekday:"long", month:"short", day:"numeric"});
+}
+function fmtDur(sec){
+  const m = Math.floor(sec/60);
+  return m >= 1 ? `${m} min` : `${Math.round(sec)}s`;
+}
+
+async function loadConversations(el){
+  const convs = (await (await fetch("/api/conversations")).json())
+    .filter(c => inDateRange(c.end));
+  $("clipCount").textContent = `${convs.length} conversation${convs.length===1?"":"s"}`;
+  if (!convs.length){
+    el.innerHTML = '<div class="empty">Nothing matches these filters.</div>';
+    return;
+  }
+  el.innerHTML = "";
+  let lastDay = null;
+  for (const c of convs){
+    const day = fmtDay(c.end);
+    if (day !== lastDay){
+      lastDay = day;
+      const h = document.createElement("div");
+      h.className = "daygroup";
+      h.innerHTML = `${day}`;
+      el.appendChild(h);
+    }
+    const d = document.createElement("div");
+    d.className = "conv";
+    const people = c.speakers.filter(x => x && x !== "unknown");
+    d.innerHTML =
+      `<div class="ch">
+         <span class="cw">${fmtClock(c.start)}${people.length ? " · " + esc(people.join(", ")) : ""}</span>
+         <span class="cm">${fmtDur(c.seconds)} · ${c.clips.length} clip${c.clips.length===1?"":"s"}</span>
+       </div>` +
+      (c.preview ? `<div class="cpv">${esc(c.preview)}</div>` : "") +
+      `<div class="parts"></div>`;
+    const parts = d.querySelector(".parts");
+    c.clips.slice().reverse().forEach((n, i) => {
+      const b = document.createElement("button");
+      b.textContent = `part ${c.clips.length - i}`;
+      b.onclick = () => openClip(n);
+      parts.appendChild(b);
+    });
+    const ex = document.createElement("button");
+    ex.textContent = "export";
+    ex.onclick = async () => {
+      const r = await fetch("/api/export", {method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({names: c.clips, format:"txt"})});
+      showText(await r.text(), `${day} ${fmtClock(c.start)}`);
+    };
+    parts.appendChild(ex);
+    el.appendChild(d);
+  }
+}
+
+/* Downloads are blocked in some embedded viewers, so export opens the text
+   in place with a copy button rather than relying on a file save. */
+function showText(text, title){
+  $("editArea").value = text;
+  $("edT").textContent = `Export — ${title}`;
+  $("edSub").textContent = "Select all and copy, or use the button below.";
+  $("edSpk").innerHTML = "";
+  $("edNewName").hidden = true;
+  $("edErr").textContent = "";
+  $("edSave").textContent = "Copy";
+  $("edSave").onclick = async () => {
+    try{ await navigator.clipboard.writeText(text); $("edErr").textContent = "Copied."; }
+    catch(e){ $("editArea").select(); $("edErr").textContent = "Press Ctrl+C to copy."; }
+  };
+  $("scrim").classList.add("open");
+  $("editor").classList.add("open");
+}
 
 // Debounced so a fast typist does not trigger a render per keystroke.
 let qTimer;
@@ -898,6 +1002,41 @@ $("q").addEventListener("input", () => {
 $("qClear").onclick = () => {
   $("q").value = ""; $("qClear").hidden = true; query = ""; loadClips(); $("q").focus();
 };
+
+async function loadSearch(el){
+  const r = await fetch("/api/search?q=" + encodeURIComponent(query));
+  const results = await r.json();
+  const dated = results.filter(c => inDateRange(c.modified));
+  $("clipCount").textContent =
+    `${dated.length} recording${dated.length===1?"":"s"} matching “${query}”`;
+  if (!dated.length){
+    el.innerHTML = `<div class="empty">Nothing said matches “${esc(query)}”.</div>`;
+    return;
+  }
+  el.innerHTML = "";
+  for (const c of dated){
+    const b = document.createElement("button");
+    b.className = "clip" + (selected.has(c.name) ? " sel" : "");
+    const hits = c.hits.slice(0, 3).map(h =>
+      `<div class="h"><b>${Math.round(h.start)}s</b><span>${h.snippet}</span></div>`).join("");
+    const more = c.hits.length > 3 ? `<div class="h"><b></b><span style="color:var(--faint)">
+      +${c.hits.length - 3} more</span></div>` : "";
+    b.innerHTML = (selectMode
+        ? `<span class="box">${selected.has(c.name) ? "✓" : ""}</span>` : "") +
+      `<div class="ci">
+         <div class="cn">${new Date(c.modified*1000).toLocaleString()}</div>
+         <div class="hits">${hits}${more}</div>
+       </div>
+       <span class="cd">${(c.seconds||0).toFixed(0)}s</span>`;
+    b.onclick = () => {
+      if (selectMode){
+        selected.has(c.name) ? selected.delete(c.name) : selected.add(c.name);
+        syncSelectUI(); loadClips();
+      } else openClip(c.name);
+    };
+    el.appendChild(b);
+  }
+}
 
 function esc(t){ return (t||"").replace(/[&<>]/g, ch => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[ch])); }
 function highlight(text){
@@ -926,7 +1065,9 @@ function inDateRange(modified){
 }
 
 function syncSelectUI(){
-  for (const id of ["bSelAll","bSelNone","bDelSel"]) $(id).hidden = !selectMode;
+  for (const id of ["bSelAll","bSelNone","bDelSel","bExport"]) $(id).hidden = !selectMode;
+  $("bExport").disabled = selected.size === 0;
+  $("bExport").textContent = selected.size ? `Export ${selected.size}` : "Export";
   $("bSelect").textContent = selectMode ? "Done" : "Select";
   $("selCount").textContent = selectMode
     ? `${selected.size} selected` : "";
@@ -940,6 +1081,13 @@ $("bSelect").onclick = () => {
   syncSelectUI(); loadClips();
 };
 $("bSelNone").onclick = () => { selected.clear(); syncSelectUI(); loadClips(); };
+$("bExport").onclick = async () => {
+  if (!selected.size) return;
+  const r = await fetch("/api/export", {method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({names:[...selected], format:"txt"})});
+  showText(await r.text(), `${selected.size} recordings`);
+};
 
 let armBulk = false;
 $("bDelSel").onclick = async () => {
@@ -964,14 +1112,17 @@ $("bDelSel").onclick = async () => {
 async function loadClips(){
   const el = $("clipList");
   try{
+    // With a query, the server searches every segment. Matching against the
+    // 180-character preview here only ever found the opening sentence.
+    if (query){ return await loadSearch(el); }
+    if (groupMode === "conv" && !selectMode){ return await loadConversations(el); }
     const all = await (await fetch("/api/clips")).json();
     // has_speech is null until a clip is transcribed; an unknown clip is not
     // the same as a silent one, so it stays out of both filtered views.
     const clips = all
       .filter(c => clipFilter === "all" ? true
         : clipFilter === "voice" ? c.has_speech === true : c.has_speech === false)
-      .filter(c => inDateRange(c.modified))
-      .filter(matchesQuery);
+      .filter(c => inDateRange(c.modified));
     if (!all.length){
       $("clipCount").textContent = "";
       el.innerHTML = '<div class="empty">No recordings yet. Capture some audio on the Device tab.</div>';
@@ -989,11 +1140,22 @@ async function loadClips(){
       return;
     }
     el.innerHTML = "";
+    let lastDay = null;
     $("bSelAll").onclick = () => {
       clips.forEach(c => selected.add(c.name));
       syncSelectUI(); loadClips();
     };
     for (const c of clips){
+      if (groupMode === "day"){
+        const day = fmtDay(c.modified);
+        if (day !== lastDay){
+          lastDay = day;
+          const h = document.createElement("div");
+          h.className = "daygroup";
+          h.textContent = day;
+          el.appendChild(h);
+        }
+      }
       const b = document.createElement("button");
       b.className = "clip" + (selected.has(c.name) ? " sel" : "");
       b.innerHTML = (selectMode

@@ -31,6 +31,7 @@ from ble_capture import (AUDIO_UUID, CTRL_UUID, INFO_UUID, DEVICE_NAME,
 from bleak import BleakClient, BleakScanner
 
 import agent_runner
+import index_db
 import pipeline
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -122,6 +123,7 @@ class Device:
         path = self.take_clip()
         if path:
             name = os.path.basename(path)
+            index_db.upsert_clip(name)
             self.event("clip", path=name)
             if auto_transcribe:
                 worker.submit(name)
@@ -139,6 +141,7 @@ class Device:
         path = self.take_recovered()
         if path:
             name = os.path.basename(path)
+            index_db.upsert_clip(name)
             self.event("clip", path=name)
             self.event("log", text=f"recovered {secs:.0f}s from device flash")
             if auto_transcribe:
@@ -405,6 +408,11 @@ async def rotator():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    try:
+        st = index_db.sync()   # files on disk are authoritative
+        print(f"index: {st}", flush=True)
+    except Exception as e:
+        print(f"index sync failed: {e}", flush=True)
     device.want(True)          # start looking for the board immediately
     tasks = [asyncio.create_task(device.run()), asyncio.create_task(rotator())]
     yield
@@ -550,15 +558,100 @@ async def api_queue():
 
 
 @app.get("/api/clips")
-async def api_clips():
-    os.makedirs(DATA, exist_ok=True)
-    names = sorted((f for f in os.listdir(DATA) if f.endswith(".wav")),
-                   key=lambda f: os.path.getmtime(os.path.join(DATA, f)),
-                   reverse=True)
-    # The cap is a guard against pathological directories, not a page size.
-    # At 100 it silently hid recordings from the list -- and from anything
-    # operating on the list, like select-all.
-    return [clip_info(n) for n in names[:1000]]
+async def api_clips(limit: int = 1000):
+    """Served from the index. Reading every transcript per request did not
+    scale past a few hundred clips."""
+    rows = index_db.list_clips(limit)
+    # A clip currently being transcribed is not yet reflected on disk.
+    if worker.busy:
+        for r in rows:
+            if r["name"] == worker.busy:
+                r["status"] = "running"
+    return rows
+
+
+@app.get("/api/search")
+async def api_search(q: str, limit: int = 200):
+    """Full text across every segment, with the matching lines returned."""
+    if not q.strip():
+        return []
+    return index_db.search(q, limit)
+
+
+@app.get("/api/conversations")
+async def api_conversations(gap: int = 300, limit: int = 400):
+    return index_db.conversations(gap, limit)
+
+
+@app.get("/api/export/{name}")
+async def api_export(name: str, format: str = "txt"):
+    """Get a transcript out in a form other tools can read."""
+    tp = pipeline.transcript_path(name)
+    if not os.path.exists(tp):
+        raise HTTPException(404, "not transcribed")
+    t = json.load(open(tp))
+    resolved = t.get("speakers") or {}
+
+    def who(seg):
+        return (seg.get("speaker_name")
+                or (resolved.get(seg.get("speaker")) or {}).get("name")
+                or seg.get("speaker") or "UNKNOWN")
+
+    if format == "json":
+        return JSONResponse(t)
+
+    segs = t.get("segments", [])
+    if format == "srt":
+        def ts(x):
+            h, r = divmod(x, 3600); m, sec = divmod(r, 60)
+            return f"{int(h):02d}:{int(m):02d}:{int(sec):02d},{int((sec%1)*1000):03d}"
+        body = "\n".join(
+            f"{i}\n{ts(s['start'])} --> {ts(s['end'])}\n{who(s)}: {s['text']}\n"
+            for i, s in enumerate(segs, 1))
+        media = "text/plain"
+    else:
+        body = "\n".join(f"[{s['start']:.0f}s] {who(s)}: {s['text']}" for s in segs)
+        media = "text/plain"
+    return Response(content=body, media_type=media, headers={
+        "Content-Disposition": f'attachment; filename="{os.path.splitext(name)[0]}.{format}"'})
+
+
+@app.post("/api/export")
+async def api_export_many(body: dict):
+    """Several clips at once, as one document in time order."""
+    names = body.get("names") or []
+    fmt = body.get("format", "txt")
+    parts = []
+    for name in sorted(names, key=lambda n: os.path.getmtime(os.path.join(DATA, n))
+                       if os.path.exists(os.path.join(DATA, n)) else 0):
+        tp = pipeline.transcript_path(name)
+        if not os.path.exists(tp):
+            continue
+        t = json.load(open(tp))
+        resolved = t.get("speakers") or {}
+        when = time.strftime("%Y-%m-%d %H:%M",
+                             time.localtime(os.path.getmtime(os.path.join(DATA, name))))
+        parts.append(f"# {when}  ({name})")
+        for s in t.get("segments", []):
+            nm = (s.get("speaker_name")
+                  or (resolved.get(s.get("speaker")) or {}).get("name")
+                  or s.get("speaker") or "UNKNOWN")
+            parts.append(f"[{s['start']:.0f}s] {nm}: {s['text']}")
+        parts.append("")
+    if fmt == "json":
+        return JSONResponse({"clips": names, "text": "\n".join(parts)})
+    return Response(content="\n".join(parts), media_type="text/plain",
+                    headers={"Content-Disposition": 'attachment; filename="boswell-export.txt"'})
+
+
+@app.get("/api/index")
+async def api_index():
+    return index_db.stats()
+
+
+@app.post("/api/index/rebuild")
+async def api_index_rebuild():
+    return index_db.sync()
 
 
 @app.get("/api/audio/{name}")
@@ -611,6 +704,7 @@ async def api_delete(name: str):
         if os.path.exists(f):
             os.remove(f)
             removed.append(os.path.basename(f))
+    index_db.remove_clip(name)
     device.event("log", text=f"deleted {name}")
     return {"deleted": name, "files": removed}
 
@@ -637,6 +731,7 @@ async def api_delete_many(body: dict):
                   os.path.join(ENVELOPES, name + ".json")):
             if os.path.exists(f):
                 os.remove(f)
+        index_db.remove_clip(name)
         removed.append(name)
     device.event("log", text=f"deleted {len(removed)} recording(s)")
     return {"deleted": len(removed), "missing": len(missing)}
@@ -761,6 +856,7 @@ async def api_edit_transcript(name: str, body: dict):
 
     t["edited"] = True
     json.dump(t, open(tp, "w"), indent=2)
+    index_db.upsert_clip(name)
     device.event("log", text=f"edited {name} line {idx}")
     return {"ok": True, "segment": seg, "edited": True}
 
@@ -937,6 +1033,7 @@ async def api_label(body: dict):
         if not (t["speakers"].get(k) or {}).get("manual"):
             t["speakers"][k] = v
     json.dump(t, open(tp, "w"), indent=2, allow_nan=False)
+    index_db.upsert_clip(clip)
 
     device.event("log", text=(f"named {spk} as {name}"
                               + (f", voiceprint now {count} sample(s)" if enrolled
