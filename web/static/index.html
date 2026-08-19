@@ -266,7 +266,7 @@ audio{display:none}
           <button id="play" aria-label="Play"><svg id="playIcon" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></button>
           <div class="time"><b id="tNow">0:00</b><span id="tDur"> / 0:00</span></div>
           <div class="legend">
-            <span><i style="background:var(--accent)"></i>speech</span>
+            <span><i style="background:var(--accent)"></i><span id="legVoice">speech</span></span>
             <span><i style="background:var(--faint)"></i>quiet</span>
             <span id="winfo"></span>
           </div>
@@ -487,7 +487,18 @@ async function openClip(name){
 }
 
 /* ---- waveform ---- */
-let waveData = null, waveSegs = [], waveDur = 0;
+let waveData = null, waveSegs = [], waveDur = 0, spkColors = {};
+
+/* Distinguishable at a glance and legible on both light and dark grounds.
+   The first is the theme accent so a single-speaker clip looks unchanged. */
+const SPK_PALETTE = ["var(--accent)", "#8E5BC7", "#C0872E", "#C2596B",
+                     "#3E9E6A", "#4A7FD4", "#B4603F"];
+
+function assignSpeakerColors(ids){
+  spkColors = {};
+  ids.forEach((id, i) => { spkColors[id] = SPK_PALETTE[i % SPK_PALETTE.length]; });
+}
+function colorOf(c){ return c.startsWith("var(") ? cssVar("--accent") : c; }
 
 function cssVar(n){ return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
 
@@ -505,16 +516,29 @@ function drawWave(){
   if (!n) return;
   const bw = w / n, mid = h / 2, pad = 5;
 
-  // A bar is "speech" if a transcript segment covers its moment. Falls back to
-  // a loudness cut when the clip has not been transcribed yet.
-  const speechAt = t => waveSegs.some(s => t >= s.start && t <= s.end);
+  // Each bar takes the colour of whoever was speaking at that moment; quiet
+  // stays grey. Without a transcript we can only say "loud", not "speech",
+  // so the legend says so rather than looking identical.
+  const segAt = t => waveSegs.find(s => t >= s.start && t <= s.end);
   const hasSegs = waveSegs.length > 0;
+  const lv = document.getElementById("legVoice");
+  if (lv) lv.textContent = hasSegs ? "speech" : "loud (not transcribed)";
 
   for (let i = 0; i < n; i++){
     const t = (i / n) * waveDur;
-    const voiced = hasSegs ? speechAt(t) : env[i] > 0.28;
-    g.fillStyle = voiced ? cssVar("--accent") : cssVar("--faint");
-    g.globalAlpha = voiced ? 0.95 : 0.4;
+    let fill = cssVar("--faint"), alpha = 0.4;
+    if (hasSegs){
+      const seg = segAt(t);
+      if (seg){
+        fill = colorOf(spkColors[seg.speaker] || "var(--accent)");
+        alpha = 0.95;
+      }
+    } else if (env[i] > 0.28){
+      fill = cssVar("--accent");
+      alpha = 0.95;
+    }
+    g.fillStyle = fill;
+    g.globalAlpha = alpha;
     const bh = Math.max(1, env[i] * (mid - pad));
     g.fillRect(i * bw, mid - bh, Math.max(1, bw - 0.5), bh * 2);
   }
@@ -586,22 +610,30 @@ async function renderTranscript(name){
     return;
   }
   const t = await r.json();
-  waveSegs = t.segments.map(s => ({start: s.start, end: s.end}));
+  waveSegs = t.segments.map(s => ({start: s.start, end: s.end, speaker: s.speaker}));
+  assignSpeakerColors([...new Set(t.segments.map(x => x.speaker).filter(Boolean))]);
   drawWave();
   const named = t.speakers || {};
   const label = s => (named[s] && named[s].name) ? named[s].name : s;
 
   const ids = [...new Set(t.segments.map(s => s.speaker).filter(Boolean))];
+  assignSpeakerColors(ids);
   $("dSpeakers").innerHTML = "";
   for (const id of ids){
     const chip = document.createElement("span");
     const known = named[id] && named[id].name;
     const score = named[id] ? named[id].score : 0;
+    const col = colorOf(spkColors[id]);
     chip.className = "who" + (known ? " named" : "");
-    // Showing the score makes a near-miss legible instead of mysterious.
-    chip.textContent = known
-      ? `${named[id].name} · ${score.toFixed(2)} · tap to rename`
-      : `${id} · best ${score ? score.toFixed(2) : "—"} · tap to name`;
+    chip.style.borderColor = col;
+    chip.style.color = col;
+    chip.style.background = "transparent";
+    const secs = t.segments.filter(x => x.speaker === id)
+                           .reduce((a, x) => a + (x.end - x.start), 0);
+    chip.innerHTML = `<i style="display:inline-block;width:9px;height:9px;border-radius:2px;
+      background:${col};margin-right:6px;vertical-align:-1px"></i>` +
+      (known ? `${named[id].name} · ${secs.toFixed(0)}s · ${score.toFixed(2)}`
+             : `${id} · ${secs.toFixed(0)}s · tap to name`);
     chip.onclick = () => nameSpeaker(name, id, known || "");
     $("dSpeakers").appendChild(chip);
   }
@@ -611,7 +643,10 @@ async function renderTranscript(name){
   for (const s of t.segments){
     const d = document.createElement("div");
     d.className = "seg";
-    const who = s.speaker ? `<span class="who ${named[s.speaker]&&named[s.speaker].name?'named':''}">${label(s.speaker)}</span> ` : "";
+    const col = s.speaker ? colorOf(spkColors[s.speaker] || "var(--accent)") : "";
+    const who = s.speaker
+      ? `<span class="who" style="border-color:${col};color:${col};background:transparent">${label(s.speaker)}</span> `
+      : "";
     d.innerHTML = `<span class="t" data-at="${s.start}">${s.start.toFixed(0)}s</span><div>${who}${s.text}</div>`;
     d.querySelector(".t").onclick = () => { const p = $("player"); p.currentTime = s.start; p.play(); };
     $("dSegs").appendChild(d);
