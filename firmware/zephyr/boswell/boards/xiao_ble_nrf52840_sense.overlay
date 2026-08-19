@@ -7,3 +7,18 @@
 &pdm0 {
 	status = "okay";
 };
+
+/ {
+	chosen {
+		/* Route console and logs to USB CDC so a board with no debug
+		 * probe can still be diagnosed. */
+		zephyr,console = &cdc_acm_uart0;
+		zephyr,shell-uart = &cdc_acm_uart0;
+	};
+};
+
+&zephyr_udc0 {
+	cdc_acm_uart0: cdc_acm_uart0 {
+		compatible = "zephyr,cdc-acm-uart";
+	};
+};

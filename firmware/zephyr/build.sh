@@ -19,7 +19,12 @@ export ZEPHYR_TOOLCHAIN_VARIANT=zephyr
 export ZEPHYR_SDK_INSTALL_DIR="$ZEPHYR_SDK_DIR"
 [ -d "$NCS_DIR/.venv" ] && export PATH="$NCS_DIR/.venv/bin:$PATH"
 
-west build -p auto -b "$BOARD" -d "$BUILD_DIR" "$HERE/boswell"
+# --no-sysbuild is load-bearing. With sysbuild, NCS's Partition Manager
+# overrides the board's CONFIG_FLASH_LOAD_OFFSET and links the image at 0x0.
+# The Adafruit bootloader then writes it at 0x27000, so the vector table sits
+# where the code was not built for and the board hard-faults on boot: no LED,
+# no USB, nothing to debug with.
+west build -p auto --no-sysbuild -b "$BOARD" -d "$BUILD_DIR" "$HERE/boswell"
 
 UF2="$BUILD_DIR/boswell/zephyr/zephyr.uf2"
 echo "built: $UF2"

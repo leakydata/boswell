@@ -15,6 +15,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/watchdog.h>
+#include <zephyr/usb/usb_device.h>
 #include <zephyr/logging/log.h>
 
 LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
@@ -195,17 +196,23 @@ static void capture_fn(void *a, void *b, void *c)
 
 int main(void)
 {
-    LOG_INF("Boswell starting");
+    /* USB and the LED come first so that whatever happens next can be seen.
+     * The first version of this initialised the microphone and Bluetooth
+     * before either, and when it faulted there was no way to tell why. */
     led_init();
     led_set(false, false, true);
+    (void)usb_enable(NULL);
+    k_sleep(K_MSEC(1500));          /* let a host enumerate before we talk */
+    LOG_INF("Boswell starting");
 
-    if (mic_init() != 0) {
-        LOG_ERR("microphone init failed");
-    }
-    if (ble_audio_init(on_ctrl) != 0) {
-        LOG_ERR("bluetooth init failed");
-    }
+    int err = mic_init();
+    LOG_INF("mic_init -> %d", err);
+
+    err = ble_audio_init(on_ctrl);
+    LOG_INF("ble_audio_init -> %d", err);
+
     watchdog_init();
+    LOG_INF("watchdog ready");
 
     k_thread_create(&capture_thread, capture_stack, CAPTURE_STACK,
                     capture_fn, NULL, NULL, NULL,
