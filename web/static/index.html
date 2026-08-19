@@ -181,6 +181,30 @@ select.filter:focus{outline:2px solid var(--accent);outline-offset:-1px}
 /* A part with no speech is still worth listing -- it is where the silence in
    a conversation actually was -- but it should not compete with the rest. */
 .conv .parts button.quiet{opacity:.45}
+
+/* Conversation reader */
+.cvmeta{font-family:var(--mono);font-size:12px;color:var(--faint);margin:2px 0 12px}
+.cvnow[hidden]{display:none}
+.cvnow{display:flex;align-items:center;gap:10px;margin:10px 0 14px;padding:9px 12px;
+  border:1px solid var(--rule);border-radius:8px;background:var(--sunk)}
+.cvnow button{min-height:32px;padding:4px 12px;flex:none}
+.cvnow span{font-family:var(--mono);font-size:12px;color:var(--ink-2)}
+.cvline{display:flex;gap:10px;padding:7px 0;border-bottom:1px solid var(--rule)}
+.cvline:last-child{border-bottom:none}
+.cvline .cvt{font-family:var(--mono);font-size:11px;color:var(--faint);
+  flex:none;min-width:62px;padding-top:3px;text-align:left;background:none;
+  border:none;cursor:pointer}
+.cvline .cvt:hover{color:var(--accent)}
+.cvline .cvbody{flex:1;min-width:0}
+.cvline .cvwho{font-size:11.5px;font-weight:600;margin-right:7px}
+.cvline .cvtext{font-size:14.5px;color:var(--ink);line-height:1.5}
+.cvline.playing{background:color-mix(in srgb,var(--accent) 10%,transparent)}
+.cvclip{display:flex;align-items:center;gap:9px;margin:15px 0 6px}
+.cvclip hr{flex:1;border:none;border-top:1px solid var(--rule)}
+.cvclip button{font-family:var(--mono);font-size:10.5px;min-height:26px;
+  padding:2px 9px;flex:none;color:var(--faint)}
+.cvgap{font-family:var(--mono);font-size:11px;color:var(--faint);
+  padding:8px 0;font-style:italic}
 .conv .parts button{min-height:30px;padding:4px 9px;font-size:11.5px;
   font-family:var(--mono);flex:0 0 auto}
 .clip.sel{border-color:var(--accent)}
@@ -440,6 +464,25 @@ button.who{font-size:11px}
     </div>
     <div class="card" id="clipList" style="border:none;background:transparent;padding:0">
       <div class="empty">loading…</div>
+    </div>
+
+    <div class="card" id="convDetail" hidden>
+      <h2 id="cvTitle">Conversation</h2>
+      <div class="cvmeta" id="cvMeta"></div>
+      <div class="spk" id="cvSpeakers"></div>
+      <audio id="cvPlayer" preload="none"></audio>
+      <div class="cvnow" id="cvNow" hidden>
+        <button id="cvPlay" aria-label="Play or pause">▶</button>
+        <span id="cvNowLabel"></span>
+      </div>
+      <div id="cvSegs"></div>
+      <div class="btns" style="margin-top:16px">
+        <button id="cvBack">Back</button>
+        <button class="pri" id="cvExport">Export</button>
+        <button id="cvTranscribe">Transcribe missing</button>
+      </div>
+      <div id="cvMsg" style="font-family:var(--mono);font-size:12px;color:var(--muted);
+           min-height:16px;margin-top:10px"></div>
     </div>
 
     <div class="card" id="detail" hidden>
@@ -984,14 +1027,19 @@ async function loadConversations(el){
 
     const acts = d.querySelector(".convacts");
     const parts = d.querySelector(".parts");
+    /* The heading and the preview are the obvious things to click. */
+    d.querySelector(".ch").style.cursor = "pointer";
+    d.querySelector(".ch").onclick = () => openConversation(c);
+    const pv = d.querySelector(".cpv");
+    if (pv){ pv.style.cursor = "pointer"; pv.onclick = () => openConversation(c); }
 
-    /* Open the conversation at its beginning. Previously the only way in was
-       to pick one of N identical "part" buttons, which told you nothing about
-       which part you wanted. */
+    /* Opens the whole conversation. This used to open the first clip, which
+       meant the thing the agent summarises could only be read thirty seconds
+       at a time and the rest was reachable only by clicking through parts. */
     const openBtn = document.createElement("button");
     openBtn.className = "pri";
-    openBtn.textContent = "Open";
-    openBtn.onclick = () => openClip(c.clips[0]);
+    openBtn.textContent = "Read";
+    openBtn.onclick = () => openConversation(c);
     acts.appendChild(openBtn);
 
     /* The parts list is worth having but not worth showing by default: a long
@@ -1324,6 +1372,187 @@ async function openClip(name){
   await renderTranscript(name);
 }
 
+
+/* ---- conversation reader ----
+   Opening a conversation used to land on its first clip, which meant the
+   thing the agent actually summarises could only be read thirty seconds at
+   a time. This shows every line in order; a clip is one click away from any
+   line rather than being the only way in. */
+let cvCurrent = null;
+
+async function openConversation(conv){
+  cvCurrent = conv;
+  $("clipList").hidden = true;
+  $("detail").hidden = true;
+  $("convDetail").hidden = false;
+  $("cvMsg").textContent = "";
+  $("cvNow").hidden = true;
+
+  const people = conv.speakers.filter(x => x && x !== "unknown");
+  $("cvTitle").textContent = `${fmtClock(conv.start)}–${fmtClock(conv.end)}`
+    + (people.length ? ` · ${people.join(", ")}` : "");
+  $("cvMeta").textContent =
+    `${fmtDay(conv.end)} · ${fmtDur(conv.seconds)} · ${conv.clips.length} clip`
+    + `${conv.clips.length === 1 ? "" : "s"}`;
+  $("cvSegs").innerHTML = '<div class="empty">loading…</div>';
+  $("cvSpeakers").innerHTML = "";
+
+  let data;
+  try{
+    const r = await fetch("/api/conversation", {method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({names: conv.clips})});
+    if (!r.ok) throw new Error("bad response");
+    data = await r.json();
+  }catch(e){
+    $("cvSegs").innerHTML = '<div class="empty">could not load this conversation</div>';
+    return;
+  }
+
+  const named = data.speakers || {};
+  const ids = [...new Set(data.segments.map(x => x.speaker).filter(Boolean))];
+  assignSpeakerColors(ids);
+
+  /* Same chips as a single clip, so naming someone works from here too. */
+  for (const id of ids){
+    const chip = document.createElement("button");
+    const known = named[id] && named[id].name;
+    const col = colorOf(spkColors[id]);
+    chip.className = "who" + (known ? " named" : "");
+    chip.style.borderColor = col; chip.style.color = col;
+    chip.style.background = "transparent";
+    const secs = data.segments.filter(x => x.speaker === id)
+                              .reduce((a, x) => a + (x.end - x.start), 0);
+    chip.textContent = known ? `${known} · ${secs.toFixed(0)}s`
+                             : `${id} · ${secs.toFixed(0)}s · tap to name`;
+    /* Naming re-reads the conversation rather than a clip, so the new name
+       shows on every line it applies to and not just the one clip it came
+       from. */
+    chip.onclick = () => nameSpeaker(data.segments.find(x => x.speaker === id).clip,
+                                     id, known || "", () => openConversation(conv));
+    $("cvSpeakers").appendChild(chip);
+  }
+
+  $("cvSegs").innerHTML = "";
+  if (!data.segments.length){
+    $("cvSegs").innerHTML = data.not_transcribed
+      ? `<div class="empty">None of these ${conv.clips.length} clips are transcribed yet.</div>`
+      : '<div class="empty">No speech detected in this conversation.</div>';
+    return;
+  }
+
+  const byClip = {};
+  data.clips.forEach(c => { byClip[c.name] = c; });
+
+  /* Every clip's transcript restarts at zero, so a raw segment offset showed
+     "0:00" over and over down a twenty-five minute conversation.
+     Position is measured as duration accumulated over the preceding clips
+     rather than from file timestamps: a clip recovered from the device's
+     flash is written when the backlog drains, not when the audio happened,
+     so its mtime sits well after its true place and mtime arithmetic ran the
+     clock backwards mid-conversation. */
+  let acc = 0;
+  const offsetOf = {};
+  data.clips.forEach(c => { offsetOf[c.name] = acc; acc += (c.seconds || 0); });
+  const elapsedOf = seg => (offsetOf[seg.clip] || 0) + seg.start;
+
+  let lastClip = null;
+  data.segments.forEach(seg => {
+    if (seg.clip !== lastClip){
+      lastClip = seg.clip;
+      const info = byClip[seg.clip] || {};
+      const bar = document.createElement("div");
+      bar.className = "cvclip";
+      const b = document.createElement("button");
+      b.textContent = info.started ? fmtClockSec(info.started) : seg.clip;
+      b.title = "Open this clip on its own";
+      b.onclick = () => openClip(seg.clip);
+      bar.innerHTML = "<hr>";
+      bar.appendChild(b);
+      const hr2 = document.createElement("hr");
+      bar.appendChild(hr2);
+      $("cvSegs").appendChild(bar);
+    }
+
+    const line = document.createElement("div");
+    line.className = "cvline";
+    const who = seg.speaker_name || (named[seg.speaker] && named[seg.speaker].name)
+                || seg.speaker || "";
+    const col = seg.speaker ? colorOf(spkColors[seg.speaker]) : "var(--faint)";
+
+    const t = document.createElement("button");
+    t.className = "cvt";
+    const el = elapsedOf(seg);
+    t.textContent = `${Math.floor(el / 60)}:${String(Math.floor(el % 60)).padStart(2,"0")}`;
+    t.title = "Play from here";
+    t.onclick = () => cvPlayFrom(seg, line);
+
+    const body = document.createElement("div");
+    body.className = "cvbody";
+    body.innerHTML = (who ? `<span class="cvwho" style="color:${col}">${esc(who)}</span>` : "")
+      + `<span class="cvtext">${esc(seg.text)}</span>`;
+    /* Clicking the words edits the line, the same as in a single clip. */
+    body.querySelector(".cvtext").style.cursor = "text";
+    body.querySelector(".cvtext").onclick = () =>
+      editLine(seg.clip, seg.index, seg, ids, named);
+
+    line.appendChild(t);
+    line.appendChild(body);
+    $("cvSegs").appendChild(line);
+  });
+
+  if (data.not_transcribed){
+    $("cvMsg").textContent =
+      `${data.not_transcribed} clip${data.not_transcribed === 1 ? "" : "s"} not transcribed yet`;
+  }
+}
+
+/* Plays the clip a line came from, positioned at that line. The conversation
+   spans many files, so there is no single timeline to seek within. */
+function cvPlayFrom(seg, lineEl){
+  const p = $("cvPlayer");
+  const src = "/api/audio/" + encodeURIComponent(seg.clip);
+  if (!p.src.endsWith(encodeURIComponent(seg.clip))){
+    p.src = src;
+  }
+  p.currentTime = seg.start;
+  p.play().catch(() => {});
+  $("cvNow").hidden = false;
+  $("cvNowLabel").textContent = `playing from ${seg.start.toFixed(0)}s`;
+  [...document.querySelectorAll(".cvline.playing")].forEach(e => e.classList.remove("playing"));
+  if (lineEl) lineEl.classList.add("playing");
+}
+
+$("cvPlay").onclick = () => {
+  const p = $("cvPlayer");
+  if (p.paused) p.play().catch(() => {}); else p.pause();
+};
+$("cvPlayer").addEventListener("play",  () => { $("cvPlay").textContent = "❚❚"; });
+$("cvPlayer").addEventListener("pause", () => { $("cvPlay").textContent = "▶"; });
+
+$("cvBack").onclick = () => {
+  $("cvPlayer").pause();
+  $("convDetail").hidden = true;
+  $("clipList").hidden = false;
+  cvCurrent = null;
+  loadClips();
+};
+$("cvExport").onclick = async () => {
+  if (!cvCurrent) return;
+  const r = await fetch("/api/export", {method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({names: cvCurrent.clips, format:"txt"})});
+  showText(await r.text(), `${fmtDay(cvCurrent.end)} ${fmtClock(cvCurrent.start)}`);
+};
+$("cvTranscribe").onclick = async () => {
+  if (!cvCurrent) return;
+  $("cvMsg").textContent = "queueing…";
+  for (const n of cvCurrent.clips){
+    await fetch("/api/transcribe/" + encodeURIComponent(n), {method:"POST"});
+  }
+  $("cvMsg").textContent = "queued — this page refreshes when they finish";
+};
+
 /* ---- waveform ---- */
 let waveData = null, waveSegs = [], waveDur = 0, spkColors = {};
 
@@ -1525,8 +1754,11 @@ async function renderTranscript(name){
    naming flow is an in-page sheet instead. */
 let namerCtx = null;
 
-async function nameSpeaker(clip, speaker, existing){
-  namerCtx = {clip, speaker};
+async function nameSpeaker(clip, speaker, existing, onSaved){
+  /* onSaved lets the conversation reader re-read itself after a rename, so a
+     name lands on every line it applies to rather than only the clip the
+     chip happened to come from. */
+  namerCtx = {clip, speaker, onSaved};
   $("namerT").textContent = existing ? `Rename ${existing}?` : "Who is speaking?";
   $("namerSub").textContent = `${speaker} · ${clip}`;
   $("namerInput").value = existing || "";
@@ -1626,7 +1858,11 @@ async function saveName(){
         log(`named ${namerCtx.speaker} as ${name} · voiceprint unchanged`);
         msgAfterNaming(name, body.reason, clip, namerCtx.speaker);
       }
-      await renderTranscript(clip);
+      /* The conversation reader passes its own refresh; re-rendering a single
+         clip's transcript would leave the rest of the conversation showing the
+         old name. */
+      if (namerCtx && namerCtx.onSaved){ await namerCtx.onSaved(); }
+      else { await renderTranscript(clip); }
       if (body.enrolled) return;
     } else {
       $("namerErr").textContent = body.detail || "Could not save that name";
@@ -1709,7 +1945,14 @@ $("bSplit").onclick = async () => {
   loadClips();
 };
 
-$("bBack").onclick = () => { $("detail").hidden = true; $("clipList").hidden = false; loadClips(); };
+$("bBack").onclick = () => {
+  $("detail").hidden = true;
+  /* A clip opened from inside a conversation goes back to the conversation,
+     not to the top of the list the reader had already scrolled past. */
+  if (cvCurrent){ openConversation(cvCurrent); return; }
+  $("clipList").hidden = false;
+  loadClips();
+};
 let armRetranscribe = false;
 $("bTranscribe").onclick = async () => {
   if (!current) return;

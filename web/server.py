@@ -691,6 +691,74 @@ async def api_transcript(name: str):
     return JSONResponse(json.load(open(tp)))
 
 
+@app.post("/api/conversation")
+async def api_conversation(body: dict):
+    """Every transcribed line of one conversation, in order.
+
+    A thirty-second clip is a storage unit. What someone wants to read -- and
+    what the agent is handed when it summarises -- is the whole conversation,
+    so opening one used to land on its first clip and leave the rest
+    unreachable without clicking through parts one at a time.
+
+    Lines keep their clip and their offset inside it, so the reader can jump
+    straight to the audio for any line without the caller having to work out
+    which clip a moment belongs to.
+    """
+    names = body.get("names") or []
+    if not isinstance(names, list) or not names:
+        raise HTTPException(400, "need a list of clip names")
+
+    segments, clips = [], []
+    speakers: dict = {}
+    missing = 0
+
+    for name in names:
+        if "/" in name or not name.endswith(".wav"):
+            raise HTTPException(400, f"bad name: {name}")
+        tp = pipeline.transcript_path(name)
+        wav = os.path.join(DATA, name)
+        started = os.path.getmtime(wav) if os.path.exists(wav) else 0
+        dur = 0.0
+        try:
+            import wave as _wave
+            with _wave.open(wav) as w:
+                dur = w.getnframes() / float(w.getframerate() or 1)
+        except Exception:
+            dur = 0.0
+        if not os.path.exists(tp):
+            missing += 1
+            clips.append({"name": name, "started": started, "seconds": round(dur, 2),
+                          "transcribed": False})
+            continue
+
+        t = json.load(open(tp))
+        segs = t.get("segments", [])
+        clips.append({"name": name, "started": started, "seconds": round(dur, 2),
+                      "transcribed": True, "lines": len(segs)})
+
+        # Merge speaker records. A later clip's score wins only if it is more
+        # confident, so one weak match cannot rename a whole conversation.
+        for sid, rec in (t.get("speakers") or {}).items():
+            cur = speakers.get(sid)
+            if cur is None or (rec.get("score") or 0) > (cur.get("score") or 0):
+                speakers[sid] = rec
+
+        for i, seg in enumerate(segs):
+            segments.append({
+                "clip": name,
+                "index": i,
+                "start": seg.get("start", 0.0),
+                "end": seg.get("end", 0.0),
+                "text": seg.get("text", ""),
+                "speaker": seg.get("speaker"),
+                "speaker_name": seg.get("speaker_name"),
+                "edited": bool(seg.get("edited")),
+            })
+
+    return {"clips": clips, "segments": segments, "speakers": speakers,
+            "not_transcribed": missing}
+
+
 @app.delete("/api/clip/{name}")
 async def api_delete(name: str):
     if "/" in name or not name.endswith(".wav"):
