@@ -1796,7 +1796,12 @@ async function nameSpeaker(clip, speaker, existing, onSaved){
     const people = await (await fetch("/api/speakers")).json();
     for (const p of people){
       const b = document.createElement("button");
-      b.textContent = `${p.name} (${p.samples})`;
+      /* samples is the list of voiceprint samples; count is how many.
+         Interpolating the list gave "Blase ([object Object])". */
+      const n = (typeof p.count === "number") ? p.count
+              : (Array.isArray(p.samples) ? p.samples.length : 0);
+      b.textContent = n ? `${p.name} · ${n}` : p.name;
+      b.title = n ? `${n} voiceprint sample${n === 1 ? "" : "s"}` : "no voiceprint yet";
       b.onclick = () => { $("namerInput").value = p.name; saveName(); };
       q.appendChild(b);
     }
