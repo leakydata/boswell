@@ -174,7 +174,13 @@ select.filter:focus{outline:2px solid var(--accent);outline-offset:-1px}
 .conv .cm{font-family:var(--mono);font-size:11.5px;color:var(--faint);flex:none}
 .conv .cpv{font-size:14px;color:var(--ink-2);margin-top:5px;
   display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.conv .convacts{display:flex;flex-wrap:wrap;gap:8px;margin-top:11px}
+.conv .convacts button{flex:0 0 auto;min-height:34px;padding:6px 14px;font-size:13px}
 .conv .parts{display:flex;flex-wrap:wrap;gap:6px;margin-top:9px}
+.conv .parts[hidden]{display:none}
+/* A part with no speech is still worth listing -- it is where the silence in
+   a conversation actually was -- but it should not compete with the rest. */
+.conv .parts button.quiet{opacity:.45}
 .conv .parts button{min-height:30px;padding:4px 9px;font-size:11.5px;
   font-family:var(--mono);flex:0 0 auto}
 .clip.sel{border-color:var(--accent)}
@@ -965,37 +971,86 @@ async function loadConversations(el){
     const d = document.createElement("div");
     d.className = "conv";
     const people = c.speakers.filter(x => x && x !== "unknown");
+    const n = c.clips.length;
     d.innerHTML =
       `<div class="ch">
-         <span class="cw">${fmtClock(c.start)}${people.length ? " · " + esc(people.join(", ")) : ""}</span>
-         <span class="cm">${fmtDur(c.seconds)} · ${c.clips.length} clip${c.clips.length===1?"":"s"}</span>
+         <span class="cw">${fmtClock(c.start)}–${fmtClock(c.end)}${people.length ? " · " + esc(people.join(", ")) : ""}</span>
+         <span class="cm">${fmtDur(c.seconds)} · ${n} clip${n===1?"":"s"}${
+             typeof c.with_speech === "number" && c.with_speech < n
+               ? ` · ${n - c.with_speech} silent` : ""}</span>
        </div>` +
       (c.preview ? `<div class="cpv">${esc(c.preview)}</div>` : "") +
-      `<div class="parts"></div>`;
+      `<div class="convacts"></div><div class="parts" hidden></div>`;
+
+    const acts = d.querySelector(".convacts");
     const parts = d.querySelector(".parts");
-    c.clips.slice().reverse().forEach((n, i) => {
-      const b = document.createElement("button");
-      b.textContent = `part ${c.clips.length - i}`;
-      b.onclick = () => openClip(n);
-      parts.appendChild(b);
-    });
+
+    /* Open the conversation at its beginning. Previously the only way in was
+       to pick one of N identical "part" buttons, which told you nothing about
+       which part you wanted. */
+    const openBtn = document.createElement("button");
+    openBtn.className = "pri";
+    openBtn.textContent = "Open";
+    openBtn.onclick = () => openClip(c.clips[0]);
+    acts.appendChild(openBtn);
+
+    /* The parts list is worth having but not worth showing by default: a long
+       conversation produced eighty-odd identical chips and buried everything
+       else on the page. */
+    const toggle = document.createElement("button");
+    const setToggle = () => {
+      toggle.textContent = parts.hidden ? `Show ${n} part${n===1?"":"s"}` : "Hide parts";
+      toggle.setAttribute("aria-expanded", String(!parts.hidden));
+    };
+    toggle.onclick = () => {
+      if (parts.hidden && !parts.dataset.built){
+        c.clips.forEach((name, i) => {
+          const b = document.createElement("button");
+          /* Labelled by clock time rather than an index. "part 47" tells you
+             nothing about when it happened; a timestamp is how someone
+             actually looks for a moment in a conversation. */
+          const t = clipTime(name);
+          /* Seconds included: clips land about thirty seconds apart, so
+             minute resolution gave consecutive parts identical labels. */
+          b.textContent = t ? fmtClockSec(t) : `part ${i + 1}`;
+          b.onclick = () => openClip(name);
+          parts.appendChild(b);
+        });
+        parts.dataset.built = "1";
+      }
+      parts.hidden = !parts.hidden;
+      setToggle();
+    };
+    setToggle();
+    acts.appendChild(toggle);
+
     const ex = document.createElement("button");
-    ex.textContent = "export";
+    ex.textContent = "Export";
     ex.onclick = async () => {
       const r = await fetch("/api/export", {method:"POST",
         headers:{"Content-Type":"application/json"},
         body: JSON.stringify({names: c.clips, format:"txt"})});
       showText(await r.text(), `${day} ${fmtClock(c.start)}`);
     };
-    parts.appendChild(ex);
+    acts.appendChild(ex);
+
     el.appendChild(d);
   }
 }
 
-/* Correct one line of transcript, or move it to a different speaker.
-   The line click has always called this; it was never written, so tapping
-   any line in a transcript threw and nothing happened. The server has taken
-   PATCH /api/transcript/{name} the whole time. */
+function fmtClockSec(t){
+  return new Date(t*1000).toLocaleTimeString([],
+    {hour:"numeric", minute:"2-digit", second:"2-digit"});
+}
+
+/* Clip files are named for the second they were saved, which is the only
+   per-clip timestamp the conversation list carries. */
+function clipTime(name){
+  const m = /_(\d{9,})\./.exec(name);
+  return m ? Number(m[1]) : null;
+}
+
+
 async function editLine(name, index, seg, ids, named){
   $("edT").textContent = "Edit line";
   $("edSub").textContent = `${seg.start.toFixed(0)}s — correct the words, or pick who said it.`;
