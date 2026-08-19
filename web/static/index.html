@@ -267,7 +267,7 @@ audio{display:none}
           <div class="time"><b id="tNow">0:00</b><span id="tDur"> / 0:00</span></div>
           <div class="legend">
             <span><i style="background:var(--accent)"></i><span id="legVoice">speech</span></span>
-            <span><i style="background:var(--faint)"></i>quiet</span>
+            <span><i style="background:var(--faint)"></i>not voice</span>
             <span id="winfo"></span>
           </div>
         </div>
@@ -522,10 +522,14 @@ function drawWave(){
   const segAt = t => waveSegs.find(s => t >= s.start && t <= s.end);
   const hasSegs = waveSegs.length > 0;
   const lv = document.getElementById("legVoice");
-  if (lv) lv.textContent = hasSegs ? "speech" : "loud (not transcribed)";
+  if (lv) lv.textContent = hasSegs ? "voice" : "transcribe to mark voices";
 
   for (let i = 0; i < n; i++){
     const t = (i / n) * waveDur;
+    // Colour means voice, and only voice. There used to be a loudness
+    // fallback here for untranscribed clips, but that painted any loud
+    // noise as though it were speech -- which is the one thing this view
+    // exists to distinguish. Without a transcript, everything stays grey.
     let fill = cssVar("--faint"), alpha = 0.4;
     if (hasSegs){
       const seg = segAt(t);
@@ -533,9 +537,6 @@ function drawWave(){
         fill = colorOf(spkColors[seg.speaker] || "var(--accent)");
         alpha = 0.95;
       }
-    } else if (env[i] > 0.28){
-      fill = cssVar("--accent");
-      alpha = 0.95;
     }
     g.fillStyle = fill;
     g.globalAlpha = alpha;
