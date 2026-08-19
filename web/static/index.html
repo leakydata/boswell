@@ -199,6 +199,11 @@ audio{width:100%;margin:6px 0 14px}
   </div>
 
   <div class="view" id="viewRec" hidden>
+    <div class="btns" style="margin-bottom:14px">
+      <button class="pri" id="bAll">Transcribe all</button>
+      <button id="bRefresh">Refresh</button>
+      <span class="val" id="qdepth" style="align-self:center"></span>
+    </div>
     <div class="card" id="clipList" style="border:none;background:transparent;padding:0">
       <div class="empty">loading…</div>
     </div>
@@ -369,6 +374,23 @@ async function nameSpeaker(clip, speaker, existing){
   if (r.ok){ log(`labelled ${speaker} as ${name}`); await renderTranscript(clip); }
   else { const e = await r.json().catch(()=>({})); alert(e.detail || "could not save that name"); }
 }
+
+$("bAll").onclick = async () => {
+  const r = await (await fetch("/api/transcribe_all", {method:"POST"})).json();
+  log(`queued ${r.queued} clip(s)`);
+  pollQueue();
+};
+$("bRefresh").onclick = () => loadClips();
+
+async function pollQueue(){
+  try{
+    const q = await (await fetch("/api/queue")).json();
+    $("qdepth").textContent = q.busy ? `${q.pending + 1} left…` : (q.pending ? `${q.pending} left…` : "");
+    if (q.busy || q.pending) setTimeout(pollQueue, 2500);
+    else loadClips();
+  }catch(e){}
+}
+setInterval(() => { if (!$("viewRec").hidden && $("detail").hidden) pollQueue(); }, 8000);
 
 $("bBack").onclick = () => { $("detail").hidden = true; $("clipList").hidden = false; loadClips(); };
 $("bTranscribe").onclick = async () => {

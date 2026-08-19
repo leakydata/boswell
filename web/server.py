@@ -156,7 +156,12 @@ class Device:
                     last_clip = now
                     path = self.take_clip()
                     if path:
-                        self.event("clip", path=os.path.basename(path))
+                        name = os.path.basename(path)
+                        self.event("clip", path=name)
+                        # Transcribe automatically -- a device that records
+                        # continuously should not need a tap per clip.
+                        if auto_transcribe:
+                            worker.submit(name)
 
             self.client = None
             self.state["connected"] = False
@@ -200,6 +205,7 @@ class Device:
         self.publish()
 
 
+auto_transcribe = True
 device = Device()
 worker = pipeline.Worker(notify=lambda kind, **kw: device.event(kind, **kw))
 
@@ -220,7 +226,17 @@ def clip_info(name):
             t = json.load(open(tp))
             segs = t.get("segments", [])
             preview = " ".join(x["text"] for x in segs)[:180]
-            speakers = sorted({x["speaker"] for x in segs if x.get("speaker")})
+            # Show who was talking, not diarization's internal SPEAKER_xx ids.
+            resolved = t.get("speakers") or {}
+            seen = []
+            for x in segs:
+                sp = x.get("speaker")
+                if not sp:
+                    continue
+                nm = (resolved.get(sp) or {}).get("name") or "unknown"
+                if nm not in seen:
+                    seen.append(nm)
+            speakers = seen
         except Exception:
             status = "error"
     if worker.busy == name:
@@ -244,6 +260,28 @@ app.mount("/static", StaticFiles(directory=os.path.join(HERE, "static")), name="
 @app.get("/")
 async def index():
     return FileResponse(os.path.join(HERE, "static", "index.html"))
+
+
+@app.post("/api/transcribe_all")
+async def api_transcribe_all():
+    """Queue every clip that has no transcript yet."""
+    os.makedirs(DATA, exist_ok=True)
+    queued = []
+    for f in sorted(os.listdir(DATA)):
+        if not f.endswith(".wav"):
+            continue
+        if os.path.exists(pipeline.transcript_path(f)):
+            continue
+        worker.submit(f)
+        queued.append(f)
+    device.event("log", text=f"queued {len(queued)} clip(s) for transcription")
+    return {"queued": len(queued)}
+
+
+@app.get("/api/queue")
+async def api_queue():
+    return {"pending": worker.q.qsize(), "busy": worker.busy,
+            "auto": auto_transcribe}
 
 
 @app.get("/api/clips")
