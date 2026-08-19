@@ -1433,6 +1433,15 @@ async function openConversation(conv){
     $("cvSpeakers").appendChild(chip);
   }
 
+  if (!ids.length && data.segments.length){
+    const note = document.createElement("div");
+    note.className = "empty";
+    note.style.textAlign = "left";
+    note.textContent = "No speakers were identified in this conversation, so "
+      + "there is nobody to name yet. Press Transcribe missing to try again.";
+    $("cvSpeakers").appendChild(note);
+  }
+
   $("cvSegs").innerHTML = "";
   if (!data.segments.length){
     $("cvSegs").innerHTML = data.not_transcribed
@@ -1711,6 +1720,18 @@ async function renderTranscript(name){
   const ids = [...new Set(t.segments.map(s => s.speaker).filter(Boolean))];
   assignSpeakerColors(ids);
   $("dSpeakers").innerHTML = "";
+  /* A transcript with words but nobody in it looks like a diarization that
+     found one anonymous speaker. It usually means diarization never ran, and
+     with no speaker chips there is nothing to tap to add a name -- so say so
+     rather than leaving an empty row. */
+  if (!ids.length && t.segments.length){
+    const note = document.createElement("div");
+    note.className = "empty";
+    note.style.textAlign = "left";
+    note.textContent = "No speakers were identified in this clip, so there is "
+      + "nobody to name yet. Press Transcribe to try again.";
+    $("dSpeakers").appendChild(note);
+  }
   for (const id of ids){
     const chip = document.createElement("button");
     const known = named[id] && named[id].name;

@@ -387,6 +387,12 @@ class Worker:
                     token=token, device="cuda")
             except Exception as e:
                 self.notify("log", text=f"diarization unavailable: {str(e)[:80]}")
+        else:
+            # Say so. Without a token every transcript comes out with nobody
+            # in it, which reads as a diarization that found one speaker
+            # rather than as a feature that never ran.
+            self.notify("log", text="NO HF_TOKEN — transcribing without "
+                                    "speaker labels; nobody can be named")
         self.notify("log", text="models ready")
 
     def _run(self):

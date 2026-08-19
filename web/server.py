@@ -19,6 +19,32 @@ import sys
 import time
 from contextlib import asynccontextmanager
 
+
+def _load_env_file():
+    """Read .env into the environment if it is not already there.
+
+    Speaker diarization needs HF_TOKEN, and it degrades silently without it:
+    every segment comes back with speaker None and an empty speakers map, so
+    the transcript looks fine and simply has nobody in it. Relying on the
+    launching shell to export it meant restarting the server a different way
+    turned diarization off with no error anywhere -- which is exactly what
+    happened, for 83 clips, before anyone noticed.
+    """
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    path = os.path.join(here, ".env")
+    if not os.path.exists(path):
+        return
+    for line in open(path):
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key, value = key.strip(), value.strip().strip('"').strip("'")
+        os.environ.setdefault(key, value)
+
+
+_load_env_file()
+
 import numpy as np
 import soundfile as sf
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
