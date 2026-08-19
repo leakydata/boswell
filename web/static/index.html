@@ -22,6 +22,17 @@
   --accent:#46AEC2; --ok:#4FB37F; --warn:#D3A03F; --bad:#DB6B57;
 }}
 *{box-sizing:border-box}
+html{
+  /* Without this, dark mode leaves scrollbars and native controls light. */
+  color-scheme:light dark;
+}
+:root[data-theme=light]{color-scheme:light}
+:root[data-theme=dark]{color-scheme:dark}
+button,.clip,.who,.seg .t,.seg .txt,#wcanvas,.switch{
+  touch-action:manipulation;                 /* drop the 300ms tap delay */
+  -webkit-tap-highlight-color:transparent;
+}
+h1,h2,h3{text-wrap:balance}
 body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);
   line-height:1.5;-webkit-font-smoothing:antialiased;
   padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom)}
@@ -146,18 +157,22 @@ audio{display:none}
 .seg{display:flex;gap:10px;padding:9px 0;border-bottom:1px solid var(--rule);font-size:15px}
 .seg:last-child{border:none}
 .seg .t{font-family:var(--mono);font-size:11.5px;color:var(--faint);flex:none;
-  width:44px;padding-top:3px;font-variant-numeric:tabular-nums;cursor:pointer}
+  width:46px;padding:3px 0 0;font-variant-numeric:tabular-nums;cursor:pointer;
+  background:none;border:none;text-align:left;min-height:0}
 .seg .t:hover{color:var(--accent)}
-.seg .txt{cursor:text;border-bottom:1px dashed transparent;padding-bottom:1px}
+.seg .txt{cursor:text;border-bottom:1px dashed transparent;padding:0 0 1px;
+  background:none;border-left:none;border-right:none;border-top:none;
+  color:inherit;font:inherit;text-align:left;min-height:0;width:100%}
 .seg .txt:hover{border-bottom-color:var(--rule)}
 .seg.wasedited .txt{border-bottom:1px solid color-mix(in srgb,var(--warn) 55%,transparent)}
 #editArea{width:100%;min-height:96px;font-family:var(--sans);font-size:17px;padding:12px;
   border-radius:8px;border:1px solid var(--rule);background:var(--paper);color:var(--ink);
   margin-bottom:10px;resize:vertical}
 #editArea:focus{outline:2px solid var(--accent);outline-offset:-1px}
-.who{font-family:var(--mono);font-size:11px;font-weight:600;padding:1px 7px;
+.who{font-family:var(--mono);font-size:11px;font-weight:600;padding:3px 8px;
   border-radius:3px;background:var(--sunk);color:var(--muted);cursor:pointer;
-  white-space:nowrap;border:1px solid transparent}
+  white-space:nowrap;border:1px solid transparent;min-height:0;line-height:1.4}
+button.who{font-size:11px}
 .who.named{background:color-mix(in srgb,var(--accent) 15%,transparent);color:var(--accent);
   border-color:color-mix(in srgb,var(--accent) 35%,transparent)}
 .who:hover{border-color:var(--accent)}
@@ -170,6 +185,7 @@ audio{display:none}
   padding:18px 16px calc(18px + env(safe-area-inset-bottom));
   box-shadow:0 -8px 32px #0003;transform:translateY(110%);transition:transform .2s ease}
 #editor.open{transform:none}
+#editor,#namer{overscroll-behavior:contain}
 #editor h3{margin:0 0 4px;font-size:17px;font-weight:600}
 #editor .hint{font-family:var(--mono);font-size:12px;color:var(--muted);margin-bottom:12px}
 #edErr{color:var(--bad);font-family:var(--mono);font-size:12px;min-height:16px}
@@ -212,7 +228,7 @@ audio{display:none}
       <div class="status">
         <span class="dot off" id="dot"></span>
         <div>
-          <div class="stxt" id="stxt">Not connected</div>
+          <div class="stxt" id="stxt" role="status" aria-live="polite">Not connected</div>
           <div class="ssub" id="ssub">press Connect to begin</div>
         </div>
       </div>
@@ -268,7 +284,7 @@ audio{display:none}
 
     <div class="card span2">
       <h2>Activity</h2>
-      <ul id="log"><li>waiting for connection…</li></ul>
+      <ul id="log" aria-live="polite" aria-relevant="additions"><li>waiting for connection…</li></ul>
     </div>
   </div>
   </div>
@@ -287,9 +303,10 @@ audio{display:none}
       <h2 id="dTitle">Transcript</h2>
       <audio id="player" preload="metadata"></audio>
       <div class="wave">
-        <canvas id="wcanvas"></canvas>
+        <canvas id="wcanvas" tabindex="0" role="slider" aria-label="Seek within recording"
+                aria-valuemin="0" aria-valuenow="0"></canvas>
         <div class="transport">
-          <button id="play" aria-label="Play"><svg id="playIcon" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></button>
+          <button id="play" aria-label="Play"><svg id="playIcon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M8 5v14l11-7z"/></svg></button>
           <div class="time"><b id="tNow">0:00</b><span id="tDur"> / 0:00</span></div>
           <div class="legend">
             <span><i style="background:var(--accent)"></i><span id="legVoice">speech</span></span>
@@ -627,6 +644,12 @@ function syncTransport(){
   $("play").setAttribute("aria-label", playing ? "Pause" : "Play");
   $("playIcon").firstElementChild.setAttribute("d", playing ? ICON_PAUSE : ICON_PLAY);
   $("tNow").textContent = fmt(p.currentTime);
+  const cv = $("wcanvas");
+  if (cv){
+    cv.setAttribute("aria-valuemax", Math.round(waveDur || 0));
+    cv.setAttribute("aria-valuenow", Math.round(p.currentTime));
+    cv.setAttribute("aria-valuetext", fmt(p.currentTime) + " of " + fmt(waveDur));
+  }
   $("tDur").textContent = " / " + fmt(waveDur || p.duration || 0);
   drawWave();
 }
@@ -646,6 +669,23 @@ $("wcanvas").onclick = e => {
   if (p.paused) p.play().catch(() => {});
   syncTransport();
 };
+
+/* Arrow keys scrub, space toggles -- the waveform is the only seek control,
+   so it cannot be pointer-only. */
+$("wcanvas").addEventListener("keydown", e => {
+  const p = $("player");
+  if (!waveDur) return;
+  if (e.key === "ArrowRight" || e.key === "ArrowLeft"){
+    e.preventDefault();
+    const step = e.shiftKey ? 10 : 2;
+    p.currentTime = Math.max(0, Math.min(waveDur,
+      p.currentTime + (e.key === "ArrowRight" ? step : -step)));
+    syncTransport();
+  } else if (e.key === " " || e.key === "Enter"){
+    e.preventDefault();
+    p.paused ? p.play().catch(()=>{}) : p.pause();
+  }
+});
 
 ["timeupdate","seeked","play","pause","ended","loadedmetadata"].forEach(
   ev => $("player").addEventListener(ev, syncTransport));
@@ -669,7 +709,7 @@ async function renderTranscript(name){
   assignSpeakerColors(ids);
   $("dSpeakers").innerHTML = "";
   for (const id of ids){
-    const chip = document.createElement("span");
+    const chip = document.createElement("button");
     const known = named[id] && named[id].name;
     const score = named[id] ? named[id].score : 0;
     const col = colorOf(spkColors[id]);
@@ -697,8 +737,9 @@ async function renderTranscript(name){
       ? `<span class="who" style="border-color:${col};color:${col};background:transparent">${lineLabel(s)}</span> `
       : "";
     if (s.edited) d.classList.add("wasedited");
-    d.innerHTML = `<span class="t" data-at="${s.start}">${s.start.toFixed(0)}s</span>` +
-                  `<div>${who}<span class="txt"></span></div>`;
+    d.innerHTML = `<button class="t" data-at="${s.start}" ` +
+                  `aria-label="Play from ${s.start.toFixed(0)} seconds">${s.start.toFixed(0)}s</button>` +
+                  `<div>${who}<button class="txt" aria-label="Edit this line"></button></div>`;
     d.querySelector(".txt").textContent = s.text;
     d.querySelector(".t").onclick = () => { const p = $("player"); p.currentTime = s.start; p.play(); };
     d.querySelector(".txt").onclick = () => editLine(name, i, s, ids, named);
@@ -769,6 +810,9 @@ async function saveName(){
 $("namerSave").onclick = saveName;
 $("namerCancel").onclick = closeNamer;
 $("scrim").onclick = () => { closeNamer(); closeEditor(); };
+addEventListener("keydown", e => {
+  if (e.key === "Escape"){ closeNamer(); closeEditor(); }
+});
 $("namerInput").addEventListener("keydown", e => {
   if (e.key === "Enter"){ e.preventDefault(); saveName(); }
   if (e.key === "Escape") closeNamer();
@@ -873,9 +917,18 @@ function toggleVad(){
 }
 vad.onclick = toggleVad;
 
+let armDiscard = false;
 $("bDiscard").onclick = () => {
+  if (!armDiscard){
+    armDiscard = true;
+    $("bDiscard").textContent = "Tap again to discard";
+    setTimeout(() => { armDiscard = false; $("bDiscard").textContent = "Discard buffer"; }, 4000);
+    return;
+  }
+  armDiscard = false;
+  $("bDiscard").textContent = "Discard buffer";
   send({cmd:"clear_buffer"});
-  log("discarding the device buffer");
+  log("discarded the buffered audio on the device");
 };
 
 const blmode = $("blmode");
