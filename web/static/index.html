@@ -148,6 +148,13 @@ audio{display:none}
 .seg .t{font-family:var(--mono);font-size:11.5px;color:var(--faint);flex:none;
   width:44px;padding-top:3px;font-variant-numeric:tabular-nums;cursor:pointer}
 .seg .t:hover{color:var(--accent)}
+.seg .txt{cursor:text;border-bottom:1px dashed transparent;padding-bottom:1px}
+.seg .txt:hover{border-bottom-color:var(--rule)}
+.seg.wasedited .txt{border-bottom:1px solid color-mix(in srgb,var(--warn) 55%,transparent)}
+#editArea{width:100%;min-height:96px;font-family:var(--sans);font-size:17px;padding:12px;
+  border-radius:8px;border:1px solid var(--rule);background:var(--paper);color:var(--ink);
+  margin-bottom:10px;resize:vertical}
+#editArea:focus{outline:2px solid var(--accent);outline-offset:-1px}
 .who{font-family:var(--mono);font-size:11px;font-weight:600;padding:1px 7px;
   border-radius:3px;background:var(--sunk);color:var(--muted);cursor:pointer;
   white-space:nowrap;border:1px solid transparent}
@@ -158,6 +165,14 @@ audio{display:none}
 .empty{color:var(--muted);font-size:14.5px;padding:22px 0;text-align:center}
 
 /* naming sheet -- replaces prompt(), which mobile browsers block */
+#editor{position:fixed;left:0;right:0;bottom:0;z-index:50;background:var(--surface);
+  border-top:1px solid var(--rule);border-radius:14px 14px 0 0;
+  padding:18px 16px calc(18px + env(safe-area-inset-bottom));
+  box-shadow:0 -8px 32px #0003;transform:translateY(110%);transition:transform .2s ease}
+#editor.open{transform:none}
+#editor h3{margin:0 0 4px;font-size:17px;font-weight:600}
+#editor .hint{font-family:var(--mono);font-size:12px;color:var(--muted);margin-bottom:12px}
+#edErr{color:var(--bad);font-family:var(--mono);font-size:12px;min-height:16px}
 #namer{position:fixed;left:0;right:0;bottom:0;z-index:50;background:var(--surface);
   border-top:1px solid var(--rule);border-radius:14px 14px 0 0;
   padding:18px 16px calc(18px + env(safe-area-inset-bottom));
@@ -298,6 +313,23 @@ audio{display:none}
 </div>
 
 <div id="scrim"></div>
+<div id="editor" role="dialog" aria-modal="true" aria-labelledby="edT">
+  <h3 id="edT">Correct this line</h3>
+  <div class="hint" id="edSub"></div>
+  <textarea id="editArea" enterkeyhint="done"></textarea>
+  <div class="quick" id="edSpk"></div>
+  <input type="text" id="edNewName" placeholder="Name for this line only" hidden
+         autocomplete="off" autocapitalize="words"
+         style="width:100%;font-size:16px;padding:11px;border-radius:8px;
+                border:1px solid var(--rule);background:var(--paper);
+                color:var(--ink);margin-bottom:10px">
+  <div id="edErr"></div>
+  <div class="btns" style="margin-top:10px">
+    <button id="edCancel">Cancel</button>
+    <button class="pri" id="edSave">Save</button>
+  </div>
+</div>
+
 <div id="namer" role="dialog" aria-modal="true" aria-labelledby="namerT">
   <h3 id="namerT">Who is this?</h3>
   <div class="hint" id="namerSub"></div>
@@ -631,6 +663,7 @@ async function renderTranscript(name){
   drawWave();
   const named = t.speakers || {};
   const label = s => (named[s] && named[s].name) ? named[s].name : s;
+  const lineLabel = seg => seg.speaker_name || label(seg.speaker);
 
   const ids = [...new Set(t.segments.map(s => s.speaker).filter(Boolean))];
   assignSpeakerColors(ids);
@@ -656,15 +689,19 @@ async function renderTranscript(name){
 
   $("dSegs").innerHTML = "";
   if (!t.segments.length){ $("dSegs").innerHTML = '<div class="empty">No speech detected in this clip.</div>'; return; }
-  for (const s of t.segments){
+  t.segments.forEach((s, i) => {
     const d = document.createElement("div");
     d.className = "seg";
     const col = s.speaker ? colorOf(spkColors[s.speaker] || "var(--accent)") : "";
     const who = s.speaker
-      ? `<span class="who" style="border-color:${col};color:${col};background:transparent">${label(s.speaker)}</span> `
+      ? `<span class="who" style="border-color:${col};color:${col};background:transparent">${lineLabel(s)}</span> `
       : "";
-    d.innerHTML = `<span class="t" data-at="${s.start}">${s.start.toFixed(0)}s</span><div>${who}${s.text}</div>`;
+    if (s.edited) d.classList.add("wasedited");
+    d.innerHTML = `<span class="t" data-at="${s.start}">${s.start.toFixed(0)}s</span>` +
+                  `<div>${who}<span class="txt"></span></div>`;
+    d.querySelector(".txt").textContent = s.text;
     d.querySelector(".t").onclick = () => { const p = $("player"); p.currentTime = s.start; p.play(); };
+    d.querySelector(".txt").onclick = () => editLine(name, i, s, ids, named);
     $("dSegs").appendChild(d);
   }
 }
@@ -731,7 +768,7 @@ async function saveName(){
 
 $("namerSave").onclick = saveName;
 $("namerCancel").onclick = closeNamer;
-$("scrim").onclick = closeNamer;
+$("scrim").onclick = () => { closeNamer(); closeEditor(); };
 $("namerInput").addEventListener("keydown", e => {
   if (e.key === "Enter"){ e.preventDefault(); saveName(); }
   if (e.key === "Escape") closeNamer();
@@ -797,9 +834,22 @@ $("bSplit").onclick = async () => {
 };
 
 $("bBack").onclick = () => { $("detail").hidden = true; $("clipList").hidden = false; loadClips(); };
+let armRetranscribe = false;
 $("bTranscribe").onclick = async () => {
   if (!current) return;
-  await fetch("/api/transcribe/" + encodeURIComponent(current), {method:"POST"});
+  const url = "/api/transcribe/" + encodeURIComponent(current)
+            + (armRetranscribe ? "?force=true" : "");
+  const r = await fetch(url, {method:"POST"});
+  if (r.status === 409){
+    armRetranscribe = true;
+    $("bTranscribe").textContent = "Discard my edits & redo";
+    msg("This clip has your corrections in it.", true);
+    setTimeout(() => { armRetranscribe = false;
+      $("bTranscribe").textContent = "Transcribe"; }, 5000);
+    return;
+  }
+  armRetranscribe = false;
+  $("bTranscribe").textContent = "Transcribe";
   $("dSegs").innerHTML = '<div class="empty">transcribing… this takes a few seconds</div>';
 };
 

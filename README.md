@@ -371,6 +371,27 @@ recognised in some clips and missed in others when the enrolment came from a
 single session. Label long clips with clear speech, and use **split by voice**
 first so the voiceprint comes from one person rather than a conversation.
 
+## Correcting transcripts
+
+Tap any line to fix the words. Corrections are safe: voiceprints come from
+audio embeddings and the waveform and split both key off timings, so none of
+them care what the words say. The model's original wording is kept alongside
+the correction, and the whole clip can be reverted.
+
+The one thing that would destroy a correction is re-transcribing over it, so an
+edited transcript is marked: bulk transcription skips it, and re-transcribing a
+single clip returns 409 until you explicitly confirm.
+
+Naming works at two levels, because misattribution has two different causes:
+
+- **A speaker chip** names every line of that voice in the clip and enrols the
+  voiceprint, so the person is recognised in later recordings. This is the one
+  to use when a new person appears and has several lines.
+- **A line's own name** applies to that line only and does not touch the
+  voiceprint database, which is deliberate: an embedding describes a whole
+  diarized cluster, so enrolling from one misattributed line would teach the
+  wrong voice.
+
 ## Roadmap
 
 - Opus encoding for lower power draw

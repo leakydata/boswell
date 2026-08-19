@@ -315,9 +315,16 @@ def clip_info(name):
             status = "error"
     if worker.busy == name:
         status = "running"
+    edited = False
+    if os.path.exists(tp):
+        try:
+            edited = bool(json.load(open(tp)).get("edited"))
+        except Exception:
+            pass
     return {"name": name, "seconds": dur,
             "modified": os.path.getmtime(path),
-            "status": status, "preview": preview, "speakers": speakers}
+            "status": status, "preview": preview, "speakers": speakers,
+            "edited": edited}
 
 
 async def rotator():
@@ -451,7 +458,8 @@ async def api_transcribe_all():
     for f in sorted(os.listdir(DATA)):
         if not f.endswith(".wav"):
             continue
-        if os.path.exists(pipeline.transcript_path(f)):
+        tp = pipeline.transcript_path(f)
+        if os.path.exists(tp):
             continue
         worker.submit(f)
         queued.append(f)
@@ -485,9 +493,20 @@ async def api_audio(name: str):
 
 
 @app.post("/api/transcribe/{name}")
-async def api_transcribe(name: str):
+async def api_transcribe(name: str, force: bool = False):
     if "/" in name or not os.path.exists(os.path.join(DATA, name)):
         raise HTTPException(404, "no such clip")
+    tp = pipeline.transcript_path(name)
+    if os.path.exists(tp) and not force:
+        try:
+            if json.load(open(tp)).get("edited"):
+                raise HTTPException(
+                    409, "this transcript has your corrections in it — "
+                         "re-transcribing would overwrite them")
+        except HTTPException:
+            raise
+        except Exception:
+            pass
     worker.submit(name)
     return {"queued": name}
 
@@ -585,6 +604,80 @@ async def api_split(name: str):
 
     device.event("log", text=f"split {name} into {len(made)} single-voice clips")
     return {"source": name, "clips": made}
+
+
+@app.patch("/api/transcript/{name}")
+async def api_edit_transcript(name: str, body: dict):
+    """Correct a line of transcript, or reassign it to a different speaker.
+
+    Editing text is safe: voiceprints come from audio embeddings, and the
+    waveform and split both key off timings, so none of them care what the
+    words say. The one thing it would break is re-transcription silently
+    overwriting the correction, so an edited transcript is marked and the
+    bulk transcribe skips it.
+    """
+    tp = pipeline.transcript_path(name)
+    if not os.path.exists(tp):
+        raise HTTPException(404, "not transcribed yet")
+    idx = body.get("index")
+    if not isinstance(idx, int):
+        raise HTTPException(400, "need a segment index")
+
+    t = json.load(open(tp))
+    segs = t.get("segments", [])
+    if not (0 <= idx < len(segs)):
+        raise HTTPException(400, "no such segment")
+
+    seg = segs[idx]
+    if "text" in body:
+        new = (body["text"] or "").strip()
+        if new != seg.get("text"):
+            # Keep the machine's version so a correction can be compared or undone.
+            seg.setdefault("text_asr", seg.get("text", ""))
+            seg["text"] = new
+            seg["edited"] = True
+    if "speaker" in body and body["speaker"]:
+        if body["speaker"] != seg.get("speaker"):
+            seg.setdefault("speaker_asr", seg.get("speaker"))
+            seg["speaker"] = body["speaker"]
+            seg["edited"] = True
+    if "speaker_name" in body:
+        # A name pinned to one line only. Deliberately does NOT touch the
+        # voiceprint database: an embedding describes a whole diarized cluster,
+        # not a single line, so enrolling from here would teach the wrong
+        # thing. Use the speaker chip when a name should apply to every line.
+        nm = (body["speaker_name"] or "").strip()
+        if nm:
+            seg["speaker_name"] = nm
+        else:
+            seg.pop("speaker_name", None)
+        seg["edited"] = True
+
+    t["edited"] = True
+    json.dump(t, open(tp, "w"), indent=2)
+    device.event("log", text=f"edited {name} line {idx}")
+    return {"ok": True, "segment": seg, "edited": True}
+
+
+@app.delete("/api/transcript/{name}/edits")
+async def api_revert_edits(name: str):
+    """Put every corrected line back to what the model originally produced."""
+    tp = pipeline.transcript_path(name)
+    if not os.path.exists(tp):
+        raise HTTPException(404, "not transcribed yet")
+    t = json.load(open(tp))
+    n = 0
+    for seg in t.get("segments", []):
+        if seg.pop("edited", None):
+            n += 1
+            if "text_asr" in seg:
+                seg["text"] = seg.pop("text_asr")
+            if "speaker_asr" in seg:
+                seg["speaker"] = seg.pop("speaker_asr")
+            seg.pop("speaker_name", None)
+    t["edited"] = False
+    json.dump(t, open(tp, "w"), indent=2)
+    return {"reverted": n}
 
 
 @app.get("/api/speakers")
