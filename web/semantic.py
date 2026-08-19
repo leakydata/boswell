@@ -163,6 +163,25 @@ def search(query, limit=25):
         db.close()
 
 
+def remove_clip(name):
+    """Drop a clip's lines from the index.
+
+    Deleting a recording has to delete what it said too, or search keeps
+    offering results that lead to a file that is no longer there.
+    """
+    db, have_vec = _connect()
+    try:
+        rows = db.execute("SELECT id FROM seg WHERE clip=?", (name,)).fetchall()
+        if have_vec:
+            for r in rows:
+                db.execute("DELETE FROM seg_vec WHERE rowid=?", (r["id"],))
+        db.execute("DELETE FROM seg WHERE clip=?", (name,))
+        db.commit()
+        return len(rows)
+    finally:
+        db.close()
+
+
 def stats():
     db, have_vec = _connect()
     try:

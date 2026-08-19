@@ -961,6 +961,11 @@ async def api_delete(name: str):
             os.remove(f)
             removed.append(os.path.basename(f))
     index_db.remove_clip(name)
+    try:
+        import semantic
+        semantic.remove_clip(name)
+    except Exception:
+        pass
     device.event("log", text=f"deleted {name}")
     return {"deleted": name, "files": removed}
 
@@ -988,6 +993,11 @@ async def api_delete_many(body: dict):
             if os.path.exists(f):
                 os.remove(f)
         index_db.remove_clip(name)
+        try:
+            import semantic
+            semantic.remove_clip(name)
+        except Exception:
+            pass
         removed.append(name)
     device.event("log", text=f"deleted {len(removed)} recording(s)")
     return {"deleted": len(removed), "missing": len(missing)}

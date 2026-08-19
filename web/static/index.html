@@ -182,6 +182,17 @@ select.filter:focus{outline:2px solid var(--accent);outline-offset:-1px}
    a conversation actually was -- but it should not compete with the rest. */
 .conv .parts button.quiet{opacity:.45}
 
+/* A transcript can run to hundreds of lines, and the way out was at the
+   bottom of all of them. The bar stays put while you read. */
+.topbar{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:12px;
+  margin:-16px -16px 12px;padding:10px 16px;
+  background:color-mix(in srgb,var(--surface) 92%,transparent);
+  backdrop-filter:blur(8px);border-bottom:1px solid var(--rule);
+  border-radius:8px 8px 0 0}
+.topbar button{flex:0 0 auto;min-height:34px;padding:5px 14px;font-size:13px}
+.topbar .tbtitle{font-family:var(--mono);font-size:12px;color:var(--faint);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
 /* Conversation reader */
 .cvmeta{font-family:var(--mono);font-size:12px;color:var(--faint);margin:2px 0 12px}
 .cvnow[hidden]{display:none}
@@ -472,6 +483,10 @@ button.who{font-size:11px}
     </div>
 
     <div class="card" id="convDetail" hidden>
+      <div class="topbar">
+        <button id="cvBackTop" aria-label="Back to recordings">&larr; Back</button>
+        <span class="tbtitle" id="cvTitleTop"></span>
+      </div>
       <h2 id="cvTitle">Conversation</h2>
       <div class="cvmeta" id="cvMeta"></div>
       <div class="spk" id="cvSpeakers"></div>
@@ -486,12 +501,17 @@ button.who{font-size:11px}
         <button class="pri" id="cvExport">Export</button>
         <button id="cvTranscribe">Transcribe missing</button>
         <button id="cvReview">Review with agent</button>
+        <button class="dang" id="cvDelete">Delete conversation</button>
       </div>
       <div id="cvMsg" style="font-family:var(--mono);font-size:12px;color:var(--muted);
            min-height:16px;margin-top:10px"></div>
     </div>
 
     <div class="card" id="detail" hidden>
+      <div class="topbar">
+        <button id="bBackTop" aria-label="Back">&larr; Back</button>
+        <span class="tbtitle" id="dTitleTop"></span>
+      </div>
       <h2 id="dTitle">Transcript</h2>
       <audio id="player" preload="metadata"></audio>
       <div class="wave">
@@ -1380,6 +1400,7 @@ async function openClip(name){
   $("clipList").hidden = true;
   $("detail").hidden = false;
   $("dTitle").textContent = name;
+  $("dTitleTop").textContent = name;
   const pl = $("player");
   pl.pause();
   pl.src = "/api/audio/" + encodeURIComponent(name);
@@ -1449,6 +1470,7 @@ async function openConversation(conv){
   const people = conv.speakers.filter(x => x && x !== "unknown");
   $("cvTitle").textContent = `${fmtClock(conv.start)}–${fmtClock(conv.end)}`
     + (people.length ? ` · ${people.join(", ")}` : "");
+  $("cvTitleTop").textContent = $("cvTitle").textContent;
   $("cvMeta").textContent =
     `${fmtDay(conv.end)} · ${fmtDur(conv.seconds)} · ${conv.clips.length} clip`
     + `${conv.clips.length === 1 ? "" : "s"}`;
@@ -1603,13 +1625,17 @@ $("cvPlay").onclick = () => {
 $("cvPlayer").addEventListener("play",  () => { $("cvPlay").textContent = "❚❚"; });
 $("cvPlayer").addEventListener("pause", () => { $("cvPlay").textContent = "▶"; });
 
-$("cvBack").onclick = () => {
+/* Both Back buttons do the same thing; the top one is the one you can reach
+   without scrolling a few hundred lines first. */
+function cvGoBack(){
   $("cvPlayer").pause();
   $("convDetail").hidden = true;
   $("clipList").hidden = false;
   cvCurrent = null;
   loadClips();
-};
+}
+$("cvBack").onclick = cvGoBack;
+$("cvBackTop").onclick = cvGoBack;
 $("cvExport").onclick = async () => {
   if (!cvCurrent) return;
   const r = await fetch("/api/export", {method:"POST",
@@ -1636,6 +1662,38 @@ $("cvReview").onclick = async () => {
       : (b.said || "nothing worth recording in this conversation");
   }catch(e){ $("cvMsg").textContent = "could not reach the server"; }
   finally{ $("cvReview").disabled = false; }
+};
+
+let cvArmDelete = false;
+$("cvDelete").onclick = async () => {
+  if (!cvCurrent) return;
+  const n = cvCurrent.clips.length;
+  if (!cvArmDelete){
+    cvArmDelete = true;
+    $("cvDelete").textContent = `Tap again to delete ${n}`;
+    $("cvMsg").textContent =
+      `This permanently removes ${n} recording${n===1?"":"s"} and their transcripts.`;
+    setTimeout(() => {
+      cvArmDelete = false;
+      $("cvDelete").textContent = "Delete conversation";
+    }, 5000);
+    return;
+  }
+  cvArmDelete = false;
+  $("cvDelete").disabled = true;
+  $("cvMsg").textContent = "deleting…";
+  try{
+    const r = await fetch("/api/clips/delete", {method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({names: cvCurrent.clips})});
+    const b = await r.json().catch(() => ({}));
+    if (!r.ok){ $("cvMsg").textContent = b.detail || "could not delete"; return; }
+    cvGoBack();
+  }catch(e){ $("cvMsg").textContent = "could not reach the server"; }
+  finally{
+    $("cvDelete").disabled = false;
+    $("cvDelete").textContent = "Delete conversation";
+  }
 };
 
 $("cvTranscribe").onclick = async () => {
@@ -2056,14 +2114,16 @@ $("bSplit").onclick = async () => {
   loadClips();
 };
 
-$("bBack").onclick = () => {
+function clipGoBack(){
   $("detail").hidden = true;
   /* A clip opened from inside a conversation goes back to the conversation,
      not to the top of the list the reader had already scrolled past. */
   if (cvCurrent){ openConversation(cvCurrent); return; }
   $("clipList").hidden = false;
   loadClips();
-};
+}
+$("bBack").onclick = clipGoBack;
+$("bBackTop").onclick = clipGoBack;
 let armRetranscribe = false;
 $("bTranscribe").onclick = async () => {
   if (!current) return;
