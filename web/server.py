@@ -522,7 +522,10 @@ async def api_clips():
     names = sorted((f for f in os.listdir(DATA) if f.endswith(".wav")),
                    key=lambda f: os.path.getmtime(os.path.join(DATA, f)),
                    reverse=True)
-    return [clip_info(n) for n in names[:100]]
+    # The cap is a guard against pathological directories, not a page size.
+    # At 100 it silently hid recordings from the list -- and from anything
+    # operating on the list, like select-all.
+    return [clip_info(n) for n in names[:1000]]
 
 
 @app.get("/api/audio/{name}")
@@ -577,6 +580,33 @@ async def api_delete(name: str):
             removed.append(os.path.basename(f))
     device.event("log", text=f"deleted {name}")
     return {"deleted": name, "files": removed}
+
+
+@app.post("/api/clips/delete")
+async def api_delete_many(body: dict):
+    """Delete a set of clips with their transcripts and cached waveforms.
+
+    Voiceprints live in their own files and are untouched -- clearing out
+    recordings should not cost you the people you have enrolled.
+    """
+    names = body.get("names") or []
+    if not isinstance(names, list):
+        raise HTTPException(400, "names must be a list")
+    removed, missing = [], []
+    for name in names:
+        if "/" in name or not name.endswith(".wav"):
+            continue
+        path = os.path.join(DATA, name)
+        if not os.path.exists(path):
+            missing.append(name)
+            continue
+        for f in (path, pipeline.transcript_path(name),
+                  os.path.join(ENVELOPES, name + ".json")):
+            if os.path.exists(f):
+                os.remove(f)
+        removed.append(name)
+    device.event("log", text=f"deleted {len(removed)} recording(s)")
+    return {"deleted": len(removed), "missing": len(missing)}
 
 
 @app.post("/api/split/{name}")

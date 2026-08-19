@@ -297,6 +297,12 @@ GATT, no reflash.
 Clips are written every 30 seconds and transcribed automatically; nothing needs
 a tap per clip.
 
+Filter by content (all, with voice, silent) and by date (any time, today, last
+seven days, older). **Select** turns on multi-select for deleting in bulk, with
+*Select all shown* respecting whichever filters are active — so "delete every
+silent clip older than a week" is three taps. Deleting recordings never touches
+enrolled voices; those live in their own files.
+
 Opening a clip gives you:
 
 - a **waveform coloured by speaker** — each voice a different colour, everything

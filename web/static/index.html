@@ -126,6 +126,10 @@ nav.tabs button[aria-selected=true]{background:var(--surface);color:var(--ink);
 .clip .cp{font-size:14px;margin-top:3px;overflow:hidden;text-overflow:ellipsis;
   display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
 .clip .cd{font-family:var(--mono);font-size:12px;color:var(--faint);flex:none}
+.clip .box{flex:none;width:20px;height:20px;border-radius:4px;border:1.5px solid var(--rule);
+  display:grid;place-items:center;font-size:13px;color:var(--surface)}
+.clip.sel{border-color:var(--accent)}
+.clip.sel .box{background:var(--accent);border-color:var(--accent);color:#fff}
 .tag{font-family:var(--mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase;
   padding:2px 7px;border-radius:3px;font-weight:600;flex:none}
 .tag.none{background:var(--sunk);color:var(--faint)}
@@ -330,10 +334,23 @@ button.who{font-size:11px}
       <button id="bRefresh">Refresh</button>
       <span class="val" id="qdepth" style="align-self:center"></span>
     </div>
-    <div class="btns" style="margin-bottom:14px" role="group" aria-label="Filter recordings">
+    <div class="btns" style="margin-bottom:8px" role="group" aria-label="Filter by content">
       <button id="fAll" aria-pressed="true">All</button>
       <button id="fVoice" aria-pressed="false">With voice</button>
       <button id="fSilent" aria-pressed="false">Silent</button>
+    </div>
+    <div class="btns" style="margin-bottom:8px" role="group" aria-label="Filter by date">
+      <button id="dAll" aria-pressed="true">Any time</button>
+      <button id="dToday" aria-pressed="false">Today</button>
+      <button id="dWeek" aria-pressed="false">Last 7 days</button>
+      <button id="dOld" aria-pressed="false">Older</button>
+    </div>
+    <div class="btns" style="margin-bottom:14px">
+      <button id="bSelect">Select</button>
+      <button id="bSelAll" hidden>Select all shown</button>
+      <button id="bSelNone" hidden>Clear</button>
+      <button class="dang" id="bDelSel" hidden>Delete</button>
+      <span class="val" id="selCount" style="align-self:center"></span>
     </div>
     <div class="card" id="clipList" style="border:none;background:transparent;padding:0">
       <div class="empty">loading…</div>
@@ -674,16 +691,75 @@ async function loadPeople(){
 }
 
 /* ---- recordings ---- */
-let clipFilter = "all";
+let clipFilter = "all", dateFilter = "all";
+let selectMode = false, selected = new Set();
+
 function setFilter(f){
   clipFilter = f;
   for (const [id, key] of [["fAll","all"],["fVoice","voice"],["fSilent","silent"]])
     $(id).setAttribute("aria-pressed", key === f);
   loadClips();
 }
+function setDate(f){
+  dateFilter = f;
+  for (const [id, key] of [["dAll","all"],["dToday","today"],["dWeek","week"],["dOld","old"]])
+    $(id).setAttribute("aria-pressed", key === f);
+  loadClips();
+}
 $("fAll").onclick = () => setFilter("all");
 $("fVoice").onclick = () => setFilter("voice");
 $("fSilent").onclick = () => setFilter("silent");
+$("dAll").onclick = () => setDate("all");
+$("dToday").onclick = () => setDate("today");
+$("dWeek").onclick = () => setDate("week");
+$("dOld").onclick = () => setDate("old");
+
+function inDateRange(modified){
+  if (dateFilter === "all") return true;
+  const t = modified * 1000;
+  const start = new Date(); start.setHours(0,0,0,0);
+  const dayStart = start.getTime();
+  const weekStart = dayStart - 6 * 86400000;
+  if (dateFilter === "today") return t >= dayStart;
+  if (dateFilter === "week")  return t >= weekStart;
+  return t < weekStart;                      // "older"
+}
+
+function syncSelectUI(){
+  for (const id of ["bSelAll","bSelNone","bDelSel"]) $(id).hidden = !selectMode;
+  $("bSelect").textContent = selectMode ? "Done" : "Select";
+  $("selCount").textContent = selectMode
+    ? `${selected.size} selected` : "";
+  $("bDelSel").textContent = selected.size ? `Delete ${selected.size}` : "Delete";
+  $("bDelSel").disabled = selected.size === 0;
+}
+
+$("bSelect").onclick = () => {
+  selectMode = !selectMode;
+  if (!selectMode) selected.clear();
+  syncSelectUI(); loadClips();
+};
+$("bSelNone").onclick = () => { selected.clear(); syncSelectUI(); loadClips(); };
+
+let armBulk = false;
+$("bDelSel").onclick = async () => {
+  if (!selected.size) return;
+  if (!armBulk){
+    armBulk = true;
+    $("bDelSel").textContent = `Tap again to delete ${selected.size}`;
+    setTimeout(() => { armBulk = false; syncSelectUI(); }, 4000);
+    return;
+  }
+  armBulk = false;
+  const names = [...selected];
+  const r = await fetch("/api/clips/delete", {
+    method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({names})
+  });
+  const b = await r.json().catch(()=>({}));
+  log(`deleted ${b.deleted ?? 0} recording(s)`);
+  selected.clear(); syncSelectUI(); loadClips();
+};
 
 async function loadClips(){
   const el = $("clipList");
@@ -691,9 +767,10 @@ async function loadClips(){
     const all = await (await fetch("/api/clips")).json();
     // has_speech is null until a clip is transcribed; an unknown clip is not
     // the same as a silent one, so it stays out of both filtered views.
-    const clips = clipFilter === "all" ? all
-      : all.filter(c => clipFilter === "voice" ? c.has_speech === true
-                                               : c.has_speech === false);
+    const clips = all
+      .filter(c => clipFilter === "all" ? true
+        : clipFilter === "voice" ? c.has_speech === true : c.has_speech === false)
+      .filter(c => inDateRange(c.modified));
     if (!all.length){ el.innerHTML = '<div class="empty">No recordings yet. Capture some audio on the Device tab.</div>'; return; }
     if (!clips.length){
       const n = all.filter(c => c.has_speech === null).length;
@@ -702,17 +779,28 @@ async function loadClips(){
       return;
     }
     el.innerHTML = "";
+    $("bSelAll").onclick = () => {
+      clips.forEach(c => selected.add(c.name));
+      syncSelectUI(); loadClips();
+    };
     for (const c of clips){
       const b = document.createElement("button");
-      b.className = "clip";
-      b.innerHTML = `<div class="ci">
+      b.className = "clip" + (selected.has(c.name) ? " sel" : "");
+      b.innerHTML = (selectMode
+          ? `<span class="box">${selected.has(c.name) ? "✓" : ""}</span>` : "") +
+        `<div class="ci">
           <div class="cn">${new Date(c.modified*1000).toLocaleString()}</div>
           <div class="cp">${c.preview || "<i style='opacity:.6'>not transcribed</i>"}</div>
         </div>
         <span class="cd">${c.seconds.toFixed(0)}s</span>
         <span class="tag ${c.status}">${c.status === "none" ? "new"
           : (c.has_speech === false ? "silent" : c.status)}</span>`;
-      b.onclick = () => openClip(c.name);
+      b.onclick = () => {
+        if (selectMode){
+          selected.has(c.name) ? selected.delete(c.name) : selected.add(c.name);
+          syncSelectUI(); loadClips();
+        } else openClip(c.name);
+      };
       el.appendChild(b);
     }
   }catch(e){ el.innerHTML = '<div class="empty">could not load recordings</div>'; }
