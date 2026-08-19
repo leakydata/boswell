@@ -29,34 +29,187 @@ def unit(v):
     return v / n if n else v
 
 
+SAMPLES_DB = os.path.join(DATA, "speaker_samples.npz")
+
+# A voiceprint from a few seconds of speech is unreliable, and averaging one in
+# permanently drags the reference away from how the person actually sounds.
+MIN_ENROLL_SECONDS = 5.0
+# Measured on this hardware: the same speaker across recordings scores
+# 0.65-0.87, two different speakers 0.38-0.48. 0.55 sits in the gap -- low
+# enough to allow genuine variation in how someone sounds, high enough to
+# catch a line that belongs to somebody else. An earlier 0.40 sat inside the
+# different-speaker range and let a wrong voice enrol without complaint.
+OUTLIER_MIN = 0.55
+
+
 def load_speakers():
+    """Reference vectors used for matching, derived from the stored samples."""
     if not os.path.exists(SPEAKER_DB):
         return {}
     d = np.load(SPEAKER_DB)
     return {k: unit(d[k]) for k in d.files}
 
 
-def save_speaker(name, vec):
-    """Append to a running centroid. No training -- enrolment is a mean."""
+def _load_samples():
+    if not os.path.exists(SAMPLES_DB):
+        return {}
+    d = np.load(SAMPLES_DB)
+    return {k: d[k] for k in d.files}
+
+
+def _save_samples(samples):
+    os.makedirs(DATA, exist_ok=True)
+    np.savez(SAMPLES_DB, **samples)
+
+
+def _load_meta():
+    return json.load(open(SPEAKER_META)) if os.path.exists(SPEAKER_META) else {}
+
+
+def _save_meta(meta):
+    os.makedirs(DATA, exist_ok=True)
+    json.dump(meta, open(SPEAKER_META, "w"), indent=2)
+
+
+def _migrate(meta, samples):
+    """Adopt any pre-existing centroid as a single weighted sample.
+
+    Earlier versions stored only the average, so the individual recordings
+    behind it are gone. Carrying the average forward with its original weight
+    preserves every match that already worked, and new labels accumulate
+    alongside it as removable samples.
+    """
+    if not os.path.exists(SPEAKER_DB):
+        return False
+    d = np.load(SPEAKER_DB)
+    changed = False
+    for name in d.files:
+        entry = meta.setdefault(name, {})
+        if entry.get("samples"):
+            continue
+        weight = int(entry.get("count", 1)) or 1
+        sid = "legacy"
+        samples[f"{name}||{sid}"] = unit(d[name])
+        entry["samples"] = [{"id": sid, "weight": weight, "legacy": True,
+                             "clip": None, "seconds": None, "score": None}]
+        changed = True
+    return changed
+
+
+def recompute_centroid(name, meta, samples):
+    """Weighted mean of a person's samples, renormalised for cosine matching."""
+    entries = meta.get(name, {}).get("samples", [])
+    acc = None
+    for e in entries:
+        v = samples.get(f"{name}||{e['id']}")
+        if v is None:
+            continue
+        w = float(e.get("weight", 1))
+        acc = unit(v) * w if acc is None else acc + unit(v) * w
     vecs = {}
     if os.path.exists(SPEAKER_DB):
         d = np.load(SPEAKER_DB)
         vecs = {k: d[k] for k in d.files}
-    meta = json.load(open(SPEAKER_META)) if os.path.exists(SPEAKER_META) else {}
+    if acc is None:
+        vecs.pop(name, None)
+    else:
+        vecs[name] = unit(acc)
+    np.savez(SPEAKER_DB, **vecs)
+
+
+def list_speakers():
+    meta = _load_meta()
+    samples = _load_samples()
+    if _migrate(meta, samples):
+        _save_samples(samples)
+        _save_meta(meta)
+    out = []
+    for name, entry in sorted(meta.items()):
+        out.append({
+            "name": name,
+            "samples": entry.get("samples", []),
+            "count": sum(int(e.get("weight", 1)) for e in entry.get("samples", [])),
+        })
+    return out
+
+
+def save_speaker(name, vec, clip=None, speaker=None, seconds=None, force=False):
+    """Add one sample to a person, with quality checks.
+
+    Returns a dict describing what happened. Rejections are advisory: passing
+    force=True enrols anyway, because only the person listening can settle a
+    genuinely unusual-sounding recording.
+    """
+    meta = _load_meta()
+    samples = _load_samples()
+    _migrate(meta, samples)
 
     v = unit(vec)
-    if name in vecs:
-        n = meta.get(name, {}).get("count", 1)
-        vecs[name] = unit(unit(vecs[name]) * n + v)
-        meta.setdefault(name, {})["count"] = n + 1
-    else:
-        vecs[name] = v
-        meta[name] = {"count": 1}
+    entry = meta.setdefault(name, {})
+    entry.setdefault("samples", [])
 
-    os.makedirs(DATA, exist_ok=True)
-    np.savez(SPEAKER_DB, **vecs)
-    json.dump(meta, open(SPEAKER_META, "w"), indent=2)
-    return meta[name]["count"]
+    if not force:
+        if seconds is not None and seconds < MIN_ENROLL_SECONDS:
+            return {"ok": False, "reason": "too_short", "seconds": round(seconds, 1),
+                    "minimum": MIN_ENROLL_SECONDS,
+                    "detail": f"only {seconds:.1f}s of this voice in the clip; "
+                              f"{MIN_ENROLL_SECONDS:.0f}s or more makes a reliable voiceprint"}
+        existing = load_speakers().get(name)
+        if existing is not None and entry["samples"]:
+            sim = float(v @ unit(existing))
+            if sim < OUTLIER_MIN:
+                return {"ok": False, "reason": "outlier", "similarity": round(sim, 3),
+                        "minimum": OUTLIER_MIN,
+                        "detail": f"this sounds unlike the {name} already enrolled "
+                                  f"({sim:.2f}); it may be a misattributed line"}
+
+    sid = f"s{int(time.time() * 1000) % 100000000}"
+    samples[f"{name}||{sid}"] = v
+    score = None
+    existing = load_speakers().get(name)
+    if existing is not None and entry["samples"]:
+        score = round(float(v @ unit(existing)), 3)
+    entry["samples"].append({"id": sid, "weight": 1, "clip": clip,
+                             "speaker": speaker,
+                             "seconds": round(seconds, 1) if seconds else None,
+                             "score": score})
+    _save_samples(samples)
+    _save_meta(meta)
+    recompute_centroid(name, meta, samples)
+    return {"ok": True, "name": name,
+            "count": sum(int(e.get("weight", 1)) for e in entry["samples"]),
+            "score": score}
+
+
+def delete_sample(name, sample_id):
+    meta = _load_meta()
+    samples = _load_samples()
+    entry = meta.get(name)
+    if not entry:
+        return False
+    before = len(entry.get("samples", []))
+    entry["samples"] = [e for e in entry.get("samples", []) if e["id"] != sample_id]
+    samples.pop(f"{name}||{sample_id}", None)
+    if not entry["samples"]:
+        meta.pop(name, None)
+    _save_samples(samples)
+    _save_meta(meta)
+    recompute_centroid(name, meta, samples)
+    return len(entry.get("samples", [])) != before if name in meta else True
+
+
+def delete_speaker(name):
+    meta = _load_meta()
+    samples = _load_samples()
+    if name not in meta:
+        return False
+    for e in meta[name].get("samples", []):
+        samples.pop(f"{name}||{e['id']}", None)
+    meta.pop(name, None)
+    _save_samples(samples)
+    _save_meta(meta)
+    recompute_centroid(name, meta, samples)
+    return True
 
 
 def identify(embeddings):

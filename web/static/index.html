@@ -182,6 +182,15 @@ button.who{font-size:11px}
 .who:hover{border-color:var(--accent)}
 .spk{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px}
 .empty{color:var(--muted);font-size:14.5px;padding:22px 0;text-align:center}
+.person{border:1px solid var(--rule);border-radius:8px;padding:14px;margin-bottom:12px}
+.person h3{font-size:17px;font-weight:600;margin:0 0 2px;display:flex;
+  justify-content:space-between;align-items:baseline;gap:10px}
+.person .cnt{font-family:var(--mono);font-size:12px;color:var(--muted);font-weight:400}
+.samp{display:flex;align-items:center;gap:10px;padding:8px 0;
+  border-top:1px solid var(--rule-2);font-family:var(--mono);font-size:12px}
+.samp .s1{flex:1;min-width:0;color:var(--muted);overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap}
+.samp button{flex:none;min-height:34px;padding:5px 10px;font-size:12px}
 
 /* naming sheet -- replaces prompt(), which mobile browsers block */
 #editor{position:fixed;left:0;right:0;bottom:0;z-index:50;background:var(--surface);
@@ -223,6 +232,7 @@ button.who{font-size:11px}
   <nav class="tabs" role="tablist">
     <button id="tabDev" role="tab" aria-selected="true">Device</button>
     <button id="tabRec" role="tab" aria-selected="false">Recordings</button>
+    <button id="tabPpl" role="tab" aria-selected="false">People</button>
   </nav>
 
   <div class="view" id="viewDev">
@@ -332,6 +342,17 @@ button.who{font-size:11px}
     </div>
   </div>
 </div>
+
+  <div class="view" id="viewPpl" hidden>
+    <div class="card">
+      <h2>Enrolled voices</h2>
+      <p class="intro" style="font-size:14px;color:var(--muted);margin:0 0 14px">
+        Each label adds a sample and the reference is their average, so it sharpens
+        as you add more. Remove a sample if it was the wrong person or too short —
+        the reference is rebuilt without it.</p>
+      <div id="pplList"><div class="empty">loading…</div></div>
+    </div>
+  </div>
 
 <div id="scrim"></div>
 <div id="editor" role="dialog" aria-modal="true" aria-labelledby="edT">
@@ -505,15 +526,70 @@ connect();
 
 /* ---- tabs ---- */
 let current = null;
-function showTab(rec){
-  $("tabDev").setAttribute("aria-selected", !rec);
-  $("tabRec").setAttribute("aria-selected", rec);
-  $("viewDev").hidden = rec;
-  $("viewRec").hidden = !rec;
-  if (rec) loadClips();
+function showTab(which){
+  for (const [t, v, k] of [["tabDev","viewDev","dev"],["tabRec","viewRec","rec"],
+                           ["tabPpl","viewPpl","ppl"]]){
+    $(t).setAttribute("aria-selected", which === k);
+    $(v).hidden = which !== k;
+  }
+  if (which === "rec") loadClips();
+  if (which === "ppl") loadPeople();
 }
-$("tabDev").onclick = () => showTab(false);
-$("tabRec").onclick = () => showTab(true);
+$("tabDev").onclick = () => showTab("dev");
+$("tabRec").onclick = () => showTab("rec");
+$("tabPpl").onclick = () => showTab("ppl");
+
+async function loadPeople(){
+  const el = $("pplList");
+  try{
+    const people = await (await fetch("/api/speakers")).json();
+    if (!people.length){
+      el.innerHTML = '<div class="empty">Nobody enrolled yet. Name a speaker on a recording.</div>';
+      return;
+    }
+    el.innerHTML = "";
+    for (const p of people){
+      const d = document.createElement("div");
+      d.className = "person";
+      d.innerHTML = `<h3>${p.name}<span class="cnt">${p.count} sample${p.count===1?"":"s"}</span></h3>`;
+      for (const e of p.samples){
+        const row = document.createElement("div");
+        row.className = "samp";
+        const bits = [];
+        if (e.legacy) bits.push(`earlier labels (weight ${e.weight})`);
+        if (e.clip) bits.push(e.clip);
+        if (e.seconds) bits.push(`${e.seconds}s`);
+        if (e.score !== null && e.score !== undefined) bits.push(`match ${e.score}`);
+        row.innerHTML = `<span class="s1">${bits.join(" · ") || "sample"}</span>`;
+        const rm = document.createElement("button");
+        rm.textContent = "Remove";
+        rm.onclick = async () => {
+          await fetch(`/api/speaker/${encodeURIComponent(p.name)}/sample/${e.id}`,
+                      {method:"DELETE"});
+          log(`removed a sample from ${p.name}`);
+          loadPeople();
+        };
+        row.appendChild(rm);
+        d.appendChild(row);
+      }
+      const del = document.createElement("button");
+      del.className = "dang";
+      del.style.marginTop = "12px";
+      del.textContent = `Forget ${p.name}`;
+      let armed = false;
+      del.onclick = async () => {
+        if (!armed){ armed = true; del.textContent = "Tap again to forget";
+          setTimeout(() => { armed = false; del.textContent = `Forget ${p.name}`; }, 4000);
+          return; }
+        await fetch(`/api/speaker/${encodeURIComponent(p.name)}`, {method:"DELETE"});
+        log(`forgot ${p.name}`);
+        loadPeople();
+      };
+      d.appendChild(del);
+      el.appendChild(d);
+    }
+  }catch(e){ el.innerHTML = '<div class="empty">could not load people</div>'; }
+}
 
 /* ---- recordings ---- */
 async function loadClips(){
@@ -761,6 +837,8 @@ async function nameSpeaker(clip, speaker, existing){
   $("namerSub").textContent = `${speaker} · ${clip}`;
   $("namerInput").value = existing || "";
   $("namerErr").textContent = "";
+  namerCtx.force = false;
+  document.getElementById("namerForce")?.remove();
 
   const q = $("namerQuick");
   q.innerHTML = "";
@@ -793,7 +871,8 @@ async function saveName(){
   try{
     const r = await fetch("/api/label", {
       method:"POST", headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({clip: namerCtx.clip, speaker: namerCtx.speaker, name})
+      body: JSON.stringify({clip: namerCtx.clip, speaker: namerCtx.speaker, name,
+                            force: !!namerCtx.force})
     });
     const body = await r.json().catch(() => ({}));
     if (r.ok){
@@ -801,6 +880,18 @@ async function saveName(){
       const clip = namerCtx.clip;
       closeNamer();
       await renderTranscript(clip);
+    } else if (r.status === 422 && body.rejected){
+      // Advisory, not a refusal: show why, and let the person decide.
+      $("namerErr").textContent = body.detail;
+      let over = document.getElementById("namerForce");
+      if (!over){
+        over = document.createElement("button");
+        over.id = "namerForce";
+        over.textContent = "Add it anyway";
+        over.style.marginTop = "8px";
+        over.onclick = () => { namerCtx.force = true; saveName(); };
+        $("namerErr").after(over);
+      }
     } else {
       $("namerErr").textContent = body.detail || "Could not save that name";
     }

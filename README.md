@@ -362,8 +362,29 @@ Diarization gives per-file labels (`SPEAKER_00`) that mean nothing across
 recordings. Tapping a speaker chip attaches a name, and every later clip
 resolves that voice on its own.
 
-Enrolment is a running mean in embedding space, not training: it works from the
-first sample, sharpens with each label, and costs no GPU time.
+Enrolment is a running mean in embedding space, not training: no model is ever
+retrained, and what improves is the reference vector each new voice is compared
+against. It works from the first sample, sharpens with each label, and costs no
+GPU time.
+
+Because the reference is an average, a bad sample degrades it, so two checks
+run before anything is enrolled:
+
+- **Length.** Under 5 seconds of a voice in a clip is refused. Short speech
+  makes an unreliable embedding, and averaging one in drags the reference away
+  from how the person actually sounds.
+- **Outliers.** A sample scoring below 0.55 against the existing reference is
+  refused as probably belonging to somebody else. Measured on this hardware,
+  the same speaker across recordings scores 0.65–0.87 and two different
+  speakers 0.38–0.48, so 0.55 sits in the gap. An earlier threshold of 0.40 sat
+  *inside* the different-speaker range and let a wrong voice enrol silently.
+
+Both are advisory. The interface says why and offers to add it anyway, because
+only the person listening can settle a genuinely unusual recording.
+
+Every sample is kept individually rather than only the average, so the **People**
+tab can list what a voiceprint was built from and remove any one of them, and the
+reference is rebuilt without it.
 
 Quality matters more than quantity. Measured on short real-world clips,
 identification scores 0.42–0.74 against a 0.60 threshold — the same voice is

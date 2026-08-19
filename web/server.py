@@ -693,10 +693,24 @@ async def api_revert_edits(name: str):
 
 @app.get("/api/speakers")
 async def api_speakers():
-    meta = {}
-    if os.path.exists(pipeline.SPEAKER_META):
-        meta = json.load(open(pipeline.SPEAKER_META))
-    return [{"name": k, "samples": v.get("count", 1)} for k, v in sorted(meta.items())]
+    return pipeline.list_speakers()
+
+
+@app.delete("/api/speaker/{name}")
+async def api_delete_speaker(name: str):
+    if not pipeline.delete_speaker(name):
+        raise HTTPException(404, "no such person")
+    device.event("log", text=f"removed {name}")
+    return {"deleted": name}
+
+
+@app.delete("/api/speaker/{name}/sample/{sample_id}")
+async def api_delete_sample(name: str, sample_id: str):
+    """Drop one enrolment sample and rebuild the reference without it."""
+    if not pipeline.delete_sample(name, sample_id):
+        raise HTTPException(404, "no such sample")
+    device.event("log", text=f"removed a sample from {name}")
+    return {"ok": True}
 
 
 @app.post("/api/label")
@@ -712,7 +726,16 @@ async def api_label(body: dict):
     vec = (t.get("embeddings") or {}).get(spk)
     if vec is None:
         raise HTTPException(400, f"no voiceprint stored for {spk}")
-    count = pipeline.save_speaker(name, vec)
+
+    # How much of this voice the clip actually contains decides whether the
+    # sample is worth enrolling at all.
+    secs = sum(x["end"] - x["start"]
+               for x in t.get("segments", []) if x.get("speaker") == spk)
+    res = pipeline.save_speaker(name, vec, clip=clip, speaker=spk,
+                                seconds=secs, force=bool(body.get("force")))
+    if not res.get("ok"):
+        return JSONResponse({"rejected": True, **res}, status_code=422)
+    count = res["count"]
 
     # Re-resolve names in this transcript so the UI updates immediately.
     emb = {k: __import__("numpy").asarray(v)
