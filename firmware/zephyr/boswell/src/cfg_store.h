@@ -47,7 +47,9 @@ struct boswell_settings {
  * actual flash contents before being trusted.
  */
 #define BOSWELL_BACKLOG_MAGIC 0xB0C5
-#define BOSWELL_BACKLOG_VER   1
+/* 2: records gained a CRC byte, so a version 1 cursor describes a layout
+   that no longer exists and must not be trusted. */
+#define BOSWELL_BACKLOG_VER   2
 
 struct boswell_backlog {
     uint16_t magic;

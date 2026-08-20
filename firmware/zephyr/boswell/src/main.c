@@ -188,6 +188,8 @@ static uint32_t notify_drops;
 /* Motion reads the sensor refused, and frames abandoned because none
  * succeeded. A count is the difference between a quiet sensor and a dead one. */
 static uint32_t imu_read_fails, imu_empty_frames;
+/* Frames the encoder would not build from the samples it was given. */
+static uint32_t codec_refused;
 /* Which threads exist. Requiring a check-in from a thread that was never
  * created is a reboot loop with no way out: if the flash fails to probe, the
  * writer thread is never started, WDT_QSPI is never set, and the watchdog
@@ -322,6 +324,24 @@ static int cmd_led(const struct shell *sh, size_t argc, char **argv)
     return 0;
 }
 
+/* Forget every bond.
+ *
+ * Control writes need an encrypted link, so a host that cannot pair cannot
+ * arm the device. This is the way back: clear the bonds, pair again. The
+ * stream command below works regardless of any of it, which is the real
+ * safety net -- a microphone that can only be recovered over the radio that
+ * locked it out is not recoverable.
+ */
+static int cmd_unpair(const struct shell *sh, size_t argc, char **argv)
+{
+    ARG_UNUSED(argc); ARG_UNUSED(argv);
+    int err = bt_unpair(BT_ID_DEFAULT, NULL);
+
+    shell_print(sh, "unpair -> %d%s", err,
+                err ? "" : " (every host must pair again)");
+    return 0;
+}
+
 static int cmd_adv(const struct shell *sh, size_t argc, char **argv)
 {
     ARG_UNUSED(argc); ARG_UNUSED(argv);
@@ -418,14 +438,14 @@ static int cmd_status(const struct shell *sh, size_t argc, char **argv)
     ble_audio_idle_stats(idle);
     shell_print(sh, "notify drops=%u", notify_drops);
     { uint32_t ss[4]; ble_audio_send_stats(ss); shell_print(sh, "send calls=%u retries=%u avg=%u us max=%u us", ss[0], ss[1], ss[3], ss[2]); }
-    shell_print(sh, "imu read fails=%u empty frames=%u",
-                imu_read_fails, imu_empty_frames);
+    shell_print(sh, "imu read fails=%u empty frames=%u codec refused=%u",
+                imu_read_fails, imu_empty_frames, codec_refused);
     { uint32_t ws[2]; int we = 0; qspi_store_write_stats(ws, &we);
       shell_print(sh, "qspi write fails=%u erase fails=%u err=%d",
                   ws[0], ws[1], we); }
-    { uint32_t ps[8]; int le = 0; qspi_store_pop_stats(ps, &le);
-      shell_print(sh, "qspi peeks=%u refused=%u skipped=%u unstuck=%u fails=%u scanned=%u err=%d",
-                  ps[4], ps[5], ps[6], ps[7], ps[0], ps[3], le); }
+    { uint32_t ps[9]; int le = 0; qspi_store_pop_stats(ps, &le);
+      shell_print(sh, "qspi peeks=%u refused=%u skipped=%u unstuck=%u crc=%u fails=%u scanned=%u err=%d",
+                  ps[4], ps[5], ps[6], ps[7], ps[8], ps[0], ps[3], le); }
     { uint32_t dl[3]; ble_audio_dead_link_stats(dl);
       shell_print(sh, "dead-link fails=%u drops=%u silent=%u s", dl[0], dl[1], dl[2]); }
     shell_print(sh, "idle-guard armed=%u fired=%u dropped=%u",
@@ -455,6 +475,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(boswell_cmds,
     SHELL_CMD(tap, NULL, "Set double-tap threshold (0-31)", cmd_tap),
     SHELL_CMD(taps, NULL, "Show tap counters", cmd_taps),
     SHELL_CMD(steps, NULL, "Show step count, or 'steps reset'", cmd_steps),
+    SHELL_CMD(unpair, NULL, "Forget every paired host", cmd_unpair),
     SHELL_CMD(adv, NULL, "Force advertising to restart", cmd_adv),
     SHELL_CMD(led, NULL, "Force LED channels, e.g. 'led 100'", cmd_led),
     SHELL_CMD(debounce, NULL, "Get/set tap debounce in ms", cmd_debounce),
@@ -1053,7 +1074,11 @@ static void capture_fn(void *a, void *b, void *c)
                 uint16_t qlen = codec_build_frame(frame, count, seq,
                                                   k_uptime_get_32(), qflags,
                                                   wire);
-                preroll_stash(wire, qlen);
+                if (qlen) {
+                    preroll_stash(wire, qlen);
+                } else {
+                    codec_refused++;
+                }
                 seq++;                      /* the gap is intentional, not loss */
                 continue;
             }
@@ -1066,6 +1091,15 @@ static void capture_fn(void *a, void *b, void *c)
 
         uint16_t len = codec_build_frame(frame, count, seq,
                                          k_uptime_get_32(), flags, wire);
+
+        if (len == 0) {
+            /* The encoder refused its inputs. Counted rather than sent as a
+             * zero-length frame, which the radio would take and the host
+             * would have to make sense of. */
+            codec_refused++;
+            seq++;
+            continue;
+        }
 
         /* Anything held back from just before the gate opened goes first, so
          * the onset of the word arrives ahead of the rest of it. */

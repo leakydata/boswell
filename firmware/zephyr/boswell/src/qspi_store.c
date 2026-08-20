@@ -1,5 +1,6 @@
 #include "qspi_store.h"
 #include "cfg_store.h"
+#include "rec_crc.h"
 
 #include <string.h>
 #include <zephyr/device.h>
@@ -32,6 +33,7 @@ static uint32_t dropped;
  * exactly like an empty one. */
 static uint32_t pop_fail_read, pop_fail_short, pop_fail_big, pop_scanned;
 static uint32_t pop_ok, drain_refused, drain_skipped, drain_stuck_drops;
+static uint32_t pop_crc_fail;
 /* Writes and erases the flash rejected. Silence here reads as an idle store. */
 static uint32_t write_fails, erase_fails;
 static int      last_write_err;
@@ -305,16 +307,16 @@ int qspi_store_init(void)
              * Parse a whole record instead, and require the next one to begin
              * with a magic byte as well. Two records agreeing is a cursor
              * that means something. */
-            uint8_t hdr[2] = { 0, 0 };
+            uint8_t hdr[QSPI_HDR_LEN] = { 0 };
             bool sane = false;
 
             if (flash_read(flash_dev, (uint32_t)(saved.r_pos % capacity),
                            hdr, sizeof(hdr)) == 0 &&
                 hdr[0] == QSPI_MAGIC && hdr[1] > 2 &&
                 hdr[1] <= QSPI_MAX_PAYLOAD) {
-                int64_t next = saved.r_pos + 2 + hdr[1];
+                int64_t next = saved.r_pos + QSPI_HDR_LEN + hdr[1];
 
-                if (next + 2 <= saved.w_pos) {
+                if (next + QSPI_HDR_LEN <= saved.w_pos) {
                     uint8_t nmagic = 0;
 
                     sane = flash_read(flash_dev,
@@ -358,7 +360,18 @@ bool     qspi_store_ready(void)    { return ready; }
  * screen and is not used to decide anything. */
 uint32_t qspi_store_pending(void)
 {
-    return (uint32_t)(w_pos - r_pos) + ring_buf_size_get(&stage);
+    /* Under the lock, because this is not only telemetry.
+     *
+     * The capture thread reads it every frame to decide whether a frame goes
+     * to flash or to the radio, so a value assembled from a w_pos read before
+     * a commit and an r_pos read after it is a routing decision made on a
+     * state that never existed. The cost is a mutex on a path that already
+     * takes one to push.
+     */
+    k_mutex_lock(&lock, K_FOREVER);
+    uint32_t n = (uint32_t)(w_pos - r_pos) + ring_buf_size_get(&stage);
+    k_mutex_unlock(&lock);
+    return n;
 }
 uint32_t qspi_store_capacity(void) { return capacity; }
 
@@ -395,7 +408,7 @@ int qspi_store_push(const uint8_t *data, uint8_t len)
     if (!ready || len == 0 || len > QSPI_MAX_PAYLOAD) {
         return -EINVAL;
     }
-    uint8_t hdr[2] = { QSPI_MAGIC, len };
+    uint8_t hdr[QSPI_HDR_LEN] = { QSPI_MAGIC, len, rec_crc8(data, len) };
 
     /* All or nothing: a header without its payload would desynchronise the
      * reader far worse than dropping the frame outright. */
@@ -543,7 +556,7 @@ void qspi_store_commit(uint8_t len)
 {
     k_mutex_lock(&lock, K_FOREVER);
     if (peeked_len && len == peeked_len) {
-        r_pos += 2 + peeked_len;
+        r_pos += QSPI_HDR_LEN + peeked_len;
         peeked_len = 0;
     }
     k_mutex_unlock(&lock);
@@ -557,12 +570,13 @@ void qspi_store_write_stats(uint32_t out[2], int *last_err)
     }
 }
 
-void qspi_store_pop_stats(uint32_t out[8], int *last_err)
+void qspi_store_pop_stats(uint32_t out[9], int *last_err)
 {
     out[0] = pop_fail_read; out[1] = pop_fail_short;
     out[2] = pop_fail_big;  out[3] = pop_scanned;
     out[4] = pop_ok;        out[5] = drain_refused;
     out[6] = drain_skipped; out[7] = drain_stuck_drops;
+    out[8] = pop_crc_fail;
     if (last_err) {
         *last_err = pop_last_err;
     }
@@ -591,8 +605,8 @@ int qspi_store_pop(uint8_t *out, uint8_t max_len)
     int result = 0;
 
     /* Resynchronise: a dropped sector can leave the reader mid-record. */
-    while (r_pos + 2 <= w_pos) {
-        uint8_t hdr[2];
+    while (r_pos + QSPI_HDR_LEN <= w_pos) {
+        uint8_t hdr[QSPI_HDR_LEN];
         int rc = read_wrapped(r_pos, hdr, sizeof(hdr));
 
         if (rc != 0) {
@@ -609,7 +623,7 @@ int qspi_store_pop(uint8_t *out, uint8_t max_len)
             continue;
         }
         uint8_t len = hdr[1];
-        if (r_pos + 2 + len > w_pos) {     /* record not fully written yet */
+        if (r_pos + QSPI_HDR_LEN + len > w_pos) {  /* not fully written yet */
             pop_fail_short++;
             break;
         }
@@ -617,11 +631,21 @@ int qspi_store_pop(uint8_t *out, uint8_t max_len)
             pop_fail_big++;
             break;
         }
-        rc = read_wrapped(r_pos + 2, out, len);
+        rc = read_wrapped(r_pos + QSPI_HDR_LEN, out, len);
         if (rc != 0) {
             pop_fail_read++;
             pop_last_err = rc;
             break;
+        }
+        if (rec_crc8(out, len) != hdr[2]) {
+            /* Magic and a plausible length agreed and the payload did not.
+             * Almost certainly a cursor that landed mid-record; scan on
+             * rather than hand the host audio assembled from the wrong
+             * bytes, which it has no way to recognise as wrong. */
+            pop_crc_fail++;
+            r_pos++;
+            pop_scanned++;
+            continue;
         }
         /* Deliberately does NOT advance r_pos. The caller commits once the
          * frame has actually left the device. */

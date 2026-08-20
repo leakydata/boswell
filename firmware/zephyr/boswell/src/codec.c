@@ -33,6 +33,18 @@ uint32_t codec_rms(const int16_t *samples, int count)
 uint16_t codec_build_frame(const int16_t *samples, int count, uint16_t seq,
                            uint32_t t_ms, uint8_t flags, uint8_t *out)
 {
+    /* The encoder dereferences samples[0] and then walks pairs, so a null
+     * pointer, a zero count or an odd one are all out-of-bounds reads that
+     * happen to work most of the time. Every caller today satisfies these,
+     * which is exactly why they were never written down -- and why a new
+     * caller would find out the hard way, on a device with no debugger
+     * attached. Returning zero costs one frame; the alternative is a fault
+     * with nothing to point at.
+     */
+    if (samples == NULL || out == NULL || count <= 0 || (count & 1) ||
+        count > MAX_SAMPLES) {
+        return 0;
+    }
     struct AdpcmState st = { samples[0], 0 };
     int16_t predictor0 = (int16_t)st.predictor;
     uint8_t index0 = (uint8_t)st.index;

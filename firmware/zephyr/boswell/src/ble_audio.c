@@ -15,6 +15,7 @@
 
 #include <zephyr/bluetooth/bluetooth.h>
 #include <zephyr/random/random.h>
+#include <zephyr/settings/settings.h>
 #include <zephyr/bluetooth/hci.h>
 #include <zephyr/bluetooth/conn.h>
 #include <zephyr/bluetooth/gatt.h>
@@ -25,6 +26,39 @@ LOG_MODULE_REGISTER(ble_audio, LOG_LEVEL_INF);
 
 static struct bt_uuid_128 svc_uuid   = BT_UUID_INIT_128(BOSWELL_UUID_SERVICE);
 static struct bt_uuid_128 audio_uuid = BT_UUID_INIT_128(BOSWELL_UUID_AUDIO);
+/* Whether a control write needs an encrypted link.
+ *
+ * The control characteristic arms the microphone, erases the backlog and can
+ * reboot into the bootloader, so leaving it open means anyone in radio range
+ * can do those things to a microphone somebody is wearing. That is the threat
+ * model, stated rather than implied.
+ *
+ * It ships open, and that is a decision rather than an oversight. Requiring
+ * encryption was built and tried on real hardware: the board enforced it
+ * correctly, and the host could not get past it. This board has no display or
+ * keypad, so pairing is Just Works, and Just Works pairing on a headless
+ * Linux host needs a BlueZ agent that is not there -- bleak's pair() hangs
+ * until it is killed. An always-on recorder that stops recording is a worse
+ * outcome than one a neighbour could theoretically disarm.
+ *
+ * Set this to 1 to require encryption. Everything it needs is already
+ * configured: CONFIG_BT_SMP, bonding, and persisted keys. Pair once from a
+ * host with a working agent -- bluetoothctl in an interactive session does
+ * have one -- and "boswell unpair" is the way back if it goes wrong. The USB
+ * shell can arm and disarm regardless, which is the real safety net.
+ *
+ * Just Works also means the encryption is unauthenticated: it stops a
+ * passer-by issuing commands, and does not stop someone present at the moment
+ * of pairing. Worth knowing before relying on it.
+ */
+#define BOSWELL_SECURE_CTRL 0
+
+#if BOSWELL_SECURE_CTRL
+#define BOSWELL_CTRL_PERM BT_GATT_PERM_WRITE_ENCRYPT
+#else
+#define BOSWELL_CTRL_PERM BT_GATT_PERM_WRITE
+#endif
+
 static struct bt_uuid_128 ctrl_uuid  = BT_UUID_INIT_128(BOSWELL_UUID_CTRL);
 static struct bt_uuid_128 info_uuid  = BT_UUID_INIT_128(BOSWELL_UUID_INFO);
 static struct bt_uuid_128 imu_uuid   = BT_UUID_INIT_128(BOSWELL_UUID_IMU);
@@ -122,7 +156,7 @@ BT_GATT_SERVICE_DEFINE(boswell_svc,
     BT_GATT_CCC(ccc_changed, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
     BT_GATT_CHARACTERISTIC(&ctrl_uuid.uuid,
                            BT_GATT_CHRC_WRITE | BT_GATT_CHRC_WRITE_WITHOUT_RESP,
-                           BT_GATT_PERM_WRITE, NULL, ctrl_write, NULL),
+                           BOSWELL_CTRL_PERM, NULL, ctrl_write, NULL),
     BT_GATT_CHARACTERISTIC(&info_uuid.uuid, BT_GATT_CHRC_READ,
                            BT_GATT_PERM_READ, info_read, NULL, NULL),
     BT_GATT_CHARACTERISTIC(&imu_uuid.uuid, BT_GATT_CHRC_NOTIFY,
@@ -617,6 +651,20 @@ int ble_audio_init(ctrl_handler_t on_ctrl)
         LOG_ERR("bt_enable failed (%d)", err);
         return err;
     }
+
+    /* Required once bonds are stored.
+     *
+     * With CONFIG_BT_SETTINGS the host will not start advertising until the
+     * settings subsystem has handed it whatever keys it has -- so leaving
+     * this out does not fail loudly, it just means the device never appears.
+     * Which is precisely what it did: the application ran, the shell
+     * answered, and nothing could find it over the radio.
+     */
+    err = settings_load();
+    if (err) {
+        LOG_ERR("settings_load failed (%d); bonds will not persist", err);
+    }
+
     ble_audio_publish_info();
 
     err = ble_audio_advertise_now();

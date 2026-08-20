@@ -29,14 +29,26 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+/* Record layout: [magic][len][crc8][payload]
+ *
+ * The CRC exists because magic-and-length is not enough to tell a record from
+ * a coincidence. Any byte has a one-in-256 chance of being the magic value,
+ * and the byte after it a good chance of being a plausible length -- which is
+ * exactly how a read cursor pointing into the middle of a record was accepted
+ * as a valid one, produced a record too short to deliver, and wedged the
+ * backlog until somebody went looking. A checksum over the payload turns that
+ * coincidence into a one-in-65536 one, and a mismatch into a resync rather
+ * than a stall.
+ */
 #define QSPI_MAGIC       0xB5
 #define QSPI_MAX_PAYLOAD 200
+#define QSPI_HDR_LEN     3
 
 int      qspi_store_init(void);
 bool     qspi_store_ready(void);
 uint32_t qspi_store_pending(void);
 /* read failures, short records, oversize, bytes scanned, last errno */
-void qspi_store_pop_stats(uint32_t out[8], int *last_err);
+void qspi_store_pop_stats(uint32_t out[9], int *last_err);
 /* write failures, erase failures, last errno */
 void qspi_store_write_stats(uint32_t out[2], int *last_err);     /* bytes not yet drained */
 uint32_t qspi_store_capacity(void);
