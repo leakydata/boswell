@@ -479,8 +479,9 @@ html{scroll-padding-top:120px}
         <option value="old">Older than a week</option>
       </select>
       <select class="filter" id="fMode" aria-label="Search mode">
-        <option value="words">Match words</option>
-        <option value="meaning">Match meaning</option>
+        <option value="both">Words and meaning</option>
+        <option value="words">Match words only</option>
+        <option value="meaning">Match meaning only</option>
       </select>
       <select class="filter" id="fGroup" aria-label="Group recordings">
         <option value="conv">Conversations</option>
@@ -1071,7 +1072,7 @@ on("fDate",    "change", () => { dateFilter = $("fDate").value;    loadClips(); 
 on("fGroup",   "change", () => { groupMode  = $("fGroup").value;   loadClips(); });
 /* Keyword search only finds a conversation if you remember a word from it.
    Meaning search embeds the query and compares it against every line. */
-let searchMode = "words";
+let searchMode = "both";
 on("fMode", "change", () => { searchMode = $("fMode").value; loadClips(); });
 
 function fmtClock(t){
@@ -1278,8 +1279,23 @@ $("qClear").onclick = () => {
 
 async function loadSearch(el){
   if (searchMode === "meaning") return await loadSemanticSearch(el);
-  const r = await fetch("/api/search?q=" + encodeURIComponent(query));
-  const results = await r.json();
+  /* Both by default. Words alone cannot find a recording unless you remember
+     a word from it, and misses it when the transcriber heard the word
+     differently -- searching this archive for "shoulder injection" returns
+     nothing at all while the conversation is sitting there. Meaning alone
+     drifts past exact terms. The two are fused by rank on the server. */
+  const url = searchMode === "both"
+    ? "/api/search/hybrid?limit=40&q=" + encodeURIComponent(query)
+    : "/api/search?q=" + encodeURIComponent(query);
+  el.innerHTML = '<div class="empty">searching…</div>';
+  let results;
+  try{
+    const r = await fetch(url);
+    const d = await r.json();
+    results = Array.isArray(d) ? d : (d.hits || []);
+  }catch(e){
+    el.innerHTML = '<div class="empty">could not search</div>'; return;
+  }
   const dated = results.filter(c => inDateRange(c.modified));
   $("clipCount").textContent =
     `${dated.length} recording${dated.length===1?"":"s"} matching “${query}”`;

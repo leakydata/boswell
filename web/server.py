@@ -982,7 +982,23 @@ async def api_search_hybrid(q: str, limit: int = 25):
     import semantic
     loop = asyncio.get_running_loop()
     kw = await loop.run_in_executor(None, index_db.search, q, limit * 2)
-    return await loop.run_in_executor(None, semantic.hybrid, q, kw, limit)
+    res = await loop.run_in_executor(None, semantic.hybrid, q, kw, limit)
+
+    # Fill in what meaning-only rows arrive without. Those are precisely the
+    # results keyword search could not find, so leaving them without a
+    # modified time would have let the date filter drop them.
+    hits = res.get("hits") or []
+    missing = [h["name"] for h in hits if h.get("modified") is None]
+    if missing:
+        rows = await loop.run_in_executor(None, index_db.clips_by_name, missing)
+        for h in hits:
+            row = rows.get(h["name"])
+            if row:
+                for k, v in row.items():
+                    h.setdefault(k, v)
+                    if h.get(k) is None:
+                        h[k] = v
+    return res
 
 
 @app.get("/api/search/semantic/stats")

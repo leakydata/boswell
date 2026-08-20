@@ -193,6 +193,36 @@ def list_clips(limit=1000):
              "preview": r["preview"] or ""} for r in rows]
 
 
+def clips_by_name(names):
+    """Look up several clips at once, keyed by name.
+
+    Meaning search returns clip names and nothing else, so a result found only
+    that way arrived at the interface without the modified time or duration
+    every row is rendered with -- and the date filter, which reads that time,
+    would have quietly dropped exactly the results keyword search could not
+    find.
+    """
+    names = [n for n in (names or []) if n]
+    if not names:
+        return {}
+    c = _conn()
+    out = {}
+    # Chunked, because SQLite has a limit on how many parameters one statement
+    # can carry and a search can return more names than that.
+    for i in range(0, len(names), 400):
+        chunk = names[i:i + 400]
+        q = ",".join("?" for _ in chunk)
+        for r in c.execute(f"SELECT * FROM clips WHERE name IN ({q})", chunk):
+            out[r["name"]] = {
+                "name": r["name"], "seconds": r["seconds"],
+                "modified": r["modified"], "status": r["status"],
+                "has_speech": None if r["has_speech"] is None else bool(r["has_speech"]),
+                "edited": bool(r["edited"]),
+                "speakers": json.loads(r["speakers"] or "[]"),
+                "preview": r["preview"] or ""}
+    return out
+
+
 def fts_query(query):
     """Turn what somebody typed into an FTS5 MATCH expression.
 
