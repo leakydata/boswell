@@ -329,7 +329,13 @@ void ble_audio_publish_info(void)
     info_buf[2] = PROTO_FRAME_MS;
     info_buf[3] = ns & 0xFF;
     info_buf[4] = (ns >> 8) & 0xFF;
-    info_buf[5] = (uint8_t)(g_state.vad_enabled | (g_state.backlog_mode << 1));
+    /* Bit 2 is whether capture is actually running. The host kept its own
+     * idea of "armed" and had no way to check it: after a reconnect it
+     * believed capture was on while the device had booted with it off, and
+     * nothing was being recorded at all. */
+    info_buf[5] = (uint8_t)(g_state.vad_enabled
+                            | (g_state.backlog_mode << 1)
+                            | (g_state.streaming ? 4 : 0));
     /* 1 = the internal sensor bus. The host prints four WHO_AM_I probe slots
      * because the Arduino build has two candidate buses to search; Zephyr
      * routes the sensors to i2c0 only, so the last two stay unprobed. */

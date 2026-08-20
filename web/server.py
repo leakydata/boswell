@@ -294,6 +294,13 @@ class Device:
                 if time.time() - last_info > 1.0:
                     last_info = time.time()
                     await self._read_info(c)
+                    if getattr(self, "_rearm_needed", False):
+                        # Say it again rather than assume it landed. This
+                        # costs one control write and is the difference
+                        # between recording and quietly not recording.
+                        self._rearm_needed = False
+                        self.event("log", text="device was not capturing; re-arming")
+                        await self._ctrl(0x01, 1)
                     self.publish()
 
             self.client = None
@@ -305,6 +312,15 @@ class Device:
         info = await c.read_gatt_char(INFO_UUID)
         if len(info) >= 6:
             self.state["rate"] = 16000 if info[1] else 8000
+            # What the device is actually doing, as opposed to what this
+            # process last asked for. They drift apart: the device boots with
+            # capture off after a firmware update, and a host that only
+            # remembers having armed it once will sit there believing it is
+            # recording while nothing is.
+            running = bool(info[5] & 4)
+            self.state["device_streaming"] = running
+            if self.state.get("armed") and not running:
+                self._rearm_needed = True
         if len(info) >= 8:
             self.state["imu"] = info[6] != 0
         if len(info) >= 18:
