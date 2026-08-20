@@ -62,6 +62,10 @@ import pipeline
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.join(HERE, "..", "data")
+# When each recording actually happened, according to the device's own clock.
+# Kept beside the audio rather than inferred from file metadata, which can be
+# rewritten by a copy, a backup or a sync -- and was, three times tonight.
+TIMES = os.path.join(DATA, "times")
 SEG_SECONDS = 30.0          # write a clip this long, then hand it to the pipeline
 
 
@@ -93,6 +97,14 @@ class Device:
         self._recovered_at = 0.0
         self._recovered_start = None
         self._recovered_tms = None
+        # The device stamps every frame with its own clock. Keeping the first
+        # and last of those for each clip makes the recording itself say when
+        # it happened, instead of the host inferring it from a file timestamp
+        # and a duration -- an inference that broke three different ways.
+        self._clip_tms_first = None
+        self._clip_tms_last = None
+        self._rec_tms_first = None
+        self._rec_tms_last = None
         # Mapping between the device's uptime clock and wall time.
         self._clock_host = None
         self._clock_dev = 0
@@ -151,11 +163,15 @@ class Device:
         # and everything downstream derives a start as mtime minus duration.
         # Stamping a recovered clip with its start put it a whole clip-length
         # too early and interleaved it wrongly with the live clips around it.
-        end = when + len(audio) / float(self.state["rate"] or 1)
+        secs = len(audio) / float(self.state["rate"] or 1)
+        end = when + secs
         try:
             os.utime(path, (end, end))
         except OSError:
             pass
+        self._write_times(path, self._rec_tms_first, self._rec_tms_last,
+                          "flash", secs)
+        self._rec_tms_first = self._rec_tms_last = None
         return path
 
     def maybe_rotate(self):
@@ -224,10 +240,17 @@ class Device:
             # is exactly the error this is meant to avoid.
             self._recovered_tms = (t_ms if self._recovered_tms is None
                                    else min(self._recovered_tms, t_ms))
+            self._rec_tms_first = (t_ms if self._rec_tms_first is None
+                                   else min(self._rec_tms_first, t_ms))
+            self._rec_tms_last = (t_ms if self._rec_tms_last is None
+                                  else max(self._rec_tms_last, t_ms))
             self.state["recovered_seconds"] = round(
                 sum(len(p) for p in self._recovered) / self.state["rate"], 1)
             return
         self._pcm.append(pcm)
+        if self._clip_tms_first is None:
+            self._clip_tms_first = t_ms
+        self._clip_tms_last = t_ms
         self.state["frames"] += 1
 
         # A cheap level meter for the UI; full stats come from the clip.
@@ -238,6 +261,40 @@ class Device:
     def clip_seconds(self):
         return sum(len(p) for p in self._pcm) / self.state["rate"]
 
+    def _wall(self, t_ms):
+        """Device milliseconds to wall clock, using the anchor taken from the
+        first live frame. Returns None if there is no anchor yet."""
+        if t_ms is None or self._clock_host is None:
+            return None
+        return self._clock_host - (self._clock_dev - t_ms) / 1000.0
+
+    def _write_times(self, path, first_ms, last_ms, source, seconds):
+        """Record when the audio happened, according to the device.
+
+        Written beside the clip so ordering never has to be reconstructed
+        from filesystem metadata again. mtime can be rewritten by a copy, a
+        backup or a sync; the device's own clock cannot.
+        """
+        started = self._wall(first_ms)
+        ended = self._wall(last_ms)
+        if started is None:
+            return
+        if ended is None or ended < started:
+            ended = started + seconds
+        os.makedirs(TIMES, exist_ok=True)
+        rec = {"name": os.path.basename(path), "started": round(started, 3),
+               "ended": round(ended, 3), "seconds": round(seconds, 3),
+               "source": source, "device_ms": [first_ms, last_ms]}
+        try:
+            json.dump(rec, open(os.path.join(
+                TIMES, os.path.basename(path) + ".json"), "w"))
+        except Exception:
+            pass
+        try:
+            os.utime(path, (ended, ended))     # keep mtime consistent too
+        except OSError:
+            pass
+
     def take_clip(self):
         if not self._pcm:
             return None
@@ -246,6 +303,9 @@ class Device:
         os.makedirs(DATA, exist_ok=True)
         path = os.path.join(DATA, f"clip_{int(time.time())}.wav")
         sf.write(path, audio, self.state["rate"], subtype="PCM_16")
+        self._write_times(path, self._clip_tms_first, self._clip_tms_last,
+                          "live", len(audio) / float(self.state["rate"] or 1))
+        self._clip_tms_first = self._clip_tms_last = None
         return path
 
     # ---- connection ----------------------------------------------------

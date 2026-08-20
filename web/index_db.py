@@ -128,6 +128,24 @@ def remove_clip(name):
     c.commit()
 
 
+def device_times(name):
+    """When the device says this recording started and ended, if it said.
+
+    Preferred over file metadata everywhere it exists: the device's clock is
+    the only witness that was actually present when the audio happened.
+    """
+    p = os.path.join(DATA, "times", name + ".json")
+    if not os.path.exists(p):
+        return None
+    try:
+        d = json.load(open(p))
+        if "started" in d and "ended" in d:
+            return float(d["started"]), float(d["ended"])
+    except Exception:
+        pass
+    return None
+
+
 def sync():
     """Reconcile the index with what is actually on disk.
 
@@ -214,7 +232,15 @@ def conversations(gap_seconds=300, limit=400):
     # earlier. Sorting on the end time therefore put recovered audio out of
     # sequence against the live clips around it -- 20 clips out of 210 in one
     # measurement, all of them pairs whose durations differed.
-    clips.sort(key=lambda c: c["modified"] - (c["seconds"] or 0))
+    def started_at(c):
+        t = device_times(c["name"])
+        if t:
+            return t[0]
+        # No device record: fall back to the file, which is what every clip
+        # recorded before this existed has.
+        return c["modified"] - (c["seconds"] or 0)
+
+    clips.sort(key=started_at)
     groups = []
     for c in clips:
         start = c["modified"] - (c["seconds"] or 0)
