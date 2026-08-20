@@ -232,6 +232,9 @@ int qspi_store_init(void)
 }
 
 bool     qspi_store_ready(void)    { return ready; }
+/* Telemetry, read without locking from whichever thread asks. The values can
+ * be a few frames stale against each other, which is fine for a counter on a
+ * screen and is not used to decide anything. */
 uint32_t qspi_store_pending(void)
 {
     return (uint32_t)(w_pos - r_pos) + ring_buf_size_get(&stage);
@@ -250,6 +253,22 @@ void qspi_store_stats(uint32_t out[4])
 }
 uint32_t qspi_store_dropped(void)  { return dropped + stage_drops; }
 
+/* Thread contract for the staging ring.
+ *
+ * Zephyr's ring_buf is safe for one producer and one consumer without a lock,
+ * and that is exactly what this is: the capture thread is the only caller of
+ * qspi_store_push, and the writer thread is the only one that takes bytes out
+ * -- including the drain path in qspi_store_pop, which runs on the writer.
+ * The space check followed by two puts is safe for the same reason: only the
+ * producer consumes space, so a check that passes cannot be invalidated by
+ * the consumer, which only frees space.
+ *
+ * A lock here would be actively harmful. The writer holds the store mutex
+ * across sector erases that take upwards of a hundred milliseconds, and
+ * blocking the capture thread on that is what overran the microphone and
+ * killed the PDM stream once already. The capture thread must never wait on
+ * flash. Documented rather than locked, deliberately.
+ */
 int qspi_store_push(const uint8_t *data, uint8_t len)
 {
     if (!ready || len == 0 || len > QSPI_MAX_PAYLOAD) {

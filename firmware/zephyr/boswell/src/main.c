@@ -167,6 +167,13 @@ static void watchdog_init(void)
  * housekeeping loop would go on feeding a watchdog that was no longer
  * protecting anything. A watchdog that reports health it has not checked is
  * worse than none, because it is believed.
+ *
+ * Bluetooth and the IMU are deliberately not watched. A stalled BLE thread
+ * costs the link, which the never-subscribed guard and re-advertising already
+ * recover from, and the flash keeps the audio meanwhile; a stalled IMU costs
+ * step counts. Neither loses a recording. Resetting the board for them would
+ * trade a recoverable fault for a guaranteed gap in the audio, which is the
+ * one thing this device exists not to do.
  */
 #define WDT_MAIN    BIT(0)
 #define WDT_CAPTURE BIT(1)

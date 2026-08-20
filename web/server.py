@@ -577,6 +577,15 @@ app = FastAPI(lifespan=lifespan)
 # Set BOSWELL_TOKEN before exposing this anywhere else: every endpoint below
 # can arm the microphone or hand over recordings.
 TOKEN = os.environ.get("BOSWELL_TOKEN", "").strip()
+_BIND = os.environ.get("BOSWELL_HOST", "0.0.0.0")
+if not TOKEN and _BIND not in ("127.0.0.1", "localhost", "::1"):
+    # Every endpoint here can arm the microphone or hand over recordings. The
+    # README says so; the process should too, at the moment it happens, since
+    # that is when somebody is in a position to do something about it.
+    print(f"WARNING: listening on {_BIND} with no BOSWELL_TOKEN set -- "
+          "anyone who can reach this machine can start the microphone and "
+          "read every recording. Set BOSWELL_TOKEN, or BOSWELL_HOST=127.0.0.1 "
+          "to keep it on this machine.", flush=True)
 
 
 def token_ok(supplied: str | None) -> bool:
@@ -757,7 +766,8 @@ async def api_semantic_rebuild():
     import semantic
 
     def work():
-        total = 0
+        total = failed = 0
+        first_error = [None]
         for f in sorted(os.listdir(pipeline.TRANSCRIPTS)):
             if not f.endswith(".json"):
                 continue
@@ -767,8 +777,13 @@ async def api_semantic_rebuild():
                 continue
             segs = t.get("segments") or []
             if segs:
-                total += semantic.index_clip(f[:-5] + ".wav", segs)
-        return {"indexed": total, **semantic.stats()}
+                r = semantic.index_clip(f[:-5] + ".wav", segs)
+                total += r["added"]
+                failed += r["failed"]
+                if r.get("error") and first_error[0] is None:
+                    first_error[0] = r["error"]
+        return {"indexed": total, "failed": failed,
+                "error": first_error[0], **semantic.stats()}
 
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, work)
@@ -1554,4 +1569,7 @@ async def ws(sock: WebSocket):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="warning")
+    # Honours BOSWELL_HOST so the warning above is actionable: setting it to
+    # 127.0.0.1 actually keeps the service on this machine.
+    uvicorn.run(app, host=_BIND, port=int(os.environ.get("BOSWELL_PORT", "8000")),
+                log_level="warning")

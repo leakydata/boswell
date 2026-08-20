@@ -147,7 +147,7 @@ static uint8_t  drainLen    = 0;
 /* 0 = drain the backlog before any live audio (conversation stays in order)
  * 1 = live audio first, backlog trickled out alongside it (hear the present
  *     immediately; recovered audio arrives out of order and flagged). */
-static uint8_t  backlogMode = 0;
+static uint8_t  backlogMode = 1;   // match Zephyr: buffer when out of range
 
 /* LED power. Brightness is real PWM, so average current tracks duty cycle
  * almost exactly -- 10% brightness costs about 10% of the current. The PWM

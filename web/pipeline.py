@@ -469,7 +469,11 @@ class Worker:
         # next rebuild rather than failing the transcription.
         try:
             import semantic
-            semantic.index_clip(clip, segs)
+            r = semantic.index_clip(clip, segs)
+            if r.get("failed"):
+                self.notify("log", text=(
+                    f"semantic index: {r['failed']} line(s) not embedded"
+                    + (f" ({r['error']})" if r.get("error") else "")))
         except Exception as e:
             self.notify("log", text=f"semantic index skipped: {str(e)[:80]}")
 

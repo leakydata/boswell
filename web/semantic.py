@@ -87,6 +87,8 @@ def index_clip(name, segments, replace=False):
     `replace`, so re-indexing the whole archive is cheap and resumable."""
     db, have_vec = _connect()
     added = 0
+    failed = 0
+    first_error = None
     try:
         for i, seg in enumerate(segments):
             text = (seg.get("text") or "").strip()
@@ -99,7 +101,14 @@ def index_clip(name, segments, replace=False):
                     continue
             try:
                 v = embed(text)
-            except Exception:
+            except Exception as e:
+                # Counted, not swallowed. Ollama being down produced an index
+                # that was quietly missing lines, and search that returned
+                # nothing looked like an absence of matches rather than an
+                # absence of data.
+                failed += 1
+                if first_error is None:
+                    first_error = f"{type(e).__name__}: {e}"[:120]
                 continue
             cur = db.execute(
                 """INSERT INTO seg(clip, idx, start, text, speaker, vec)
@@ -120,7 +129,7 @@ def index_clip(name, segments, replace=False):
         db.commit()
     finally:
         db.close()
-    return added
+    return {"added": added, "failed": failed, "error": first_error}
 
 
 def search(query, limit=25):
