@@ -178,9 +178,24 @@ static void watchdog_init(void)
 #define WDT_MAIN    BIT(0)
 #define WDT_CAPTURE BIT(1)
 #define WDT_QSPI    BIT(2)
-#define WDT_ALL     (WDT_MAIN | WDT_CAPTURE | WDT_QSPI)
+#define WDT_TX      BIT(3)
+#define WDT_ALL     (WDT_MAIN | WDT_CAPTURE | WDT_QSPI | WDT_TX)
 
 static atomic_t wdt_seen;
+/* Frames the radio refused after every retry. */
+static uint32_t notify_drops;
+/* Which threads exist. Requiring a check-in from a thread that was never
+ * created is a reboot loop with no way out: if the flash fails to probe, the
+ * writer thread is never started, WDT_QSPI is never set, and the watchdog
+ * resets the board every thirty seconds forever -- on a device that would
+ * otherwise have run fine without its backlog. The mask is built from what
+ * actually came up. */
+static atomic_t wdt_required = ATOMIC_INIT(WDT_MAIN | WDT_CAPTURE | WDT_TX);
+
+void watchdog_expect(uint32_t who)
+{
+    atomic_or(&wdt_required, who);
+}
 
 void watchdog_checkin(uint32_t who)
 {
@@ -192,7 +207,8 @@ static void watchdog_service(void)
     if (wdt_ch < 0) {
         return;
     }
-    if ((atomic_get(&wdt_seen) & WDT_ALL) != WDT_ALL) {
+    uint32_t need = (uint32_t)atomic_get(&wdt_required);
+    if (((uint32_t)atomic_get(&wdt_seen) & need) != need) {
         return;                  /* somebody has not reported; let it bite */
     }
     atomic_clear(&wdt_seen);
@@ -396,6 +412,8 @@ static int cmd_status(const struct shell *sh, size_t argc, char **argv)
                 ble_audio_advertising());
     uint32_t idle[3];
     ble_audio_idle_stats(idle);
+    shell_print(sh, "notify drops=%u", notify_drops);
+    { uint32_t ss[4]; ble_audio_send_stats(ss); shell_print(sh, "send calls=%u retries=%u avg=%u us max=%u us", ss[0], ss[1], ss[3], ss[2]); }
     shell_print(sh, "idle-guard armed=%u fired=%u dropped=%u",
                 idle[0], idle[1], idle[2]);
     shell_print(sh, "last reset=0x%08x%s%s%s", last_reset_reason,
@@ -624,7 +642,8 @@ static void imu_stream_fn(void *a, void *b, void *c)
 
         frame[0] = (uint8_t)(seq & 0xFF);
         frame[1] = (uint8_t)(seq >> 8);
-        frame[2] = gyro ? IMU_FLAG_GYRO : 0;
+        frame[2] = (gyro ? IMU_FLAG_GYRO : 0)
+                 | (IMU_GYRO_FS_500 << IMU_GYRO_FS_SHIFT);
         frame[3] = (uint8_t)n;
         frame[4] = (uint8_t)(hz & 0xFF);
         frame[5] = (uint8_t)(hz >> 8);
@@ -639,11 +658,115 @@ static void imu_stream_fn(void *a, void *b, void *c)
     }
 }
 
+/* 16 kHz to 8 kHz, with an anti-alias filter that actually rejects.
+ *
+ * This was pair averaging, described in a comment as "a 2-tap filter whose
+ * null sits at 4 kHz". It does not: a two-tap moving average has its null at
+ * the sample rate over two, which is 8 kHz here, and only -3 dB at the 4 kHz
+ * Nyquist the output is about to have. Everything from 4 to 8 kHz folded back
+ * into the speech band at close to full amplitude -- sibilance landing on top
+ * of vowels, which is exactly the content a transcriber needs.
+ *
+ * A 23-tap windowed-sinc at 3.4 kHz measures -18 dB at 4 kHz, -50 dB at 5 kHz
+ * and -57 dB at 6 kHz, against -3 and -8 for the average. It costs about
+ * 184k multiply-accumulates per second at 8 kHz output, which is nothing on
+ * this part.
+ *
+ * The delay line persists across frames because the audio does; resetting it
+ * per frame would put a discontinuity at every frame boundary.
+ */
+#define DEC_TAPS 23
+static const int16_t dec_h[DEC_TAPS] = {
+       64,    73,   -92,  -295,    41,   812,   482, -1538, -2217,  2188,
+     9924, 13884,  9924,  2188, -2217, -1538,   482,   812,    41,  -295,
+      -92,    73,    64,
+};
+static int16_t dec_hist[DEC_TAPS];
+
+static int decimate_2to1(const int16_t *in, int n, int16_t *out)
+{
+    int produced = 0;
+
+    for (int i = 0; i < n; i++) {
+        memmove(&dec_hist[1], &dec_hist[0],
+                (DEC_TAPS - 1) * sizeof(dec_hist[0]));
+        dec_hist[0] = in[i];
+
+        /* Every second input sample produces one output sample. */
+        if ((i & 1) == 0) {
+            continue;
+        }
+        int32_t acc = 0;
+        for (int k = 0; k < DEC_TAPS; k++) {
+            acc += (int32_t)dec_h[k] * dec_hist[k];
+        }
+        acc >>= 15;
+        if (acc > 32767) {
+            acc = 32767;
+        } else if (acc < -32768) {
+            acc = -32768;
+        }
+        out[produced++] = (int16_t)acc;
+    }
+    return produced;
+}
+
 /* ---------------------------------------------------------------- capture */
 
 #define CAPTURE_STACK 4096
 K_THREAD_STACK_DEFINE(capture_stack, CAPTURE_STACK);
 static struct k_thread capture_thread;
+
+/* ------------------------------------------------------- transmit thread */
+
+/* Bluetooth notification is slow enough to starve the microphone.
+ *
+ * Measured on a 4.0 dongle with no Data Length Extension: a 172-byte frame
+ * becomes seven 27-byte radio packets, and bt_gatt_notify() blocks inside the
+ * stack for 88 ms on average and 197 ms at worst waiting for them to drain.
+ * The capture thread called it directly, so it ran eleven times in fifteen
+ * seconds instead of seven hundred and fifty; the PDM slab overran and every
+ * subsequent read failed with a 200 ms timeout. Capture measured on its own,
+ * writing to flash, ran at the full 58 frames a second -- the microphone was
+ * never the problem.
+ *
+ * So the radio gets its own thread and a queue. The capture thread hands over
+ * a frame and returns to the microphone immediately; when the queue fills,
+ * frames spill to the flash backlog, which is what it is for. A slow link now
+ * costs latency instead of audio.
+ *
+ * The queue holds about a second of audio, which is roughly the depth of the
+ * PDM slab -- past that the link is not keeping up and flash is the right
+ * place for the overflow. */
+struct txframe {
+    uint8_t len;
+    uint8_t data[MAX_FRAME_LEN];
+};
+
+K_MSGQ_DEFINE(tx_q, sizeof(struct txframe), 48, 4);
+
+static void tx_thread(void *a, void *b, void *c)
+{
+    ARG_UNUSED(a); ARG_UNUSED(b); ARG_UNUSED(c);
+
+    for (;;) {
+        struct txframe tf;
+
+        if (k_msgq_get(&tx_q, &tf, K_MSEC(500)) != 0) {
+            watchdog_checkin(WDT_TX);
+            continue;
+        }
+        if (ble_audio_send(tf.data, tf.len) != 0) {
+            notify_drops++;
+            if (g_state.backlog_mode && qspi_store_ready()) {
+                qspi_store_push(tf.data, tf.len);
+            }
+        }
+        watchdog_checkin(WDT_TX);
+    }
+}
+
+K_THREAD_DEFINE(tx_tid, 2048, tx_thread, NULL, NULL, NULL, 6, 0, 0);
 
 static int16_t raw[MAX_SAMPLES];
 static int16_t frame[MAX_SAMPLES];
@@ -683,12 +806,7 @@ static void capture_fn(void *a, void *b, void *c)
 
         int count = got;
         if (!g_state.use16k) {
-            /* 2:1 decimation by pair averaging: a 2-tap filter whose null sits
-             * at 4 kHz, which is where the fold lands. */
-            count = got / 2;
-            for (int i = 0; i < count; i++) {
-                frame[i] = (int16_t)(((int32_t)raw[2 * i] + raw[2 * i + 1]) / 2);
-            }
+            count = decimate_2to1(raw, got, frame);
         } else {
             memcpy(frame, raw, got * sizeof(int16_t));
         }
@@ -746,9 +864,29 @@ static void capture_fn(void *a, void *b, void *c)
             continue;
         }
 
-        if (ble_audio_send(wire, len) == 0) {
-            seq++;
+        /* The sequence belongs to the frame, not to the transmission.
+         *
+         * Incrementing only on success meant a frame that failed every retry
+         * was replaced by the next one carrying the same number -- so the
+         * host saw an unbroken sequence and no loss at all. Silent loss is
+         * the one failure this device must not have.
+         *
+         * A frame the radio would not take goes to the flash instead, if the
+         * backlog is enabled; otherwise it is counted as dropped and the gap
+         * is visible to the host. */
+        struct txframe tf;
+
+        tf.len = (uint8_t)len;
+        memcpy(tf.data, wire, len);
+        if (k_msgq_put(&tx_q, &tf, K_NO_WAIT) != 0) {
+            /* The radio is behind. Spill rather than wait: blocking here is
+             * what starved the microphone. */
+            notify_drops++;
+            if (g_state.backlog_mode && qspi_store_ready()) {
+                qspi_store_push(wire, (uint8_t)len);
+            }
         }
+        seq++;
     }
 }
 
@@ -793,6 +931,11 @@ int main(void)
 
     err = qspi_store_init();
     LOG_INF("qspi_store_init -> %d", err);
+    if (err == 0) {
+        watchdog_expect(WDT_QSPI);
+    } else {
+        LOG_WRN("no flash backlog; watchdog will not wait for it");
+    }
 
     err = battery_init();
     LOG_INF("battery_init -> %d", err);

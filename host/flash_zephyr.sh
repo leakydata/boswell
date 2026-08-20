@@ -16,6 +16,27 @@ HEX=/tmp/boswell-zephyr-build/zephyr/zephyr.hex
 find "$HEX" -newermt '-5 minutes' -print -quit | grep -q . \
   || { echo "hex is stale -- build did not regenerate it" >&2; exit 1; }
 
+
+# Confirm what is actually running.
+#
+# The bootloader enumerates as 2886:0045 "XIAO nRF52840 Sense" and the
+# application as 2886:8045 "Boswell". A UF2 written to the mass-storage drive
+# was accepted, reset the board, and left it back in the bootloader with no
+# error anywhere -- and the next measurement was silently taken against the
+# previously flashed image. Serial DFU is the path that works; this check is
+# what catches it when it does not.
+verify_running() {
+  for _ in $(seq 1 25); do
+    if lsusb | grep -q "2886:8045"; then
+      echo "running: application (2886:8045)"
+      return 0
+    fi
+    sleep 1
+  done
+  echo "device is not running the application -- still in the bootloader" >&2
+  return 1
+}
+
 export PATH="$HOME/.local/bin:$PATH"
 python3 - <<'PY' || true
 import serial, time
@@ -55,7 +76,8 @@ for port in /dev/ttyACM*; do
   if adafruit-nrfutil dfu serial -pkg /tmp/boswell.zip -p "$port" \
        -b 115200 --singlebank 2>/dev/null | tail -1 | grep -q "Device programmed"; then
     echo "flashed over serial DFU ($port)"
-    exit 0
+    verify_running
+    exit $?
   fi
 done
 
@@ -75,3 +97,4 @@ sudo cp "$UF2" /mnt/xiao/ && sync
 sleep 3
 sudo umount /mnt/xiao 2>/dev/null || true
 echo "flashed over UF2"
+verify_running

@@ -52,8 +52,17 @@ typedef bool (*qspi_ready_fn)(void);
 void     qspi_store_set_drain(qspi_drain_fn fn, qspi_ready_fn ready);
 
 int      qspi_store_push(const uint8_t *data, uint8_t len);
+/* Peek reads the next record without consuming it; commit discards it once
+ * the host has actually taken it. Popping first and delivering afterwards
+ * turned a moment of radio backpressure into permanently lost recovered
+ * audio, because the record was already gone when the send failed. */
+int      qspi_store_peek(uint8_t *out, uint8_t max_len);
+void     qspi_store_commit(uint8_t len);
+
 /* Returns payload length, or 0 when empty. Flushes any partial page. */
 int      qspi_store_pop(uint8_t *out, uint8_t max_len);
+/* Empties the store. Runs on the writer thread, because the staging ring has
+ * one consumer and clearing it from anywhere else would break that. */
 void     qspi_store_reset(void);
 /* pushes, pages written, sector erases, writer wakeups */
 void     qspi_store_stats(uint32_t out[4]);

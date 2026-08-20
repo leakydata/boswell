@@ -52,6 +52,16 @@
  * asks for it. */
 #define IMU_HEADER_LEN   10
 #define IMU_FLAG_GYRO    0x01
+/* Gyroscope full scale, in bits 1-2, so the host converts with the range the
+ * device actually configured. The firmware selected 500 dps and the host
+ * divided by 2000, so every recorded rotation was out by a factor of four --
+ * a disagreement that no amount of care on either side alone would catch. */
+#define IMU_GYRO_FS_SHIFT 1
+#define IMU_GYRO_FS_MASK  0x06
+#define IMU_GYRO_FS_250   0
+#define IMU_GYRO_FS_500   1
+#define IMU_GYRO_FS_1000  2
+#define IMU_GYRO_FS_2000  3
 #define IMU_MAX_SAMPLES  10
 
 /* ---- info characteristic layout -------------------------------------------

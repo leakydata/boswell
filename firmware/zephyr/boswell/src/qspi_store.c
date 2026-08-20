@@ -33,6 +33,8 @@ static uint8_t  page_buf[PAGE] __aligned(4);
 static uint32_t page_fill;      /* bytes staged for the page at w_off */
 
 static struct k_mutex lock;
+/* Length of the record last handed out by peek and not yet committed. */
+static uint8_t peeked_len;
 
 /* Staging ring between the capture thread and flash.
  *
@@ -51,7 +53,8 @@ static K_THREAD_STACK_DEFINE(writer_stack, WRITER_STACK);
 static struct k_thread writer_thread;
 static struct k_sem    writer_wake;
 static uint32_t        stage_drops;
-static uint32_t        n_pages, n_erases, n_wake, n_pushes;
+static uint32_t        n_pages, n_erases, n_wake, n_pushes, n_clears;
+static atomic_t        clear_requested;
 
 /* The flash is put to sleep when there is nothing to write and nothing left
  * to replay, which on a device streaming live is nearly all the time.
@@ -67,16 +70,19 @@ static int64_t last_io_ms;
 static void flash_wake(void)
 {
     last_io_ms = k_uptime_get();
+#ifdef CONFIG_PM_DEVICE
     if (!flash_suspended) {
         return;
     }
     if (pm_device_action_run(flash_dev, PM_DEVICE_ACTION_RESUME) == 0) {
         flash_suspended = false;
     }
+#endif
 }
 
 static void flash_maybe_sleep(void)
 {
+#ifdef CONFIG_PM_DEVICE
     if (flash_suspended || (w_pos - r_pos) > 0 || !ring_buf_is_empty(&stage)) {
         return;
     }
@@ -86,9 +92,11 @@ static void flash_maybe_sleep(void)
     if (pm_device_action_run(flash_dev, PM_DEVICE_ACTION_SUSPEND) == 0) {
         flash_suspended = true;
     }
+#endif
 }
 
 static void writer_fn(void *a, void *b, void *cc);
+static void do_clear(void);
 
 /* Called by the writer as it works, not only when it goes back to sleep.
  *
@@ -298,6 +306,9 @@ static void writer_fn(void *a, void *b, void *cc)
     for (;;) {
         k_sem_take(&writer_wake, K_MSEC(20));
         n_wake++;
+        if (atomic_cas(&clear_requested, 1, 0)) {
+            do_clear();
+        }
         if (alive_cb) {
             alive_cb();
         }
@@ -311,10 +322,16 @@ static void writer_fn(void *a, void *b, void *cc)
                 alive_cb();          /* still working, not stuck */
             }
             uint8_t rec[QSPI_MAX_PAYLOAD];
-            int n = qspi_store_pop(rec, sizeof(rec));
-            if (n <= 0 || !drain_cb(rec, (uint16_t)n)) {
+            int n = qspi_store_peek(rec, sizeof(rec));
+            if (n <= 0) {
                 break;
             }
+            if (!drain_cb(rec, (uint16_t)n)) {
+                /* Left in place. The radio was busy, not the record bad;
+                 * the next pass will offer the same frame again. */
+                break;
+            }
+            qspi_store_commit((uint8_t)n);
         }
 
         while (!ring_buf_is_empty(&stage)) {
@@ -339,6 +356,21 @@ static void writer_fn(void *a, void *b, void *cc)
 
         flash_maybe_sleep();
     }
+}
+
+void qspi_store_commit(uint8_t len)
+{
+    k_mutex_lock(&lock, K_FOREVER);
+    if (peeked_len && len == peeked_len) {
+        r_pos += 2 + peeked_len;
+        peeked_len = 0;
+    }
+    k_mutex_unlock(&lock);
+}
+
+int qspi_store_peek(uint8_t *out, uint8_t max_len)
+{
+    return qspi_store_pop(out, max_len);
 }
 
 int qspi_store_pop(uint8_t *out, uint8_t max_len)
@@ -379,7 +411,9 @@ int qspi_store_pop(uint8_t *out, uint8_t max_len)
         if (read_wrapped(r_pos + 2, out, len) != 0) {
             break;
         }
-        r_pos += 2 + len;
+        /* Deliberately does NOT advance r_pos. The caller commits once the
+         * frame has actually left the device. */
+        peeked_len = len;
         result = len;
         break;
     }
@@ -405,8 +439,25 @@ void qspi_store_reset(void)
     if (!ready) {
         return;
     }
+    /* Asked for here, done by the writer.
+     *
+     * Resetting the cursors alone left whatever was already queued in the
+     * staging ring to be written straight back into the buffer that had just
+     * been cleared, so "discard buffer" did not discard it. The ring has one
+     * consumer by contract and clearing it from the Bluetooth thread would
+     * break that, so the request is flagged and the writer performs it. */
+    atomic_set(&clear_requested, 1);
+    k_sem_give(&writer_wake);
+}
+
+static void do_clear(void)
+{
     k_mutex_lock(&lock, K_FOREVER);
+    ring_buf_reset(&stage);          /* consumer side: this is the writer */
     w_pos = r_pos = erased_pos = 0;
     page_fill = 0;
+    peeked_len = 0;
+    n_clears++;
     k_mutex_unlock(&lock);
+    LOG_INF("backlog cleared");
 }

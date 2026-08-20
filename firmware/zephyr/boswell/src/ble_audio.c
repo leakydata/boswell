@@ -345,7 +345,18 @@ bool ble_audio_linked(void)
     return current_conn != NULL;
 }
 
-int ble_audio_send(const uint8_t *frame, uint16_t len)
+/* How long notifications actually take, and how often they have to wait.
+ * Capture ran at 58 frames a second into flash while only about one a second
+ * reached the host, which puts the cost here and nowhere else. */
+static uint32_t send_calls, send_retries, send_us_max, send_us_total;
+
+void ble_audio_send_stats(uint32_t out[4])
+{
+    out[0] = send_calls; out[1] = send_retries;
+    out[2] = send_us_max; out[3] = send_calls ? send_us_total / send_calls : 0;
+}
+
+static int ble_audio_send_inner(const uint8_t *frame, uint16_t len)
 {
     if (!ble_audio_connected()) {
         return -ENOTCONN;
@@ -359,6 +370,9 @@ int ble_audio_send(const uint8_t *frame, uint16_t len)
      * slab holds about a second, so brief backpressure costs latency rather
      * than audio. */
     for (int attempt = 0; attempt < 20; attempt++) {
+        if (attempt) {
+            send_retries++;
+        }
         int err = bt_gatt_notify(current_conn, &boswell_svc.attrs[1], frame, len);
         if (err != -ENOMEM && err != -EAGAIN) {
             return err;
@@ -367,6 +381,20 @@ int ble_audio_send(const uint8_t *frame, uint16_t len)
     }
     LOG_WRN("notify queue stayed full; dropping a frame");
     return -ENOMEM;
+}
+
+int ble_audio_send(const uint8_t *frame, uint16_t len)
+{
+    uint32_t t0 = k_cycle_get_32();
+    int rc = ble_audio_send_inner(frame, len);
+    uint32_t us = k_cyc_to_us_floor32(k_cycle_get_32() - t0);
+
+    send_calls++;
+    send_us_total += us;
+    if (us > send_us_max) {
+        send_us_max = us;
+    }
+    return rc;
 }
 
 bool ble_audio_ready(void)

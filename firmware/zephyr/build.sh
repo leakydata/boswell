@@ -26,7 +26,7 @@ export ZEPHYR_SDK_INSTALL_DIR="$ZEPHYR_SDK_DIR"
 # no USB, nothing to debug with.
 west build -p auto --no-sysbuild -b "$BOARD" -d "$BUILD_DIR" "$HERE/boswell"
 
-UF2="$BUILD_DIR/boswell/zephyr/zephyr.uf2"
+UF2="$BUILD_DIR/zephyr/zephyr.uf2"
 echo "built: $UF2"
 
 if [ "${1:-}" = "--flash" ]; then
