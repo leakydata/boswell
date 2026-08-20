@@ -61,7 +61,7 @@ def _load_samples():
 
 def _save_samples(samples):
     os.makedirs(DATA, exist_ok=True)
-    np.savez(SAMPLES_DB, **samples)
+    atomicio.write_npz(SAMPLES_DB, samples)
 
 
 def _load_meta():
@@ -116,7 +116,7 @@ def recompute_centroid(name, meta, samples):
         vecs.pop(name, None)
     else:
         vecs[name] = unit(acc)
-    np.savez(SPEAKER_DB, **vecs)
+    atomicio.write_npz(SPEAKER_DB, vecs)
 
 
 def list_speakers():

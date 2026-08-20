@@ -27,6 +27,19 @@ STORE = os.path.join(DATA, "agent")
 KINDS = ("tasks", "events", "notes", "facts")
 
 
+def _store_lock():
+    """The lock tools_impl uses for appends, so rewrites cannot straddle one.
+
+    Read-modify-write of the whole file, renamed into place, against another
+    process appending to it: without a shared lock an append landing between
+    the read and the rename disappears with the old inode.
+    """
+    import sys
+    sys.path.insert(0, os.path.join(HERE, "..", "host"))
+    from tools_impl import store_lock
+    return store_lock()
+
+
 def _kinds(kind):
     """Validate a caller-supplied kind, or return all of them."""
     if kind is None:
@@ -311,6 +324,11 @@ def _backfill_ids(kind):
     p = os.path.join(STORE, f"{kind}.jsonl")
     if not os.path.exists(p):
         return
+    with _store_lock():
+        _backfill_ids_locked(p)
+
+
+def _backfill_ids_locked(p):
     rows, changed = [], False
     for line in open(p):
         line = line.strip()
@@ -335,6 +353,11 @@ def delete_item(kind, item_id):
     p = os.path.join(STORE, f"{kind}.jsonl")
     if not os.path.exists(p):
         return False
+    with _store_lock():
+        return _delete_item_locked(p, item_id)
+
+
+def _delete_item_locked(p, item_id):
     rows, removed = [], False
     for line in open(p):
         line = line.strip()
@@ -356,11 +379,12 @@ def delete_item(kind, item_id):
 def clear_items(kind=None):
     kinds = _kinds(kind)
     n = 0
-    for k in kinds:
-        p = _store_path(k)
-        if os.path.exists(p):
-            n += sum(1 for line in open(p) if line.strip())
-            os.remove(p)
+    with _store_lock():
+        for k in kinds:
+            p = _store_path(k)
+            if os.path.exists(p):
+                n += sum(1 for line in open(p) if line.strip())
+                os.remove(p)
     return n
 
 

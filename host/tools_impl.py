@@ -4,11 +4,39 @@ Local tool implementations for the agent. Everything is append-only JSONL
 under data/agent/ -- no cloud, no external service.
 """
 
+import contextlib
+import fcntl
 import json
 import os
 import time
 
-STORE = "data/agent"
+# Derived from this file, not from the working directory. As a relative path
+# it meant running any of these tools from somewhere else read and wrote a
+# different data tree, silently.
+STORE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                     "..", "data", "agent")
+STORE = os.path.normpath(STORE)
+
+
+@contextlib.contextmanager
+def store_lock():
+    """Serialise every writer of the agent store.
+
+    Records are appended here while the edit, delete and clear paths rewrite
+    the whole file and rename it into place. A rename replaces the file, so an
+    append that lands after a rewriter has read the rows and before it renames
+    goes away with the old inode -- the agent reports the item saved and it is
+    not there. flock rather than a threading lock because the CLI in this
+    directory and the web service are separate processes.
+    """
+    os.makedirs(STORE, exist_ok=True)
+    path = os.path.join(STORE, ".lock")
+    with open(path, "w") as f:
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
 
 
 def _append(kind, record):
@@ -23,10 +51,11 @@ def _append(kind, record):
     # everything before it is intact. Rewriting the file to add a record --
     # which is what the edit and delete paths do -- is the risky operation,
     # and those go through a rename.
-    with open(os.path.join(STORE, f"{kind}.jsonl"), "a") as f:
-        f.write(json.dumps(record) + "\n")
-        f.flush()
-        os.fsync(f.fileno())
+    with store_lock():
+        with open(os.path.join(STORE, f"{kind}.jsonl"), "a") as f:
+            f.write(json.dumps(record) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
     return record
 
 

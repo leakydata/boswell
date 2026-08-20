@@ -45,10 +45,44 @@ def load_db():
     return {k: d[k] for k in d.files}, meta
 
 
+def _web_store_in_use(meta):
+    """True when the web interface owns this store.
+
+    The web version keeps every enrolled recording as its own removable
+    sample, with the centroid derived from them; this tool predates that and
+    knows only about centroids and a count. Its save would rewrite
+    speakers.json as {name: {count, sources}} and delete the samples lists --
+    at the time of writing that is six recordings for one person and two for
+    another, and a voiceprint of a conversation that already happened cannot
+    be made again.
+    """
+    return any(isinstance(v, dict) and v.get("samples")
+               for v in (meta or {}).values())
+
+
 def save_db(vecs, meta):
+    if _web_store_in_use(load_db()[1]):
+        raise SystemExit(
+            "data/speakers.json is the web interface's sample-based store, and "
+            "writing it from here would discard the per-recording samples it "
+            "holds. Enrol and remove voices in the web interface instead.")
     os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
-    np.savez(DB_PATH, **vecs)
-    json.dump(meta, open(META_PATH, "w"), indent=2)
+    # Same care as the web store: a truncated .npz cannot be regenerated.
+    import io
+    buf = io.BytesIO()
+    np.savez(buf, **vecs)
+    tmp = DB_PATH + ".part"
+    with open(tmp, "wb") as f:
+        f.write(buf.getvalue())
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, DB_PATH)
+    tmp = META_PATH + ".part"
+    with open(tmp, "w") as f:
+        json.dump(meta, f, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, META_PATH)
 
 
 def cmd_enroll(args):

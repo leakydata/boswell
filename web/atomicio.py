@@ -48,6 +48,22 @@ def write_json(path, obj, **kwargs):
     write_text(path, json.dumps(obj, **kwargs))
 
 
+def write_npz(path, arrays):
+    """Write a .npz the same way, because voiceprints cannot be recovered.
+
+    The speaker store was written with a bare np.savez while the JSON beside
+    it already went through write_json -- so a crash mid-write left the
+    metadata intact and the vectors it describes truncated. There is no way to
+    regenerate a voiceprint of a conversation that has already happened.
+    """
+    import io
+    import numpy as np
+
+    buf = io.BytesIO()
+    np.savez(buf, **arrays)
+    write_bytes(path, buf.getvalue())
+
+
 def append_line(path, text):
     """Append one line, flushed.
 
