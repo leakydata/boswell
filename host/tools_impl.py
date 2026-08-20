@@ -18,8 +18,15 @@ def _append(kind, record):
     # A stable id so a single item can be removed later. Line numbers shift
     # as soon as anything else is deleted, so they cannot serve as identity.
     record["_id"] = f"{int(time.time() * 1000):x}{os.urandom(2).hex()}"
+    # Appended and flushed. A single small append is atomic enough for a file
+    # read line by line: a torn last line is dropped by the reader and
+    # everything before it is intact. Rewriting the file to add a record --
+    # which is what the edit and delete paths do -- is the risky operation,
+    # and those go through a rename.
     with open(os.path.join(STORE, f"{kind}.jsonl"), "a") as f:
         f.write(json.dumps(record) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
     return record
 
 

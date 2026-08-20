@@ -45,6 +45,7 @@ def _load_env_file():
 
 _load_env_file()
 
+import atomicio
 import numpy as np
 import soundfile as sf
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -286,8 +287,7 @@ class Device:
                "ended": round(ended, 3), "seconds": round(seconds, 3),
                "source": source, "device_ms": [first_ms, last_ms]}
         try:
-            json.dump(rec, open(os.path.join(
-                TIMES, os.path.basename(path) + ".json"), "w"))
+            atomicio.write_json(os.path.join(TIMES, os.path.basename(path) + ".json"), rec)
         except Exception:
             pass
         try:
@@ -681,7 +681,7 @@ async def api_envelope(name: str):
         out = {"env": [round(min(1.0, float(v) / ref), 3) for v in rms],
                "seconds": round(len(audio) / rate, 2),
                "peak": int(np.abs(audio).max())}
-    json.dump(out, open(cache, "w"))
+    atomicio.write_json(cache, out)
     return JSONResponse(out)
 
 
@@ -926,7 +926,7 @@ def _rematch_clips(names=None):
                 cur["score"] = rec.get("score")
                 dirty = True
         if dirty:
-            json.dump(t, open(tp, "w"))
+            atomicio.write_json(tp, t)
             index_db.upsert_clip(name)
             changed += 1
     return changed
@@ -1214,7 +1214,7 @@ async def api_edit_transcript(name: str, body: dict):
         seg["edited"] = True
 
     t["edited"] = True
-    json.dump(t, open(tp, "w"), indent=2)
+    atomicio.write_json(tp, t, indent=2)
     index_db.upsert_clip(name)
     device.event("log", text=f"edited {name} line {idx}")
     return {"ok": True, "segment": seg, "edited": True}
@@ -1237,7 +1237,7 @@ async def api_revert_edits(name: str):
                 seg["speaker"] = seg.pop("speaker_asr")
             seg.pop("speaker_name", None)
     t["edited"] = False
-    json.dump(t, open(tp, "w"), indent=2)
+    atomicio.write_json(tp, t, indent=2)
     return {"reverted": n}
 
 
@@ -1425,7 +1425,7 @@ async def api_label(body: dict):
     for k, v in pipeline.identify(emb).items():
         if not (t["speakers"].get(k) or {}).get("manual"):
             t["speakers"][k] = v
-    json.dump(t, open(tp, "w"), indent=2, allow_nan=False)
+    atomicio.write_json(tp, t, indent=2, allow_nan=False)
     index_db.upsert_clip(clip)
 
     # A name is only useful once it reaches the rest of the recordings. The

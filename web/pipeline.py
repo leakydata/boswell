@@ -10,6 +10,7 @@ and kept resident -- reloading them per clip would cost ~15 s every time.
 import json
 import math
 import os
+import atomicio
 import queue
 import threading
 import time
@@ -69,7 +70,7 @@ def _load_meta():
 
 def _save_meta(meta):
     os.makedirs(DATA, exist_ok=True)
-    json.dump(meta, open(SPEAKER_META, "w"), indent=2)
+    atomicio.write_json(SPEAKER_META, meta, indent=2)
 
 
 def _migrate(meta, samples):
@@ -263,7 +264,7 @@ def save_vocabulary(terms):
         if t and t.lower() not in seen:
             seen.add(t.lower())
             clean.append(t)
-    json.dump({"terms": clean}, open(VOCAB_PATH, "w"), indent=2)
+    atomicio.write_json(VOCAB_PATH, {"terms": clean}, indent=2)
     return clean
 
 
@@ -451,9 +452,11 @@ class Worker:
                        for k in ("start", "end"))]
 
         os.makedirs(TRANSCRIPTS, exist_ok=True)
-        json.dump({"clip": clip, "created": time.time(), "segments": segs,
-                   "speakers": names, "embeddings": embeddings},
-                  open(transcript_path(clip), "w"), indent=2, allow_nan=False)
+        atomicio.write_json(transcript_path(clip),
+                            {"clip": clip, "created": time.time(),
+                             "segments": segs, "speakers": names,
+                             "embeddings": embeddings},
+                            indent=2, allow_nan=False)
 
         try:
             import index_db

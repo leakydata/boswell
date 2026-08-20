@@ -14,6 +14,7 @@ import os
 import threading
 import time
 
+import atomicio
 import requests
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -269,9 +270,10 @@ def _backfill_ids(kind):
             changed = True
         rows.append(d)
     if changed:
-        with open(p, "w") as f:
-            for d in rows:
-                f.write(json.dumps(d) + "\n")
+        # Rewritten whole, so it goes through a temp file and a rename. A
+        # crash partway through a direct rewrite does not lose one record --
+        # it loses every task, note and fact the agent has ever kept.
+        atomicio.write_text(p, "".join(json.dumps(d) + "\n" for d in rows))
 
 
 def delete_item(kind, item_id):
@@ -292,9 +294,7 @@ def delete_item(kind, item_id):
             continue
         rows.append(d)
     if removed:
-        with open(p, "w") as f:
-            for d in rows:
-                f.write(json.dumps(d) + "\n")
+        atomicio.write_text(p, "".join(json.dumps(d) + "\n" for d in rows))
     return removed
 
 
