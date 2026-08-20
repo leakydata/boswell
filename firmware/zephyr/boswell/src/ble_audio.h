@@ -29,6 +29,9 @@ bool ble_audio_advertising(void);
  * conflating the two made a perfectly healthy connection look like the
  * unreachable state and sent a diagnosis off in the wrong direction. */
 bool ble_audio_linked(void);
+/* arms, fires, drops for the never-subscribed guard. A guard whose firing
+ * cannot be observed is indistinguishable from one that is not there. */
+void ble_audio_idle_stats(uint32_t out[3]);
 /* Raw motion goes out on its own characteristic so a host that only wants
  * audio is not made to decode it, and so losing a motion frame can never
  * disturb the audio sequence. */

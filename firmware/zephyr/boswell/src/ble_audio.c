@@ -42,6 +42,7 @@ static bool advertising;
  * minute is generous.
  */
 #define SUBSCRIBE_GRACE_MS 30000
+static uint32_t idle_arms, idle_fires, idle_drops;
 static void idle_link_fn(struct k_work *work);
 static K_WORK_DELAYABLE_DEFINE(idle_link, idle_link_fn);
 static bool notify_enabled;
@@ -162,6 +163,7 @@ static void connected(struct bt_conn *conn, uint8_t err)
     }
     current_conn = bt_conn_ref(conn);
     advertising = false;
+    idle_arms++;
     k_work_reschedule(&idle_link, K_MSEC(SUBSCRIBE_GRACE_MS));
     struct bt_conn_info info;
     if (bt_conn_get_info(conn, &info) == 0) {
@@ -215,11 +217,23 @@ bool ble_audio_advertising(void)
 static void idle_link_fn(struct k_work *work)
 {
     ARG_UNUSED(work);
+    idle_fires++;
     if (current_conn == NULL || notify_enabled) {
         return;
     }
     LOG_WRN("central never subscribed; dropping the link");
-    bt_conn_disconnect(current_conn, BT_HCI_ERR_REMOTE_USER_TERM_CONN);
+    int err = bt_conn_disconnect(current_conn, BT_HCI_ERR_REMOTE_USER_TERM_CONN);
+    if (err) {
+        LOG_ERR("disconnect failed (%d); retrying", err);
+        k_work_reschedule(k_work_delayable_from_work(work), K_MSEC(2000));
+        return;
+    }
+    idle_drops++;
+}
+
+void ble_audio_idle_stats(uint32_t out[3])
+{
+    out[0] = idle_arms; out[1] = idle_fires; out[2] = idle_drops;
 }
 
 static void adv_restart_fn(struct k_work *work)

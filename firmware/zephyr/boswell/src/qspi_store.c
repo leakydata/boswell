@@ -90,9 +90,13 @@ static void flash_maybe_sleep(void)
 
 static void writer_fn(void *a, void *b, void *cc);
 
-/* Set by the writer each time round its loop. The watchdog cannot protect a
- * thread it has no evidence about, and this one holds a lock across erases,
- * so it is exactly the thread worth watching. */
+/* Called by the writer as it works, not only when it goes back to sleep.
+ *
+ * Reporting once per outer iteration was not enough: draining a large backlog
+ * keeps this thread inside its inner loops for as long as there is work, and
+ * a thread that is alive and busy looked exactly like one that had wedged.
+ * The watchdog reset the board for it -- correctly, on the evidence it had.
+ * The evidence was wrong. */
 static void (*alive_cb)(void);
 void qspi_store_set_alive_cb(void (*cb)(void)) { alive_cb = cb; }
 static qspi_drain_fn drain_cb;
@@ -142,6 +146,9 @@ static int erase_ahead(void)
 {
     flash_wake();
     while (w_pos + PAGE > erased_pos) {
+        if (alive_cb) {
+            alive_cb();      /* a sector erase alone can run to 100 ms */
+        }
         int err = flash_erase(flash_dev, addr_of(erased_pos), SECTOR);
         if (err) {
             LOG_ERR("erase at 0x%x failed (%d)", addr_of(erased_pos), err);
@@ -281,6 +288,9 @@ static void writer_fn(void *a, void *b, void *cc)
          * now, or the two get spliced together. */
         while (drain_cb != NULL && ready_cb != NULL && ready_cb() &&
                (w_pos - r_pos) > 0) {
+            if (alive_cb) {
+                alive_cb();          /* still working, not stuck */
+            }
             uint8_t rec[QSPI_MAX_PAYLOAD];
             int n = qspi_store_pop(rec, sizeof(rec));
             if (n <= 0 || !drain_cb(rec, (uint16_t)n)) {
@@ -289,6 +299,9 @@ static void writer_fn(void *a, void *b, void *cc)
         }
 
         while (!ring_buf_is_empty(&stage)) {
+            if (alive_cb) {
+                alive_cb();
+            }
             k_mutex_lock(&lock, K_FOREVER);
 
             uint32_t room = PAGE - page_fill;

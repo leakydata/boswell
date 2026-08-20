@@ -387,6 +387,10 @@ static int cmd_status(const struct shell *sh, size_t argc, char **argv)
                 imu_tap_get_debounce());
     shell_print(sh, "advertising=%d  (unreachable = no link and no advertising)",
                 ble_audio_advertising());
+    uint32_t idle[3];
+    ble_audio_idle_stats(idle);
+    shell_print(sh, "idle-guard armed=%u fired=%u dropped=%u",
+                idle[0], idle[1], idle[2]);
     shell_print(sh, "last reset=0x%08x%s%s%s", last_reset_reason,
                 (last_reset_reason & NRF_POWER_RESETREAS_DOG_MASK)    ? " watchdog" : "",
                 (last_reset_reason & NRF_POWER_RESETREAS_LOCKUP_MASK) ? " lockup"   : "",
