@@ -26,4 +26,10 @@ void led_set_mode(uint8_t mode);     /* 0 steady, 1 pulse */
 /* Call regularly; drives the pulse timing. */
 void led_service(void);
 
+/* Drive the three channels directly, bypassing the state machine, so what
+ * the code asks for can be compared against what the light actually does.
+ * Guessing at that from a description of the colour does not converge. */
+void led_force(bool r, bool g, bool b);
+bool led_ready(void);
+
 #endif

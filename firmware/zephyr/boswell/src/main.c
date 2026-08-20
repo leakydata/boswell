@@ -47,6 +47,28 @@ struct boswell_state g_state = {
     .tx_power     = 4,
 };
 
+/* ---------------------------------------------------------------- reset */
+
+static uint32_t last_reset_reason;
+
+static void report_reset_reason(void)
+{
+    uint32_t r = nrf_power_resetreas_get(NRF_POWER);
+    nrf_power_resetreas_clear(NRF_POWER, r);   /* or it accumulates forever */
+    last_reset_reason = r;
+
+    if (r == 0) {
+        LOG_INF("reset: power-on");
+    } else {
+        LOG_INF("reset: 0x%08x%s%s%s%s%s", r,
+                (r & NRF_POWER_RESETREAS_DOG_MASK)      ? " watchdog"  : "",
+                (r & NRF_POWER_RESETREAS_RESETPIN_MASK) ? " pin"       : "",
+                (r & NRF_POWER_RESETREAS_SREQ_MASK)     ? " soft"      : "",
+                (r & NRF_POWER_RESETREAS_LOCKUP_MASK)   ? " lockup"    : "",
+                (r & NRF_POWER_RESETREAS_OFF_MASK)      ? " wake"      : "");
+    }
+}
+
 /* ------------------------------------------------------------------- usb */
 
 /* USB is only brought up when the cable is actually supplying power.
@@ -131,11 +153,38 @@ static void watchdog_init(void)
     }
 }
 
-static inline void watchdog_feed(void)
+/* The watchdog is only fed once every thread that matters has said it is
+ * alive.
+ *
+ * It used to be fed from the housekeeping loop and from the capture thread
+ * independently, which meant either one alone kept it quiet: capture could
+ * wedge on the microphone, or the flash writer could deadlock, and the
+ * housekeeping loop would go on feeding a watchdog that was no longer
+ * protecting anything. A watchdog that reports health it has not checked is
+ * worse than none, because it is believed.
+ */
+#define WDT_MAIN    BIT(0)
+#define WDT_CAPTURE BIT(1)
+#define WDT_QSPI    BIT(2)
+#define WDT_ALL     (WDT_MAIN | WDT_CAPTURE | WDT_QSPI)
+
+static atomic_t wdt_seen;
+
+void watchdog_checkin(uint32_t who)
 {
-    if (wdt_ch >= 0) {
-        wdt_feed(wdt_dev, wdt_ch);
+    atomic_or(&wdt_seen, who);
+}
+
+static void watchdog_service(void)
+{
+    if (wdt_ch < 0) {
+        return;
     }
+    if ((atomic_get(&wdt_seen) & WDT_ALL) != WDT_ALL) {
+        return;                  /* somebody has not reported; let it bite */
+    }
+    atomic_clear(&wdt_seen);
+    wdt_feed(wdt_dev, wdt_ch);
 }
 
 /* ---------------------------------------------------------------- dfu
@@ -200,6 +249,21 @@ static int cmd_debounce(const struct shell *sh, size_t argc, char **argv)
     imu_tap_set_debounce((uint32_t)atoi(argv[1]));
     cfg_store_touch();
     shell_print(sh, "debounce -> %u ms", imu_tap_get_debounce());
+    return 0;
+}
+
+static int cmd_led(const struct shell *sh, size_t argc, char **argv)
+{
+    if (argc < 2) {
+        shell_print(sh, "usage: boswell led <rgb>   e.g. 100 = red only, 000 = off");
+        shell_print(sh, "ready=%d level=%u mode=%u", led_ready(),
+                    g_state.led_level, g_state.led_mode);
+        return 0;
+    }
+    const char *v = argv[1];
+    bool r = v[0] == '1', g = v[1] && v[1] == '1', b = v[1] && v[2] == '1';
+    led_force(r, g, b);
+    shell_print(sh, "forced r=%d g=%d b=%d", r, g, b);
     return 0;
 }
 
@@ -295,6 +359,10 @@ static int cmd_status(const struct shell *sh, size_t argc, char **argv)
                 imu_tap_get_debounce());
     shell_print(sh, "advertising=%d  (unreachable = no link and no advertising)",
                 ble_audio_advertising());
+    shell_print(sh, "last reset=0x%08x%s%s%s", last_reset_reason,
+                (last_reset_reason & NRF_POWER_RESETREAS_DOG_MASK)    ? " watchdog" : "",
+                (last_reset_reason & NRF_POWER_RESETREAS_LOCKUP_MASK) ? " lockup"   : "",
+                last_reset_reason == 0 ? " power-on" : "");
     shell_print(sh, "imu_stream=%u Hz gyro=%d", g_state.imu_hz,
                 imu_gyro_enabled());
     shell_print(sh, "steps=%u tilt=%d motion=%d tap=%d ctrl10=0x%02x",
@@ -317,6 +385,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(boswell_cmds,
     SHELL_CMD(taps, NULL, "Show tap counters", cmd_taps),
     SHELL_CMD(steps, NULL, "Show step count, or 'steps reset'", cmd_steps),
     SHELL_CMD(adv, NULL, "Force advertising to restart", cmd_adv),
+    SHELL_CMD(led, NULL, "Force LED channels, e.g. 'led 100'", cmd_led),
     SHELL_CMD(debounce, NULL, "Get/set tap debounce in ms", cmd_debounce),
     SHELL_SUBCMD_SET_END
 );
@@ -396,6 +465,8 @@ static void on_ctrl(uint8_t op, uint8_t arg)
     led_state();
     cfg_store_touch();
 }
+
+static void qspi_alive(void) { watchdog_checkin(WDT_QSPI); }
 
 /* Hands one replayed record to the link, from the writer thread.
  *
@@ -546,7 +617,7 @@ static void capture_fn(void *a, void *b, void *c)
     int hangover = 0;
 
     while (1) {
-        watchdog_feed();
+        watchdog_checkin(WDT_CAPTURE);
 
         if (!g_state.streaming) {
             if (g_state.mic_power_save && mic_running()) {
@@ -583,8 +654,15 @@ static void capture_fn(void *a, void *b, void *c)
             memcpy(frame, raw, got * sizeof(int16_t));
         }
 
+        /* Gate on voice while buffering, whatever the live setting says.
+         * With nobody listening, silence still costs a flash write, wear, and
+         * the time to replay it later -- 19 of 40 recovered clips in one
+         * session were silence. When a host is attached the user's setting
+         * stands, because then silence costs only radio. */
+        bool gate = g_state.vad_enabled ||
+                    (g_state.backlog_mode && !ble_audio_ready());
         bool voiced = true;
-        if (g_state.vad_enabled) {
+        if (gate) {
             uint32_t rms = codec_rms(frame, count);
             if (rms >= g_state.vad_thresh) {
                 hangover = 15;              /* 300 ms release */
@@ -601,7 +679,7 @@ static void capture_fn(void *a, void *b, void *c)
         uint8_t flags = 0;
         if (g_state.use16k)      flags |= FLAG_16K;
         if (voiced)              flags |= FLAG_VOICED;
-        if (g_state.vad_enabled) flags |= FLAG_VAD_ON;
+        if (gate)                flags |= FLAG_VAD_ON;
 
         uint16_t len = codec_build_frame(frame, count, seq,
                                          k_uptime_get_32(), flags, wire);
@@ -650,11 +728,17 @@ int main(void)
         k_sleep(K_MSEC(1500));
     }
 
-    (void)led_init();
+    /* Print why the last boot ended before anything else can overwrite it.
+     * Several evenings of this project were spent unable to tell a reset
+     * from a hang, which the reset register answers immediately. */
+    report_reset_reason();
+
+    int led_err = led_init();
     led_set_level(g_state.led_level);
     led_set_mode(g_state.led_mode);
     led_set_colour(false, false, true);
     LOG_INF("Boswell starting");
+    LOG_INF("led_init -> %d (ready=%d)", led_err, led_ready());
     LOG_INF("shell ready: 'boswell dfu' reboots for flashing");
 
     int err = mic_init();
@@ -664,6 +748,7 @@ int main(void)
     LOG_INF("ble_audio_init -> %d", err);
 
     qspi_store_set_drain(drain_to_host, ble_audio_ready);
+    qspi_store_set_alive_cb(qspi_alive);
     err = cfg_store_init();
     LOG_INF("cfg_store_init -> %d", err);
 
@@ -713,7 +798,8 @@ int main(void)
 
         if (now >= next_house) {
             next_house = now + 500;
-            watchdog_feed();
+            watchdog_checkin(WDT_MAIN);
+            watchdog_service();
             led_state();
         }
         if (now >= next_batt) {

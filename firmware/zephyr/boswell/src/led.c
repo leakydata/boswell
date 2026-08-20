@@ -78,6 +78,15 @@ void led_set_mode(uint8_t m)
     }
 }
 
+void led_force(bool r, bool g, bool b)
+{
+    mode = 0;                 /* stop the pulse timer fighting the test */
+    want_r = r; want_g = g; want_b = b;
+    apply(r, g, b);
+}
+
+bool led_ready(void) { return ready; }
+
 void led_service(void)
 {
     static int64_t last;

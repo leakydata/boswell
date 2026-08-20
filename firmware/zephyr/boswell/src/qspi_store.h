@@ -57,5 +57,8 @@ int      qspi_store_pop(uint8_t *out, uint8_t max_len);
 void     qspi_store_reset(void);
 /* pushes, pages written, sector erases, writer wakeups */
 void     qspi_store_stats(uint32_t out[4]);
+/* Called from the writer thread each time round its loop, so the watchdog
+ * has evidence it is still running rather than an assumption. */
+void     qspi_store_set_alive_cb(void (*cb)(void));
 
 #endif

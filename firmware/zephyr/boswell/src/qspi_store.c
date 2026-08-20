@@ -89,6 +89,12 @@ static void flash_maybe_sleep(void)
 }
 
 static void writer_fn(void *a, void *b, void *cc);
+
+/* Set by the writer each time round its loop. The watchdog cannot protect a
+ * thread it has no evidence about, and this one holds a lock across erases,
+ * so it is exactly the thread worth watching. */
+static void (*alive_cb)(void);
+void qspi_store_set_alive_cb(void (*cb)(void)) { alive_cb = cb; }
 static qspi_drain_fn drain_cb;
 static qspi_ready_fn ready_cb;
 
@@ -266,6 +272,9 @@ static void writer_fn(void *a, void *b, void *cc)
     for (;;) {
         k_sem_take(&writer_wake, K_MSEC(20));
         n_wake++;
+        if (alive_cb) {
+            alive_cb();
+        }
 
         /* Replay to the host before anything else: the backlog is older
          * audio and has to reach the host ahead of what is being captured
