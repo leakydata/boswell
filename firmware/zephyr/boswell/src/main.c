@@ -415,6 +415,9 @@ static int cmd_status(const struct shell *sh, size_t argc, char **argv)
     ble_audio_idle_stats(idle);
     shell_print(sh, "notify drops=%u", notify_drops);
     { uint32_t ss[4]; ble_audio_send_stats(ss); shell_print(sh, "send calls=%u retries=%u avg=%u us max=%u us", ss[0], ss[1], ss[3], ss[2]); }
+    { uint32_t ps[8]; int le = 0; qspi_store_pop_stats(ps, &le);
+      shell_print(sh, "qspi peeks=%u refused=%u skipped=%u unstuck=%u fails=%u scanned=%u err=%d",
+                  ps[4], ps[5], ps[6], ps[7], ps[0], ps[3], le); }
     { uint32_t dl[3]; ble_audio_dead_link_stats(dl);
       shell_print(sh, "dead-link fails=%u drops=%u silent=%u s", dl[0], dl[1], dl[2]); }
     shell_print(sh, "idle-guard armed=%u fired=%u dropped=%u",
@@ -584,18 +587,24 @@ static void qspi_alive(void) { watchdog_checkin(WDT_QSPI); }
  * tell them from live audio sees the sequence jump backwards and reports
  * nonsense packet loss. Flags are not part of the ADPCM state, so setting
  * the bit here cannot affect decoding. */
-static bool drain_to_host(const uint8_t *rec, uint16_t len)
+static int drain_to_host(const uint8_t *rec, uint16_t len)
 {
-    if (len <= 2 || !ble_audio_ready()) {
-        return false;
+    /* Too small or too large to be a frame. Not a transient condition, so
+     * saying "try again" about it means trying again forever: the store
+     * offers the same record, this refuses it, and the backlog never moves.
+     * That is exactly what happened -- 2577 reads, 2577 refusals, and 163 KB
+     * of audio that would never have been delivered. */
+    if (len <= 2 || len > MAX_FRAME_LEN) {
+        return -1;
+    }
+    if (!ble_audio_ready()) {
+        return 0;                      /* nobody listening; keep it */
     }
     uint8_t stamped[MAX_FRAME_LEN];
-    if (len > sizeof(stamped)) {
-        return false;
-    }
+
     memcpy(stamped, rec, len);
     stamped[2] |= FLAG_FROM_FLASH;
-    return ble_audio_send(stamped, len) == 0;
+    return ble_audio_send(stamped, len) == 0 ? 1 : 0;
 }
 
 /* A double tap toggles capture: the device is worn, so the only control that

@@ -34,7 +34,9 @@
 
 int      qspi_store_init(void);
 bool     qspi_store_ready(void);
-uint32_t qspi_store_pending(void);     /* bytes not yet drained */
+uint32_t qspi_store_pending(void);
+/* read failures, short records, oversize, bytes scanned, last errno */
+void qspi_store_pop_stats(uint32_t out[8], int *last_err);     /* bytes not yet drained */
 uint32_t qspi_store_capacity(void);
 uint32_t qspi_store_dropped(void);     /* records lost to lapping */
 
@@ -43,7 +45,16 @@ uint32_t qspi_store_dropped(void);     /* records lost to lapping */
  * here rather than in the capture thread because popping takes the same lock
  * the writer holds across a sector erase, and blocking capture on that
  * overruns the microphone. */
-typedef bool (*qspi_drain_fn)(const uint8_t *rec, uint16_t len);
+/* Hand one buffered record to the host.
+ *
+ *   > 0  delivered; the store may drop it
+ *   = 0  not now -- the radio is busy; offer the same record again
+ *   < 0  this record cannot ever be delivered; skip it
+ *
+ * The middle and last cases used to be the same value, so a record the host
+ * could never accept was retried forever and the backlog stopped moving.
+ */
+typedef int (*qspi_drain_fn)(const uint8_t *rec, uint16_t len);
 /* Asked before a record is popped. Popping advances the read pointer, so a
  * record taken out while the link cannot accept it is simply lost -- the
  * first version discarded about fifty records a second that way, exactly

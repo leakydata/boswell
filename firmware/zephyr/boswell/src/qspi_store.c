@@ -27,6 +27,15 @@ static int64_t  w_pos;          /* total bytes written  */
 static int64_t  r_pos;          /* total bytes read     */
 static int64_t  erased_pos;     /* erased up to here    */
 static uint32_t dropped;
+/* Why a read of the backlog came back empty. Every exit from the read loop
+ * used to be a bare break, so a store holding audio it could not read looked
+ * exactly like an empty one. */
+static uint32_t pop_fail_read, pop_fail_short, pop_fail_big, pop_scanned;
+static uint32_t pop_ok, drain_refused, drain_skipped, drain_stuck_drops;
+static uint32_t stuck_offers;
+/* About ten seconds of retries at the writer's 20 ms tick. */
+#define STUCK_OFFER_LIMIT 500
+static int      pop_last_err;
 
 /* Word-aligned: the QSPI DMA cannot read from anywhere else, and the driver's
  * fallback for that is one transfer per four bytes. */
@@ -258,10 +267,39 @@ int qspi_store_init(void)
 
         if (pending > 0 && pending <= (int64_t)capacity &&
             saved.r_pos >= 0 && saved.w_pos >= saved.r_pos) {
-            uint8_t magic = 0;
+            /* One matching byte is not evidence.
+             *
+             * This checked only that a 0xB5 sat at the saved read cursor,
+             * which any byte has a one-in-256 chance of being. It passed on a
+             * cursor pointing into the middle of a record, the length byte
+             * that followed was 1, and drain_to_host refuses anything that
+             * small -- so 163 KB of audio sat unread and the device buffered
+             * continuously with nothing saying why.
+             *
+             * Parse a whole record instead, and require the next one to begin
+             * with a magic byte as well. Two records agreeing is a cursor
+             * that means something. */
+            uint8_t hdr[2] = { 0, 0 };
+            bool sane = false;
 
             if (flash_read(flash_dev, (uint32_t)(saved.r_pos % capacity),
-                           &magic, 1) == 0 && magic == QSPI_MAGIC) {
+                           hdr, sizeof(hdr)) == 0 &&
+                hdr[0] == QSPI_MAGIC && hdr[1] > 2 &&
+                hdr[1] <= QSPI_MAX_PAYLOAD) {
+                int64_t next = saved.r_pos + 2 + hdr[1];
+
+                if (next + 2 <= saved.w_pos) {
+                    uint8_t nmagic = 0;
+
+                    sane = flash_read(flash_dev,
+                                      (uint32_t)(next % capacity),
+                                      &nmagic, 1) == 0 &&
+                           nmagic == QSPI_MAGIC;
+                } else {
+                    sane = true;       /* single record; nothing after it */
+                }
+            }
+            if (sane) {
                 w_pos = saved.w_pos;
                 r_pos = saved.r_pos;
                 erased_pos = saved.w_pos;
@@ -411,11 +449,40 @@ static void writer_fn(void *a, void *b, void *cc)
             if (n <= 0) {
                 break;
             }
-            if (!drain_cb(rec, (uint16_t)n)) {
-                /* Left in place. The radio was busy, not the record bad;
-                 * the next pass will offer the same frame again. */
+            /* A peek that succeeds and a drain that refuses leaves the
+             * backlog exactly where it was, and until now incremented
+             * nothing at all -- so a store looping here forever was
+             * indistinguishable from one with nothing to do. */
+            pop_ok++;
+            int rc = drain_cb(rec, (uint16_t)n);
+
+            if (rc < 0) {
+                /* Never deliverable. Drop it rather than offer it again. */
+                drain_skipped++;
+                qspi_store_commit((uint8_t)n);
+                stuck_offers = 0;
+                continue;
+            }
+            if (rc == 0) {
+                drain_refused++;
+                /* The radio was busy, not the record bad; the next pass
+                 * offers the same frame again.
+                 *
+                 * Unless it keeps happening. One record that cannot be
+                 * handed over stops the whole backlog for good, and a
+                 * recorder that quietly stops delivering is worse than one
+                 * that loses a frame -- so past this many attempts the frame
+                 * goes, and the counter says it went. */
+                if (++stuck_offers >= STUCK_OFFER_LIMIT) {
+                    LOG_WRN("record refused %u times; dropping it to free the backlog",
+                            stuck_offers);
+                    drain_stuck_drops++;
+                    qspi_store_commit((uint8_t)n);
+                    stuck_offers = 0;
+                }
                 break;
             }
+            stuck_offers = 0;
             qspi_store_commit((uint8_t)n);
         }
 
@@ -453,6 +520,17 @@ void qspi_store_commit(uint8_t len)
     k_mutex_unlock(&lock);
 }
 
+void qspi_store_pop_stats(uint32_t out[8], int *last_err)
+{
+    out[0] = pop_fail_read; out[1] = pop_fail_short;
+    out[2] = pop_fail_big;  out[3] = pop_scanned;
+    out[4] = pop_ok;        out[5] = drain_refused;
+    out[6] = drain_skipped; out[7] = drain_stuck_drops;
+    if (last_err) {
+        *last_err = pop_last_err;
+    }
+}
+
 int qspi_store_peek(uint8_t *out, uint8_t max_len)
 {
     return qspi_store_pop(out, max_len);
@@ -478,22 +556,34 @@ int qspi_store_pop(uint8_t *out, uint8_t max_len)
     /* Resynchronise: a dropped sector can leave the reader mid-record. */
     while (r_pos + 2 <= w_pos) {
         uint8_t hdr[2];
+        int rc = read_wrapped(r_pos, hdr, sizeof(hdr));
 
-        if (read_wrapped(r_pos, hdr, sizeof(hdr)) != 0) {
+        if (rc != 0) {
+            /* Every exit from this loop used to be a bare break, so a store
+             * holding audio it could not read looked identical to an empty
+             * one -- pending sat unchanged and nothing said why. */
+            pop_fail_read++;
+            pop_last_err = rc;
             break;
         }
         if (hdr[0] != QSPI_MAGIC || hdr[1] == 0 || hdr[1] > QSPI_MAX_PAYLOAD) {
             r_pos++;                       /* scan for the next magic byte */
+            pop_scanned++;
             continue;
         }
         uint8_t len = hdr[1];
         if (r_pos + 2 + len > w_pos) {     /* record not fully written yet */
+            pop_fail_short++;
             break;
         }
         if (len > max_len) {               /* caller's buffer is too small */
+            pop_fail_big++;
             break;
         }
-        if (read_wrapped(r_pos + 2, out, len) != 0) {
+        rc = read_wrapped(r_pos + 2, out, len);
+        if (rc != 0) {
+            pop_fail_read++;
+            pop_last_err = rc;
             break;
         }
         /* Deliberately does NOT advance r_pos. The caller commits once the
