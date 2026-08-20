@@ -950,6 +950,55 @@ async def api_search_semantic(q: str, limit: int = 25):
     return await loop.run_in_executor(None, semantic.search, q, limit)
 
 
+@app.get("/api/agent/duplicates")
+async def api_agent_duplicates(kind: str | None = None,
+                               threshold: float = 0.95, limit: int = 50):
+    """Recorded items that say the same thing, as candidates -- not applied.
+
+    Found by comparing stored embeddings, not by asking the model: shown its
+    own duplicates it will say "duplicate fact already recorded" and then not
+    merge them, so the noticing has to happen somewhere it can be checked.
+
+    Proposed rather than applied because the line is a judgement. At 0.90 this
+    pairs "has a shoulder impingement and received a cortisone injection" with
+    "had a cortisone injection 2 weeks ago" -- close, but the second carries a
+    detail the first does not, and merging them loses it. The default is
+    deliberately tight.
+    """
+    if kind is not None and kind not in agent_runner.KINDS:
+        raise HTTPException(400, f"unknown kind: {kind}")
+    threshold = min(1.0, max(0.5, threshold))
+    import semantic
+    loop = asyncio.get_running_loop()
+    clusters = await loop.run_in_executor(
+        None, semantic.duplicate_clusters, kind, threshold, limit)
+    return {"threshold": threshold,
+            "clusters": clusters,
+            "removable": sum(len(c["duplicates"]) for c in clusters)}
+
+
+@app.post("/api/agent/merge")
+async def api_agent_merge(body: dict):
+    """Fold duplicates into one entry, keeping its id and provenance."""
+    kind = body.get("kind")
+    keep = body.get("keep_id")
+    drop = body.get("drop_ids") or []
+    if kind not in agent_runner.KINDS:
+        raise HTTPException(400, f"unknown kind: {kind}")
+    if not keep or not isinstance(drop, list) or not drop:
+        raise HTTPException(400, "need keep_id and a non-empty drop_ids")
+    import sys
+    sys.path.insert(0, os.path.join(HERE, "..", "host"))
+    import tools_impl
+    loop = asyncio.get_running_loop()
+    r = await loop.run_in_executor(
+        None, tools_impl.merge_items, kind, keep, drop, body.get("text"))
+    if not r.get("ok"):
+        raise HTTPException(400, r.get("error", "merge failed"))
+    device.event("log", text=f"merged {r['merged']} duplicate {kind}")
+    return r
+
+
 @app.get("/api/topics")
 async def api_topics(limit: int = 200):
     """Subjects the agent has labelled conversations with, commonest first.

@@ -89,3 +89,73 @@ def test_without_the_lock_records_are_lost(tmp_path):
     kept = _race(tmp_path, "if True:")
     assert kept < N_APPEND, ("no records were lost without the lock, so this "
                              "test proves nothing about the one with it")
+
+
+class TestMergeItems:
+    """Recall lets the agent see duplicates; merge lets it fix them.
+
+    Six copies of one sentence about asphalt were in the real store when this
+    was written, all from a single clip that says it once, because every
+    review before recall existed started from nothing.
+    """
+
+    def _store(self, tmp_path, monkeypatch, rows):
+        import importlib
+        import sys
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "host"))
+        import tools_impl
+        importlib.reload(tools_impl)
+        store = tmp_path / "agent"
+        store.mkdir()
+        monkeypatch.setattr(tools_impl, "STORE", str(store))
+        (store / "tasks.jsonl").write_text(
+            "".join(json.dumps(r) + "\n" for r in rows))
+        return tools_impl, store
+
+    def _rows(self):
+        return [
+            {"_id": "a", "text": "attempt 350 with asphalt", "_clips": ["c1.wav"]},
+            {"_id": "b", "text": "Attempt 350 with asphalt.", "_clips": ["c2.wav"]},
+            {"_id": "c", "text": "attempt to reach 350, asphalt", "_clips": ["c1.wav"]},
+            {"_id": "z", "text": "something else entirely", "_clips": ["c9.wav"]},
+        ]
+
+    def test_duplicates_are_folded_into_one(self, tmp_path, monkeypatch):
+        t, store = self._store(tmp_path, monkeypatch, self._rows())
+        r = t.merge_items("tasks", "a", ["b", "c"], text="Reach 350 with pure asphalt.")
+        assert r["ok"] and r["merged"] == 2
+        rows = [json.loads(l) for l in (store / "tasks.jsonl").read_text().splitlines() if l]
+        assert len(rows) == 2
+        kept = [x for x in rows if x["_id"] == "a"][0]
+        assert kept["text"] == "Reach 350 with pure asphalt."
+        assert kept["_merged"] == 2
+
+    def test_provenance_is_carried_across(self, tmp_path, monkeypatch):
+        """The clips the dropped entries came from must not be lost -- they are
+        the only way back to what was actually said."""
+        t, store = self._store(tmp_path, monkeypatch, self._rows())
+        t.merge_items("tasks", "a", ["b", "c"])
+        rows = [json.loads(l) for l in (store / "tasks.jsonl").read_text().splitlines() if l]
+        kept = [x for x in rows if x["_id"] == "a"][0]
+        assert set(kept["_clips"]) == {"c1.wav", "c2.wav"}
+
+    def test_unrelated_entries_untouched(self, tmp_path, monkeypatch):
+        t, store = self._store(tmp_path, monkeypatch, self._rows())
+        t.merge_items("tasks", "a", ["b", "c"])
+        rows = [json.loads(l) for l in (store / "tasks.jsonl").read_text().splitlines() if l]
+        assert any(x["_id"] == "z" for x in rows)
+
+    def test_unknown_keep_id_reports_failure(self, tmp_path, monkeypatch):
+        t, _ = self._store(tmp_path, monkeypatch, self._rows())
+        r = t.merge_items("tasks", "nope", ["b"])
+        assert not r["ok"]
+
+    def test_bad_kind_rejected(self, tmp_path, monkeypatch):
+        t, _ = self._store(tmp_path, monkeypatch, self._rows())
+        assert not t.merge_items("../evil", "a", ["b"])["ok"]
+
+    def test_empty_drop_list_is_a_noop(self, tmp_path, monkeypatch):
+        t, store = self._store(tmp_path, monkeypatch, self._rows())
+        before = (store / "tasks.jsonl").read_text()
+        assert not t.merge_items("tasks", "a", [])["ok"]
+        assert (store / "tasks.jsonl").read_text() == before

@@ -17,6 +17,18 @@ STORE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                      "..", "data", "agent")
 STORE = os.path.normpath(STORE)
 
+KINDS = ("tasks", "events", "notes", "facts", "topics")
+
+
+def _store_path(kind):
+    """Path for one kind, proven to sit directly in the store."""
+    if kind not in KINDS:
+        raise ValueError(f"unknown agent kind: {kind!r}")
+    p = os.path.abspath(os.path.join(STORE, f"{kind}.jsonl"))
+    if os.path.dirname(p) != os.path.abspath(STORE):
+        raise ValueError(f"path escapes the agent store: {kind!r}")
+    return p
+
 
 @contextlib.contextmanager
 def store_lock():
@@ -115,6 +127,117 @@ def remember_fact(subject, fact):
     return {"ok": True, "saved": "fact", "subject": r["subject"]}
 
 
+def _rewrite(kind, mutate):
+    """Read, change, and replace one store file under the lock."""
+    path = _store_path(kind)
+    with store_lock():
+        rows = []
+        if os.path.exists(path):
+            for line in open(path):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rows.append(json.loads(line))
+                except Exception:
+                    continue
+        changed, rows = mutate(rows)
+        if not changed:
+            return False
+        tmp = path + ".part"
+        with open(tmp, "w") as f:
+            f.write("".join(json.dumps(d) + "\n" for d in rows))
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    return True
+
+
+def merge_items(kind, keep_id, drop_ids, text=None):
+    """Fold duplicate entries into one.
+
+    Recall shows the model what it has already recorded, which is what stops
+    it writing the same thing again -- but it could only ever add. The
+    entries made before recall existed are still there, and one of them is a
+    single sentence about asphalt recorded four times in slightly different
+    words. Without this the model can see the duplicates and do nothing about
+    them.
+
+    The surviving entry keeps its id and its provenance, gains the clips the
+    dropped ones came from, and may have its wording replaced with a version
+    that covers all of them.
+    """
+    if kind not in KINDS:
+        return {"ok": False, "error": f"unknown kind {kind}"}
+    if isinstance(drop_ids, str):
+        drop_ids = [d.strip() for d in drop_ids.split(",") if d.strip()]
+    drop = {d for d in (drop_ids or []) if d and d != keep_id}
+    if not drop:
+        return {"ok": False, "error": "nothing to merge"}
+
+    merged_clips, found = [], {"keep": False, "dropped": 0}
+
+    def mutate(rows):
+        out = []
+        for r in rows:
+            if r.get("_id") in drop:
+                merged_clips.extend(r.get("_clips") or [])
+                found["dropped"] += 1
+                continue
+            out.append(r)
+        for r in out:
+            if r.get("_id") == keep_id:
+                found["keep"] = True
+                clips = list(r.get("_clips") or [])
+                for c in merged_clips:
+                    if c not in clips:
+                        clips.append(c)
+                if clips:
+                    r["_clips"] = clips
+                if text:
+                    for field in ("fact", "text", "title", "body"):
+                        if field in r:
+                            r[field] = text
+                            break
+                r["_merged"] = int(r.get("_merged", 0)) + found["dropped"]
+        return found["dropped"] > 0, out
+
+    _rewrite(kind, mutate)
+    if not found["keep"]:
+        return {"ok": False, "error": f"keep_id {keep_id} not found in {kind}"}
+
+    try:
+        import sys
+        web = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "web")
+        if web not in sys.path:
+            sys.path.insert(0, web)
+        import semantic
+        for d in drop:
+            semantic.remove_item(d)
+        for r in _load_kind(kind):
+            if r.get("_id") == keep_id:
+                semantic.index_item(dict(r, _kind=kind))
+                break
+    except Exception:
+        pass
+    return {"ok": True, "merged": found["dropped"], "kept": keep_id}
+
+
+def _load_kind(kind):
+    path = _store_path(kind)
+    if not os.path.exists(path):
+        return []
+    out = []
+    for line in open(path):
+        line = line.strip()
+        if line:
+            try:
+                out.append(json.loads(line))
+            except Exception:
+                pass
+    return out
+
+
 def tag_topics(topics):
     """Label this conversation with the subjects it covers."""
     if isinstance(topics, str):
@@ -138,9 +261,26 @@ REGISTRY = {
     "add_calendar_event": add_calendar_event,
     "remember_fact": remember_fact,
     "tag_topics": tag_topics,
+    "merge_items": merge_items,
 }
 
 SCHEMAS = [
+    {"type": "function", "function": {
+        "name": "merge_items",
+        "description": ("Fold duplicate entries shown under ALREADY KNOWN into "
+                        "one. Use when the same thing was recorded more than "
+                        "once. Give the id to keep and the ids to remove, and "
+                        "optionally replacement wording that covers all of "
+                        "them. Only merge entries that genuinely say the same "
+                        "thing."),
+        "parameters": {"type": "object", "properties": {
+            "kind": {"type": "string",
+                     "enum": ["tasks", "events", "notes", "facts", "topics"]},
+            "keep_id": {"type": "string"},
+            "drop_ids": {"type": "array", "items": {"type": "string"}},
+            "text": {"type": "string",
+                     "description": "optional replacement wording"}},
+            "required": ["kind", "keep_id", "drop_ids"]}}},
     {"type": "function", "function": {
         "name": "tag_topics",
         "description": ("Label this conversation with the two to five subjects "

@@ -111,7 +111,13 @@ They are what you have recorded before. Use them:
   entry it extends.
 - If it contradicts one, record the correction and say what changed.
 - Use the same subject name an existing entry uses for the same person or
-  project, so one subject does not end up split across several names."""
+  project, so one subject does not end up split across several names.
+- If two or more ALREADY KNOWN entries of the same kind say the same thing,
+  call merge_items once to fold them into one, using the ids shown. Merge
+  only entries that genuinely duplicate each other -- a fact that adds detail
+  is not a duplicate of the one it adds to. Tidying these up is part of the
+  job: they exist because earlier reviews could not see what had already been
+  recorded."""
 
 
 class ConversationAgent:
@@ -239,8 +245,11 @@ class ConversationAgent:
             if h.get("score", 0) < RECALL_MIN_SCORE:
                 continue
             when = (h.get("recorded_at") or "")[:10]
-            lines.append(f"- [{h.get('kind','?')}] {h.get('text','')}"
-                         + (f"  ({when})" if when else ""))
+            # The id is shown because merge_items needs it. Without it the
+            # model can see that it recorded the same thing four times and
+            # has no way to say which four.
+            lines.append(f"- [{h.get('kind','?')} id={h.get('id')}] "
+                         f"{h.get('text','')}" + (f"  ({when})" if when else ""))
         return "\n".join(lines)
 
     def _render(self, batch):

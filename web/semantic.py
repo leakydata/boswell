@@ -163,6 +163,56 @@ def index_clip(name, segments, replace=False):
     return {"added": added, "failed": failed, "error": first_error}
 
 
+def duplicate_clusters(kind=None, threshold=0.90, limit=50):
+    """Groups of recorded items that say the same thing.
+
+    Found by comparing the stored embeddings directly rather than by asking
+    the model. The model can be shown its duplicates and will say "duplicate
+    fact already recorded" and then not merge them, so relying on it to
+    notice and act in the same pass is not something to build on. Cosine
+    similarity within one kind is a decision that can be checked, tuned, and
+    tested.
+
+    Only within a kind: a note that quotes a task is not a duplicate of it.
+    """
+    db, _ = _connect()
+    try:
+        rows = db.execute(
+            "SELECT item_id, kind, subject, text, vec FROM mem"
+            + (" WHERE kind=?" if kind else ""),
+            (kind,) if kind else ()).fetchall()
+    finally:
+        db.close()
+
+    import math
+    items = []
+    for r in rows:
+        v = _unpack(r["vec"])
+        n = math.sqrt(sum(x * x for x in v)) or 1.0
+        items.append((r["item_id"], r["kind"], r["text"], v, n))
+
+    seen, clusters = set(), []
+    for i, (id_a, kind_a, text_a, va, na) in enumerate(items):
+        if id_a in seen:
+            continue
+        group = []
+        for id_b, kind_b, text_b, vb, nb in items[i + 1:]:
+            if id_b in seen or kind_b != kind_a:
+                continue
+            sim = sum(x * y for x, y in zip(va, vb)) / (na * nb)
+            if sim >= threshold:
+                group.append({"id": id_b, "text": text_b, "score": round(sim, 3)})
+                seen.add(id_b)
+        if group:
+            seen.add(id_a)
+            clusters.append({"kind": kind_a,
+                             "keep": {"id": id_a, "text": text_a},
+                             "duplicates": group})
+        if len(clusters) >= limit:
+            break
+    return clusters
+
+
 def hybrid(query, keyword_hits, limit=25):
     """Fuse keyword and meaning results into one ranking.
 
