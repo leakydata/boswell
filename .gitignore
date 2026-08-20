@@ -20,3 +20,6 @@ toolshim/
 __pycache__/
 *.pyc
 __pycache__/
+
+# working notes — my own tracking, not part of the project
+.notes/
