@@ -770,6 +770,97 @@ static void tx_thread(void *a, void *b, void *c)
 
 K_THREAD_DEFINE(tx_tid, 2048, tx_thread, NULL, NULL, NULL, 6, 0, 0);
 
+/* Frames held back from just before the voice gate opened.
+ *
+ * The gate opens on the first frame whose level crosses the threshold, and
+ * everything before it was dropped -- so every utterance lost its onset. The
+ * quiet part of a word carries a lot of what makes it recognisable, and the
+ * transcriber was being handed speech with the beginnings shaved off. Arduino
+ * already kept a pre-roll; this side did not.
+ *
+ * Built frames rather than PCM, so the sequence number and the capture
+ * timestamp are the ones the frame was made with. Re-encoding at flush time
+ * would date the audio to the moment the gate opened, which is the bug this
+ * exists to avoid. Four frames is 80 ms.
+ */
+#define PREROLL_FRAMES 4
+static uint8_t  preroll[PREROLL_FRAMES][MAX_FRAME_LEN];
+static uint16_t preroll_len[PREROLL_FRAMES];
+static uint8_t  preroll_head, preroll_count;
+
+static void preroll_stash(const uint8_t *wire, uint16_t len)
+{
+    memcpy(preroll[preroll_head], wire, len);
+    preroll_len[preroll_head] = len;
+    preroll_head = (preroll_head + 1) % PREROLL_FRAMES;
+    if (preroll_count < PREROLL_FRAMES) {
+        preroll_count++;
+    }
+}
+
+static void route_frame(const uint8_t *wire, uint16_t len);
+
+static void preroll_flush(void)
+{
+    uint8_t start = (preroll_head - preroll_count + PREROLL_FRAMES) % PREROLL_FRAMES;
+
+    for (uint8_t i = 0; i < preroll_count; i++) {
+        uint8_t idx = (start + i) % PREROLL_FRAMES;
+        route_frame(preroll[idx], preroll_len[idx]);
+    }
+    preroll_count = 0;
+}
+
+/* Send one built frame, or store it, whichever the link allows.
+ *
+ * Lifted out of the capture loop so that pre-roll frames take exactly the
+ * same path as live ones -- a second copy of this routing would drift from
+ * the first, and the flash/queue/drop decisions here are the ones that were
+ * hardest to get right.
+ */
+static void route_frame(const uint8_t *wire, uint16_t len)
+{
+    if (!ble_audio_ready()) {
+        /* Nobody to send to. Buffer rather than discard: the point of the
+         * flash is that walking out of range costs latency, not audio. */
+        if (g_state.backlog_mode && qspi_store_ready()) {
+            qspi_store_push(wire, (uint8_t)len);
+        }
+        return;
+    }
+
+    /* With a backlog outstanding, the frame just captured joins the back of
+     * the queue rather than going straight out: interleaving live audio with
+     * replayed audio splices two different moments of the conversation
+     * together. The writer thread replays the queue in order. Strict ordering
+     * costs latency, which is the trade the flash buffer exists to make. */
+    if (qspi_store_pending() > 0 && g_state.backlog_mode &&
+        qspi_store_ready()) {
+        qspi_store_push(wire, (uint8_t)len);
+        /* This branch never touches the radio, so a counter of failed sends
+         * cannot see a link that has died underneath it. Say that we tried;
+         * the guard measures how long since anything actually left. */
+        ble_audio_note_delivery_attempt();
+        return;
+    }
+
+    /* A frame the radio would not take goes to the flash instead, if the
+     * backlog is enabled; otherwise it is counted as dropped and the gap is
+     * visible to the host. */
+    struct txframe tf;
+
+    tf.len = (uint8_t)len;
+    memcpy(tf.data, wire, len);
+    if (k_msgq_put(&tx_q, &tf, K_NO_WAIT) != 0) {
+        /* The radio is behind. Spill rather than wait: blocking here is what
+         * starved the microphone. */
+        notify_drops++;
+        if (g_state.backlog_mode && qspi_store_ready()) {
+            qspi_store_push(wire, (uint8_t)len);
+        }
+    }
+}
+
 static int16_t raw[MAX_SAMPLES];
 static int16_t frame[MAX_SAMPLES];
 static uint8_t wire[MAX_FRAME_LEN];
@@ -821,6 +912,12 @@ static void capture_fn(void *a, void *b, void *c)
         bool gate = g_state.vad_enabled ||
                     (g_state.backlog_mode && !ble_audio_ready());
         bool voiced = true;
+        if (!gate) {
+            /* Nothing held back is still current once the gate is off; a
+             * frame kept from an earlier gated stretch would be flushed into
+             * the middle of unrelated audio if the gate came back on. */
+            preroll_count = 0;
+        }
         if (gate) {
             uint32_t rms = codec_rms(frame, count);
             if (rms >= g_state.vad_thresh) {
@@ -830,6 +927,17 @@ static void capture_fn(void *a, void *b, void *c)
             }
             voiced = hangover > 0;
             if (!voiced) {
+                /* Keep it in case the gate opens on the next frame. Built
+                 * here so it carries this frame's own sequence number and
+                 * timestamp; encoding it later would date it wrongly. */
+                uint8_t qflags = FLAG_VAD_ON;
+                if (g_state.use16k) {
+                    qflags |= FLAG_16K;
+                }
+                uint16_t qlen = codec_build_frame(frame, count, seq,
+                                                  k_uptime_get_32(), qflags,
+                                                  wire);
+                preroll_stash(wire, qlen);
                 seq++;                      /* the gap is intentional, not loss */
                 continue;
             }
@@ -843,56 +951,12 @@ static void capture_fn(void *a, void *b, void *c)
         uint16_t len = codec_build_frame(frame, count, seq,
                                          k_uptime_get_32(), flags, wire);
 
-        if (!ble_audio_ready()) {
-            /* Nobody to send to. Buffer rather than discard: the point of the
-             * flash is that walking out of range costs latency, not audio. */
-            if (g_state.backlog_mode && qspi_store_ready()) {
-                qspi_store_push(wire, (uint8_t)len);
-            }
-            seq++;
-            continue;
+        /* Anything held back from just before the gate opened goes first, so
+         * the onset of the word arrives ahead of the rest of it. */
+        if (preroll_count) {
+            preroll_flush();
         }
-
-        /* With a backlog outstanding, the frame just captured joins the back
-         * of the queue rather than going straight out: interleaving live
-         * audio with replayed audio splices two different moments of the
-         * conversation together. The writer thread replays the queue in
-         * order. Strict ordering costs latency, which is the trade the flash
-         * buffer exists to make. */
-        if (qspi_store_pending() > 0 && g_state.backlog_mode &&
-            qspi_store_ready()) {
-            qspi_store_push(wire, (uint8_t)len);
-            /* This branch never touches the radio, so a counter of failed
-             * sends cannot see a link that has died underneath it. Say that
-             * we tried; the guard measures how long since anything actually
-             * left the device. */
-            ble_audio_note_delivery_attempt();
-            seq++;
-            continue;
-        }
-
-        /* The sequence belongs to the frame, not to the transmission.
-         *
-         * Incrementing only on success meant a frame that failed every retry
-         * was replaced by the next one carrying the same number -- so the
-         * host saw an unbroken sequence and no loss at all. Silent loss is
-         * the one failure this device must not have.
-         *
-         * A frame the radio would not take goes to the flash instead, if the
-         * backlog is enabled; otherwise it is counted as dropped and the gap
-         * is visible to the host. */
-        struct txframe tf;
-
-        tf.len = (uint8_t)len;
-        memcpy(tf.data, wire, len);
-        if (k_msgq_put(&tx_q, &tf, K_NO_WAIT) != 0) {
-            /* The radio is behind. Spill rather than wait: blocking here is
-             * what starved the microphone. */
-            notify_drops++;
-            if (g_state.backlog_mode && qspi_store_ready()) {
-                qspi_store_push(wire, (uint8_t)len);
-            }
-        }
+        route_frame(wire, len);
         seq++;
     }
 }

@@ -516,6 +516,17 @@ class Device:
                 await self._ctrl(0x02, 1)
                 self.state["rate"] = 16000
 
+            # Assert the settings this service intends, rather than
+            # inheriting whatever the device was last told by anything else.
+            #
+            # A voice gate left on by a separate tool survived a reconnect,
+            # and the service then reported "connected, armed" beside a device
+            # recording almost nothing -- the same shape as trusting a
+            # remembered armed flag, which already cost a session of
+            # recordings. Anything the host has an opinion about, it states.
+            await self._ctrl(0x04, 1 if self.state.get("vad") else 0)
+            await self._ctrl(0x09, 1 if self.state.get("backlog_mode") else 0)
+
             await c.start_notify(AUDIO_UUID, self._on_audio)
             await self.set_armed(True)
             self.publish()
@@ -624,6 +635,9 @@ class Device:
 
     async def set_vad(self, on: bool):
         if await self._ctrl(0x04, 1 if on else 0):
+            # Remembered, so a reconnect re-asserts it rather than inheriting
+            # whatever the device happens to be set to.
+            self.state["vad"] = bool(on)
             self.event("log", text=f"VAD {'on' if on else 'off'}")
 
     def want(self, on: bool):
