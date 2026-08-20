@@ -16,6 +16,7 @@ LOG_MODULE_REGISTER(cfg_store, LOG_LEVEL_INF);
 #define NVS_PARTITION_SIZE FIXED_PARTITION_SIZE(NVS_PARTITION)
 
 #define SETTINGS_ID   1
+#define BACKLOG_ID    2
 #define SAVE_DELAY_MS 3000
 
 static struct nvs_fs fs;
@@ -71,6 +72,44 @@ bool cfg_store_load(struct boswell_settings *out)
     }
     LOG_INF("settings restored");
     return true;
+}
+
+bool cfg_store_load_backlog(struct boswell_backlog *out)
+{
+    if (!ready || out == NULL) {
+        return false;
+    }
+    ssize_t n = nvs_read(&fs, BACKLOG_ID, out, sizeof(*out));
+
+    if (n != (ssize_t)sizeof(*out)) {
+        return false;
+    }
+    if (out->magic != BOSWELL_BACKLOG_MAGIC ||
+        out->version != BOSWELL_BACKLOG_VER) {
+        LOG_WRN("backlog cursor magic/version mismatch, ignoring");
+        return false;
+    }
+    return true;
+}
+
+void cfg_store_save_backlog(int64_t w_pos, int64_t r_pos)
+{
+    if (!ready) {
+        return;
+    }
+    struct boswell_backlog rec = {
+        .magic = BOSWELL_BACKLOG_MAGIC,
+        .version = BOSWELL_BACKLOG_VER,
+        .w_pos = w_pos,
+        .r_pos = r_pos,
+    };
+    /* NVS skips a write whose contents match what is stored, so calling this
+     * with unchanged cursors costs nothing. */
+    ssize_t n = nvs_write(&fs, BACKLOG_ID, &rec, sizeof(rec));
+
+    if (n < 0) {
+        LOG_ERR("backlog cursor save failed (%d)", (int)n);
+    }
 }
 
 void cfg_store_touch(void)

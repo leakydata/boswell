@@ -1,4 +1,5 @@
 #include "qspi_store.h"
+#include "cfg_store.h"
 
 #include <string.h>
 #include <zephyr/device.h>
@@ -237,6 +238,42 @@ int qspi_store_init(void)
     }
 
     w_pos = r_pos = erased_pos = 0;
+
+    /* Pick up where the last boot left off, if the flash agrees.
+     *
+     * The audio itself survives a reset -- it is in external flash -- but
+     * these cursors did not, so every watchdog reset, crash or battery
+     * interruption discarded the whole backlog. Store-and-forward exists so
+     * that being out of range costs latency rather than audio, and losing it
+     * to a reboot is the same loss by another route.
+     *
+     * Trusted only after the flash is checked against them: a record must
+     * actually start at the saved read cursor. If anything disagrees the
+     * store comes up empty, which is exactly the old behaviour, so a bad
+     * record degrades to what this already did rather than to garbage. */
+    struct boswell_backlog saved;
+
+    if (cfg_store_load_backlog(&saved)) {
+        int64_t pending = saved.w_pos - saved.r_pos;
+
+        if (pending > 0 && pending <= (int64_t)capacity &&
+            saved.r_pos >= 0 && saved.w_pos >= saved.r_pos) {
+            uint8_t magic = 0;
+
+            if (flash_read(flash_dev, (uint32_t)(saved.r_pos % capacity),
+                           &magic, 1) == 0 && magic == QSPI_MAGIC) {
+                w_pos = saved.w_pos;
+                r_pos = saved.r_pos;
+                erased_pos = saved.w_pos;
+                LOG_INF("backlog recovered: %lld B from the previous boot",
+                        (long long)pending);
+            } else {
+                LOG_WRN("saved backlog cursors do not match the flash; "
+                        "starting empty");
+            }
+        }
+    }
+
     dropped = page_fill = stage_drops = 0;
     ring_buf_reset(&stage);
     k_sem_init(&writer_wake, 0, 1);
@@ -311,6 +348,40 @@ int qspi_store_push(const uint8_t *data, uint8_t len)
 
 /* Moves staged bytes to flash. Runs below the capture thread so the erase it
  * blocks on never delays a microphone read. */
+/* Record where the backlog has got to, so a reset does not discard it.
+ *
+ * Rate limited hard. This lands in the internal flash the settings live in,
+ * and audio arrives at about 8.5 KB/s while disconnected -- saving on every
+ * write would burn the partition for no benefit, because the value of the
+ * cursors is only realised on a reboot, which is rare. Once a minute while
+ * there is something buffered bounds the loss to a minute of audio.
+ *
+ * Both edges matter: the save when the backlog first appears means a reset
+ * moments later still finds it, and the save when it empties means a reset
+ * after a successful drain does not replay what the host already has.
+ */
+#define CURSOR_SAVE_MS 60000
+
+static void persist_cursors(void)
+{
+    static int64_t last_save_ms;
+    static bool    had_backlog;
+
+    bool has = (w_pos - r_pos) > 0;
+    int64_t now = k_uptime_get();
+
+    if (has != had_backlog) {
+        had_backlog = has;
+        last_save_ms = now;
+        cfg_store_save_backlog(w_pos, r_pos);
+        return;
+    }
+    if (has && now - last_save_ms >= CURSOR_SAVE_MS) {
+        last_save_ms = now;
+        cfg_store_save_backlog(w_pos, r_pos);
+    }
+}
+
 static void writer_fn(void *a, void *b, void *cc)
 {
     ARG_UNUSED(a); ARG_UNUSED(b); ARG_UNUSED(cc);
@@ -324,6 +395,8 @@ static void writer_fn(void *a, void *b, void *cc)
         if (alive_cb) {
             alive_cb();
         }
+
+        persist_cursors();
 
         /* Replay to the host before anything else: the backlog is older
          * audio and has to reach the host ahead of what is being captured

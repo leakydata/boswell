@@ -35,7 +35,31 @@ struct boswell_settings {
     int8_t   tx_power;
 };
 
+/* Where the flash backlog had got to.
+ *
+ * Buffered audio survives a reboot physically -- it is in external flash --
+ * but the cursors that say which of it is unsent were reset to zero on every
+ * boot, so a watchdog reset or a battery interruption discarded everything
+ * waiting. That is a hole in the one guarantee the store exists to make.
+ *
+ * Positions are the monotonic counters the ring uses, not addresses, so they
+ * survive the modulo arithmetic unchanged. Validated on load against the
+ * actual flash contents before being trusted.
+ */
+#define BOSWELL_BACKLOG_MAGIC 0xB0C5
+#define BOSWELL_BACKLOG_VER   1
+
+struct boswell_backlog {
+    uint16_t magic;
+    uint8_t  version;
+    uint8_t  _pad;
+    int64_t  w_pos;
+    int64_t  r_pos;
+};
+
 int  cfg_store_init(void);
+bool cfg_store_load_backlog(struct boswell_backlog *out);
+void cfg_store_save_backlog(int64_t w_pos, int64_t r_pos);
 bool cfg_store_load(struct boswell_settings *out);
 /* Mark dirty; the actual write happens a few seconds later. */
 void cfg_store_touch(void);
