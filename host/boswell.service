@@ -28,6 +28,11 @@ Type=simple
 WorkingDirectory=%h/Documents/electronics/nRF52840
 ExecStart=%h/.local/bin/uv run web/server.py
 Restart=always
+# A normal "systemctl stop" SIGTERMs the process, which exits 143, and systemd
+# calls a non-zero exit a failure. The unit then sat in state=failed after
+# every ordinary stop -- and a monitor watching for the service being
+# unhealthy cannot tell that apart from a real crash.
+SuccessExitStatus=143 SIGTERM
 # Long enough that a crash loop backs off rather than hammering the device,
 # short enough that a real restart is not a gap in the recording.
 RestartSec=10

@@ -15,6 +15,7 @@
 
 #include <zephyr/bluetooth/bluetooth.h>
 #include <zephyr/random/random.h>
+#include <zephyr/bluetooth/hci.h>
 #include <zephyr/bluetooth/conn.h>
 #include <zephyr/bluetooth/gatt.h>
 #include <zephyr/bluetooth/uuid.h>
@@ -128,6 +129,38 @@ BT_GATT_SERVICE_DEFINE(boswell_svc,
                            BT_GATT_PERM_NONE, NULL, NULL, NULL),
     BT_GATT_CCC(imu_ccc_changed, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
 );
+
+/* The value attributes to notify on, found by UUID rather than counted.
+ *
+ * These were boswell_svc.attrs[1] for audio and attrs[8] for motion. The
+ * indices are correct only for the exact declaration above, and adding a
+ * characteristic or a descriptor anywhere before them shifts every later one
+ * -- silently, because bt_gatt_notify on the wrong attribute does not fail,
+ * it just sends audio to whoever subscribed to something else. Nothing about
+ * the resulting bug would point at this line.
+ *
+ * Resolved once at init and checked, so a mistake is a refusal to start
+ * rather than a stream that goes somewhere unexpected.
+ */
+static const struct bt_gatt_attr *audio_attr;
+static const struct bt_gatt_attr *imu_attr;
+
+static const struct bt_gatt_attr *find_value_attr(const struct bt_uuid *uuid)
+{
+    /* The value attribute is the one after the characteristic declaration. */
+    for (size_t i = 0; i + 1 < boswell_svc.attr_count; i++) {
+        const struct bt_gatt_attr *a = &boswell_svc.attrs[i];
+
+        if (bt_uuid_cmp(a->uuid, BT_UUID_GATT_CHRC) == 0) {
+            const struct bt_gatt_chrc *chrc = a->user_data;
+
+            if (chrc && bt_uuid_cmp(chrc->uuid, uuid) == 0) {
+                return &boswell_svc.attrs[i + 1];
+            }
+        }
+    }
+    return NULL;
+}
 
 static const struct bt_data adv[] = {
     BT_DATA_BYTES(BT_DATA_FLAGS, (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR)),
@@ -340,7 +373,7 @@ int ble_imu_send(const uint8_t *frame, uint16_t len)
      * One attempt only. Audio retries because a gap in speech matters; a
      * missing twentieth of a second of accelerometer does not, and blocking
      * the sampler to retry would skew the timing of everything after it. */
-    return bt_gatt_notify(current_conn, &boswell_svc.attrs[8], frame, len);
+    return bt_gatt_notify(current_conn, imu_attr, frame, len);
 }
 
 bool ble_audio_linked(void)
@@ -376,7 +409,7 @@ static int ble_audio_send_inner(const uint8_t *frame, uint16_t len)
         if (attempt) {
             send_retries++;
         }
-        int err = bt_gatt_notify(current_conn, &boswell_svc.attrs[1], frame, len);
+        int err = bt_gatt_notify(current_conn, audio_attr, frame, len);
         if (err != -ENOMEM && err != -EAGAIN) {
             return err;
         }
@@ -408,6 +441,16 @@ static int ble_audio_send_inner(const uint8_t *frame, uint16_t len)
 static uint32_t consecutive_fails;
 static uint32_t dead_link_drops;
 static int64_t  last_delivery_ms;
+
+int ble_audio_conn_handle(void)
+{
+    uint16_t h;
+
+    if (current_conn == NULL || bt_hci_get_conn_handle(current_conn, &h) != 0) {
+        return -1;
+    }
+    return (int)h;
+}
 
 void ble_audio_dead_link_stats(uint32_t out[3])
 {
@@ -553,6 +596,13 @@ void ble_audio_publish_info(void)
 
 int ble_audio_init(ctrl_handler_t on_ctrl)
 {
+    audio_attr = find_value_attr(&audio_uuid.uuid);
+    imu_attr   = find_value_attr(&imu_uuid.uuid);
+    if (audio_attr == NULL || imu_attr == NULL) {
+        LOG_ERR("audio or motion characteristic missing from the service");
+        return -ENOENT;
+    }
+
     /* A value that will not repeat across a reboot. sys_rand32_get() is
      * seeded by the SoC's entropy source; zero is excluded so the host can
      * treat it as "not published". */

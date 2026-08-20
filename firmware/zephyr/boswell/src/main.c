@@ -21,6 +21,7 @@
 
 #include <stdlib.h>
 #include <zephyr/kernel.h>
+#include <zephyr/sys/byteorder.h>
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/watchdog.h>
 #include <zephyr/usb/usb_device.h>
@@ -456,28 +457,77 @@ SHELL_CMD_REGISTER(boswell, &boswell_cmds, "Boswell commands", NULL);
  * device worn all day; the host exposes it because the right answer depends
  * on how far the wearer is from the machine. Set through the controller's
  * vendor-specific HCI command, since there is no portable API for it. */
-static void set_tx_power(int8_t dbm)
+/* One handle. The controller takes advertising and connections separately. */
+static int tx_power_one(uint8_t handle_type, uint16_t handle, int8_t dbm,
+                        int8_t *accepted)
 {
     struct bt_hci_cp_vs_write_tx_power_level *cp;
-    struct net_buf *buf;
+    struct net_buf *buf, *rsp = NULL;
 
     buf = bt_hci_cmd_create(BT_HCI_OP_VS_WRITE_TX_POWER_LEVEL, sizeof(*cp));
     if (!buf) {
-        LOG_WRN("no buffer for tx power");
-        return;
+        return -ENOBUFS;
     }
     cp = net_buf_add(buf, sizeof(*cp));
-    cp->handle = 0;
-    cp->handle_type = BT_HCI_VS_LL_HANDLE_TYPE_ADV;
+    cp->handle = sys_cpu_to_le16(handle);
+    cp->handle_type = handle_type;
     cp->tx_power_level = dbm;
 
-    int err = bt_hci_cmd_send_sync(BT_HCI_OP_VS_WRITE_TX_POWER_LEVEL, buf, NULL);
+    int err = bt_hci_cmd_send_sync(BT_HCI_OP_VS_WRITE_TX_POWER_LEVEL, buf, &rsp);
+
+    if (err == 0 && rsp) {
+        /* What the controller actually selected, which is not always what was
+         * asked for -- it snaps to the levels the radio supports. Reporting
+         * the request instead means the interface shows a number the radio is
+         * not using. */
+        struct bt_hci_rp_vs_write_tx_power_level *rp = (void *)rsp->data;
+
+        if (accepted && rsp->len >= sizeof(*rp)) {
+            *accepted = rp->selected_tx_power;
+        }
+    }
+    if (rsp) {
+        net_buf_unref(rsp);
+    }
+    return err;
+}
+
+/* Set the radio's transmit power.
+ *
+ * This wrote the advertising handle only, so the control the interface labels
+ * "transmit power" changed how far the device could be discovered from and
+ * left the connection carrying the audio exactly as it was. The connection is
+ * the one that matters for range while recording.
+ */
+static void set_tx_power(int8_t dbm)
+{
+    int8_t accepted = dbm;
+    int err = tx_power_one(BT_HCI_VS_LL_HANDLE_TYPE_ADV, 0, dbm, &accepted);
+
     if (err) {
-        LOG_WRN("tx power %d dBm rejected (%d)", dbm, err);
+        LOG_WRN("tx power %d dBm rejected for advertising (%d)", dbm, err);
         return;
     }
-    g_state.tx_power = dbm;
-    LOG_INF("tx power %d dBm", dbm);
+
+    int h = ble_audio_conn_handle();
+
+    if (h >= 0) {
+        int8_t conn_accepted = dbm;
+        int cerr = tx_power_one(BT_HCI_VS_LL_HANDLE_TYPE_CONN, (uint16_t)h,
+                                dbm, &conn_accepted);
+        if (cerr) {
+            LOG_WRN("tx power %d dBm rejected for the connection (%d)", dbm, cerr);
+        } else {
+            accepted = conn_accepted;
+        }
+    }
+
+    g_state.tx_power = accepted;
+    if (accepted != dbm) {
+        LOG_INF("tx power %d dBm requested, %d dBm selected", dbm, accepted);
+    } else {
+        LOG_INF("tx power %d dBm", dbm);
+    }
 }
 
 /* ---------------------------------------------------------------- control */
