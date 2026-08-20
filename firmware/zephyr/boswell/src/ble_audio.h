@@ -17,6 +17,8 @@ void ble_audio_dead_link_stats(uint32_t out[3]);
 /* The live connection's controller handle, or -1 when there is none. */
 int  ble_audio_conn_handle(void);
 void ble_audio_note_delivery_attempt(void);
+/* Frames the radio would not take. Defined in main.c, published in info. */
+uint32_t ble_audio_notify_drops(void);
 void ble_audio_publish_info(void);
 
 /* Re-negotiate the connection interval. Streaming wants a tight one; idling

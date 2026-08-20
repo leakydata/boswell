@@ -26,7 +26,15 @@
 #include <Adafruit_SPIFlash.h>
 #include <SPI.h>
 
+/* Record layout: [magic][len][crc8][payload] -- the same as the Zephyr store,
+ * from the same rec_crc.h, so the two cannot drift. Magic and length alone
+ * cannot tell a record from a coincidence: any byte has a one-in-256 chance
+ * of being the magic value, and on the Zephyr side that is exactly how a
+ * cursor pointing into the middle of a record was accepted as a valid one. */
+#include "rec_crc.h"
+
 #define QSPI_MAGIC        0xB5
+#define QSPI_HDR_LEN      3
 #define QSPI_PAGE         256
 #define QSPI_SECTOR       4096
 #define QSPI_MAX_PAYLOAD  200
@@ -65,6 +73,81 @@ static uint8_t  qspiPage[QSPI_PAGE];
 static uint16_t qspiPageLen = 0;
 static uint32_t qspiPageAddr = 0;
 
+/* Flash operations the part refused.
+ *
+ * Every erase, program and read result was discarded, so a flash that had
+ * stopped accepting writes advanced the cursors exactly as though it had
+ * not: the store reported audio queued that was never stored, and would
+ * later hand back whatever the erased sectors happened to contain. Counting
+ * is the difference between an empty backlog and a broken one. */
+static uint32_t qspiWriteFails = 0;
+static uint32_t qspiReadFails  = 0;
+static uint32_t qspiCrcFails   = 0;
+
+static uint8_t qspiPeekByte(uint32_t addr);
+static bool    qspiReadWrapped(uint32_t addr, uint8_t *out, uint32_t len);
+
+/* Where the backlog had got to, kept in the internal filesystem.
+ *
+ * The audio survives a reset -- it is in external flash -- but these cursors
+ * did not, so a watchdog reset, a crash or a flat battery discarded the whole
+ * backlog. Store-and-forward exists so that being out of range costs latency
+ * rather than audio, and losing it to a reboot is the same loss by another
+ * route. The Zephyr side keeps them in NVS for the same reason. */
+#define QSPI_CURSOR_PATH  "/qspi_cursor.bin"
+#define QSPI_CURSOR_MAGIC 0xB0C5
+#define QSPI_CURSOR_VER   1
+#define QSPI_CURSOR_SAVE_MS 60000
+
+struct QspiCursor {
+  uint16_t magic;
+  uint8_t  version;
+  uint8_t  pad;
+  uint32_t write;
+  uint32_t read;
+  uint32_t pending;
+};
+
+static uint32_t qspiCursorSavedAt = 0;
+static bool     qspiHadBacklog    = false;
+
+static void qspiCursorSave() {
+  QspiCursor c = { QSPI_CURSOR_MAGIC, QSPI_CURSOR_VER, 0,
+                   qspiWrite, qspiRead, qspiPending };
+  const char *tmp = QSPI_CURSOR_PATH ".new";
+  InternalFS.remove(tmp);
+  bool ok = false;
+  {
+    Adafruit_LittleFS_Namespace::File f(InternalFS);
+    if (f.open(tmp, Adafruit_LittleFS_Namespace::FILE_O_WRITE)) {
+      ok = f.write((const uint8_t *)&c, sizeof(c)) == (int)sizeof(c);
+      f.close();
+    }
+  }
+  if (!ok) { InternalFS.remove(tmp); return; }
+  InternalFS.remove(QSPI_CURSOR_PATH);
+  InternalFS.rename(tmp, QSPI_CURSOR_PATH);
+}
+
+/* Rate limited hard: this lands in internal flash and audio arrives at
+   several KB/s while disconnected. Both edges matter -- the save when a
+   backlog appears means a reset moments later still finds it, and the save
+   when it empties means a reset after a good drain does not replay it. */
+static void qspiCursorService() {
+  bool has = qspiPending > 0;
+  uint32_t now = millis();
+  if (has != qspiHadBacklog) {
+    qspiHadBacklog = has;
+    qspiCursorSavedAt = now;
+    qspiCursorSave();
+    return;
+  }
+  if (has && now - qspiCursorSavedAt >= QSPI_CURSOR_SAVE_MS) {
+    qspiCursorSavedAt = now;
+    qspiCursorSave();
+  }
+}
+
 static bool qspiBegin() {
   if (!qspiFlash.begin(&P25Q16H_DEV, 1)) {
     // Fall back to auto-detection in case a board ships a different part.
@@ -77,23 +160,66 @@ static bool qspiBegin() {
   qspiPageLen = 0;
   qspiPageAddr = 0;
   qspiErased = 0xFFFFFFFF;
+
+  /* Resume, but only if the flash agrees with what was written down. A whole
+     record has to parse at the saved read cursor and its CRC has to check
+     out; one matching magic byte is a one-in-256 coincidence, which is
+     exactly how the Zephyr side wedged its backlog on a cursor that pointed
+     into the middle of a record. Anything doubtful starts empty. */
+  QspiCursor c;
+  Adafruit_LittleFS_Namespace::File f(InternalFS);
+  if (f.open(QSPI_CURSOR_PATH, Adafruit_LittleFS_Namespace::FILE_O_READ)) {
+    bool got = f.read((uint8_t *)&c, sizeof(c)) == (int)sizeof(c);
+    f.close();
+    if (got && c.magic == QSPI_CURSOR_MAGIC && c.version == QSPI_CURSOR_VER &&
+        c.pending > 0 && c.pending <= qspiCapacity) {
+      uint8_t magic = qspiPeekByte(c.read);
+      uint8_t len   = qspiPeekByte(c.read + 1);
+      uint8_t crc   = qspiPeekByte(c.read + 2);
+      if (magic == QSPI_MAGIC && len > 0 && len <= QSPI_MAX_PAYLOAD) {
+        static uint8_t probe[QSPI_MAX_PAYLOAD];
+        if (qspiReadWrapped(c.read + QSPI_HDR_LEN, probe, len) &&
+            rec_crc8(probe, len) == crc) {
+          qspiWrite   = c.write;
+          qspiRead    = c.read;
+          qspiPending = c.pending;
+          qspiHadBacklog = true;
+        }
+      }
+    }
+  }
   return true;
 }
 
 /* Erase the sector containing `addr` if we have not already erased it for
  * this pass. NOR flash only clears bits on erase, so a sector must be wiped
  * before it can be rewritten. */
-static void qspiEnsureErased(uint32_t addr) {
+static bool qspiEnsureErased(uint32_t addr) {
   uint32_t sector = addr / QSPI_SECTOR;
-  if (sector == qspiErased) return;
-  qspiFlash.eraseSector(sector);
+  if (sector == qspiErased) return true;
+  if (!qspiFlash.eraseSector(sector)) {
+    qspiWriteFails++;
+    return false;
+  }
   qspiErased = sector;
+  return true;
 }
 
 static void qspiCommitPage() {
   if (qspiPageLen == 0) return;
-  qspiEnsureErased(qspiPageAddr);
-  qspiFlash.writeBuffer(qspiPageAddr, qspiPage, qspiPageLen);
+  /* Advance only on success.
+   *
+   * The cursor moved whether or not the page landed, so a refused erase or
+   * program left a hole the reader would later walk into and read as audio.
+   * Keeping the page means the next attempt rewrites it; the staging side
+   * stops taking new bytes because the page is still full. */
+  if (!qspiEnsureErased(qspiPageAddr)) {
+    return;
+  }
+  if (!qspiFlash.writeBuffer(qspiPageAddr, qspiPage, qspiPageLen)) {
+    qspiWriteFails++;
+    return;
+  }
   qspiPageAddr = (qspiPageAddr + QSPI_PAGE) % qspiCapacity;
   qspiPageLen = 0;
 }
@@ -120,6 +246,7 @@ static bool qspiPush(const uint8_t *data, uint8_t len) {
 
   qspiPutByte(QSPI_MAGIC);
   qspiPutByte(len);
+  qspiPutByte(rec_crc8(data, len));
   for (uint8_t i = 0; i < len; i++) qspiPutByte(data[i]);
   return true;
 }
@@ -134,15 +261,20 @@ static bool qspiPush(const uint8_t *data, uint8_t len) {
  * ring, and only ever at the moment the buffer is fullest. The same fault in
  * the Zephyr store was the other way round: payload wrapped, header did not.
  */
-static void qspiReadWrapped(uint32_t addr, uint8_t *out, uint32_t len) {
+static bool qspiReadWrapped(uint32_t addr, uint8_t *out, uint32_t len) {
   addr %= qspiCapacity;
   uint32_t first = qspiCapacity - addr;
+  bool ok;
   if (first >= len) {
-    qspiFlash.readBuffer(addr, out, len);
+    ok = qspiFlash.readBuffer(addr, out, len) == len;
   } else {
-    qspiFlash.readBuffer(addr, out, first);
-    qspiFlash.readBuffer(0, out + first, len - first);
+    ok = qspiFlash.readBuffer(addr, out, first) == first &&
+         qspiFlash.readBuffer(0, out + first, len - first) == (len - first);
   }
+  if (!ok) {
+    qspiReadFails++;
+  }
+  return ok;
 }
 
 static uint8_t qspiPeekByte(uint32_t addr) {
@@ -158,15 +290,21 @@ static uint8_t qspiPop(uint8_t *out, uint8_t maxLen) {
 
   // Resynchronise on the magic byte; a dropped sector can leave us mid-record.
   uint32_t scanned = 0;
-  while (qspiPending >= 2 && scanned < QSPI_SECTOR) {
+  while (qspiPending >= QSPI_HDR_LEN && scanned < QSPI_SECTOR) {
     if (qspiPeekByte(qspiRead) == QSPI_MAGIC) {
       uint8_t len = qspiPeekByte(qspiRead + 1);
+      uint8_t crc = qspiPeekByte(qspiRead + 2);
       if (len > 0 && len <= QSPI_MAX_PAYLOAD && len <= maxLen &&
-          qspiPending >= (uint32_t)len + 2) {
-        qspiReadWrapped(qspiRead + 2, out, len);
-        qspiRead = (qspiRead + 2 + len) % qspiCapacity;
-        qspiPending -= (len + 2);
-        return len;
+          qspiPending >= (uint32_t)len + QSPI_HDR_LEN) {
+        if (!qspiReadWrapped(qspiRead + QSPI_HDR_LEN, out, len)) {
+          return 0;              /* left in place; the next pass retries */
+        }
+        if (rec_crc8(out, len) == crc) {
+          qspiRead = (qspiRead + QSPI_HDR_LEN + len) % qspiCapacity;
+          qspiPending -= (len + QSPI_HDR_LEN);
+          return len;
+        }
+        qspiCrcFails++;          /* a coincidence, not a record: scan on */
       }
     }
     qspiRead = (qspiRead + 1) % qspiCapacity;

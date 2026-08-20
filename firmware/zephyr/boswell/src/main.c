@@ -188,6 +188,8 @@ static void watchdog_init(void)
 static atomic_t wdt_seen;
 /* Frames the radio refused after every retry. */
 static uint32_t notify_drops;
+
+uint32_t ble_audio_notify_drops(void) { return notify_drops; }
 /* Motion reads the sensor refused, and frames abandoned because none
  * succeeded. A count is the difference between a quiet sensor and a dead one. */
 static uint32_t imu_read_fails, imu_empty_frames;

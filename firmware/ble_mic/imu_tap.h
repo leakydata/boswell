@@ -131,6 +131,9 @@ static bool i2cReadByte(uint8_t *out, bool ack) {
   return true;
 }
 
+/* Register writes the sensor did not accept. */
+static uint32_t imuSetupFails = 0;
+
 static bool imuWrite(uint8_t reg, uint8_t val) {
   if (!i2cStart()) return false;
   bool ok = i2cWriteByte((uint8_t)(imuAddr << 1)) &&
@@ -208,19 +211,31 @@ static bool imuTapBegin() {
     return false;
   }
 
-  imuWrite(REG_CTRL1_XL,    0x60);  // 416 Hz, +/-2 g -- tap needs a high ODR
+  /* Every one of these returns was discarded.
+   *
+   * If the accelerometer never reaches 416 Hz, or the latch bit never gets
+   * set, tap detection does not fail -- it simply never fires, and the only
+   * symptom is a double-tap that does nothing. Somebody then taps harder,
+   * concludes the gesture is unreliable, and stops using it. Reporting the
+   * failure is the difference between a broken sensor and a broken feature. */
+  bool ok = true;
+  ok &= imuWrite(REG_CTRL1_XL,    0x60);  // 416 Hz, +/-2 g -- tap needs a high ODR
   // LIR (bit0) latches the event until TAP_SRC is read. Without it INT1 only
   // pulses for a few ms, which a 20 ms main loop misses almost every time.
-  imuWrite(REG_TAP_CFG,     0x8F);  // interrupts on, tap X/Y/Z, latched
+  ok &= imuWrite(REG_TAP_CFG,     0x8F);  // interrupts on, tap X/Y/Z, latched
   // Threshold 3 (~187 mg at +/-2 g). Seeed's demo uses 5, but that assumes a
   // board free to move; 3 is what registered reliably in testing. Lower still
   // risks a bump toggling capture off while the device is worn, which fails
   // silently -- the wrong direction to err in.
-  imuWrite(REG_TAP_THS_6D,  0x83);  // D4D_EN | tap threshold 3
-  imuWrite(REG_INT_DUR2,    0x7F);  // gap/quiet/shock windows reject bumps
-  imuWrite(REG_WAKE_UP_THS, 0x80);  // SINGLE_DOUBLE_TAP: double-tap mode
-  imuWrite(REG_MD1_CFG,     0x08);  // route double-tap to INT1
-  return true;
+  ok &= imuWrite(REG_TAP_THS_6D,  0x83);  // D4D_EN | tap threshold 3
+  ok &= imuWrite(REG_INT_DUR2,    0x7F);  // gap/quiet/shock windows reject bumps
+  ok &= imuWrite(REG_WAKE_UP_THS, 0x80);  // SINGLE_DOUBLE_TAP: double-tap mode
+  ok &= imuWrite(REG_MD1_CFG,     0x08);  // route double-tap to INT1
+  if (!ok) {
+    imuSetupFails++;
+    Serial.println("IMU: tap configuration incomplete; double-tap will not work");
+  }
+  return ok;
 }
 
 /* Poll the latched status register. INT1 (P0.11) is checked first as a cheap

@@ -95,6 +95,12 @@
  *   34-37 battery mV, percent, flags
  *   38    ring overruns                 (Arduino only; Zephyr has no equivalent)
  *   39    radio transmit power
+ *   40-43 notify drops, 32-bit          (INFO_CAP_DROPS)
+ *
+ * The characteristic grew from 40 bytes to 44. Hosts read it by length, so a
+ * longer one is not a breaking change -- but every one of the first 40 bytes
+ * was already spoken for, and adding a field by reusing one would have
+ * overwritten the battery percentage. Extending is the only honest option.
  */
 #define INFO_VERSION      1
 
@@ -110,6 +116,7 @@
 #define INFO_CAP_STATE     0x0040   /* byte 5 bit 2 is the real capture state */
 #define INFO_CAP_BOOTID    0x0080   /* bytes 22-23 identify this boot */
 #define INFO_CAP_SPLITBUF  0x0100   /* CTRL_BUFFER and CTRL_REPLAY understood */
+#define INFO_CAP_DROPS     0x0200   /* bytes 40-43 are notification drops */
 
 /* Control opcodes, unchanged from the Arduino build. */
 enum {

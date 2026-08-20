@@ -61,6 +61,7 @@
 #define INFO_CAP_OVERRUNS  0x0020
 #define INFO_CAP_STATE     0x0040
 #define INFO_CAP_BOOTID    0x0080
+#define INFO_CAP_DROPS     0x0200
 #include "imu_tap.h"
 #include "qspi_store.h"
 
@@ -116,6 +117,9 @@ static int16_t  ring[RING_SAMPLES];
 static volatile uint32_t ringHead = 0;     // written by the PDM callback
 static volatile uint32_t ringTail = 0;     // read by loop()
 static volatile uint32_t ringOverruns = 0;
+/* Samples actually lost, as distinct from callbacks that lost some. */
+static volatile uint32_t ringDroppedSamples = 0;
+static uint32_t notifyDrops = 0;   // frames the radio would not take
 static uint32_t micFaults = 0;     // PDM restarts that did not take
 static uint16_t bootId = 0;        // random per boot; identifies this clock
 
@@ -240,8 +244,13 @@ void onPDMdata() {
   uint32_t head = ringHead;
   for (int i = 0; i < n; i++) {
     uint32_t next = (head + 1) % RING_SAMPLES;
-    if (next == ringTail) {       // full: drop the oldest rather than stall
+    if (next == ringTail) {
+      /* The comment used to say the oldest sample is dropped. It is not:
+       * this abandons the rest of the newest chunk, and counted one per
+       * callback however many samples went with it -- so the number moved by
+       * ones while the audio lost hundreds. Count both, separately. */
       ringOverruns++;
+      ringDroppedSamples += (uint32_t)(n - i);
       break;
     }
     ring[head] = pdmChunk[i];
@@ -262,17 +271,40 @@ static inline uint32_t ringAvailable() {
  * makes a device annoying to actually wear. */
 static int8_t txPower = 4;
 static uint32_t settingsDirtyAt = 0;
+/* Saves that did not land. Silence here means the device quietly forgets. */
+static uint32_t settingsWriteFails = 0;
 
 static void settingsSave() {
   Settings cfg = { SETTINGS_MAGIC, SETTINGS_VER, (uint8_t)currentGain,
                    (uint8_t)use16k, (uint8_t)vadEnabled, (uint16_t)vadThresh,
                    ledLevel, ledMode, backlogMode, micPowerSave,
                    (uint8_t)tapEnabled, (uint8_t)fastCharge, txPower };
+  /* Write beside it, then swap.
+   *
+   * This removed the old file and then created a new one, so a reset, a full
+   * filesystem or a failed write in between left no settings at all -- and
+   * the device came back on defaults having been configured. The window was
+   * small and the loss was total, which is the worst shape for a window to
+   * have. A verified temporary file replaces it only once it is complete. */
+  const char *tmp = SETTINGS_PATH ".new";
+  InternalFS.remove(tmp);
+
+  bool written = false;
+  {
+    Adafruit_LittleFS_Namespace::File f(InternalFS);
+    if (f.open(tmp, Adafruit_LittleFS_Namespace::FILE_O_WRITE)) {
+      written = f.write((const uint8_t *)&cfg, sizeof(cfg)) == (int)sizeof(cfg);
+      f.close();
+    }
+  }
+  if (!written) {
+    settingsWriteFails++;
+    InternalFS.remove(tmp);
+    return;                       /* the old settings are still there */
+  }
   InternalFS.remove(SETTINGS_PATH);
-  Adafruit_LittleFS_Namespace::File f(InternalFS);
-  if (f.open(SETTINGS_PATH, Adafruit_LittleFS_Namespace::FILE_O_WRITE)) {
-    f.write((const uint8_t *)&cfg, sizeof(cfg));
-    f.close();
+  if (!InternalFS.rename(tmp, SETTINGS_PATH)) {
+    settingsWriteFails++;
   }
 }
 
@@ -366,7 +398,7 @@ static void applyGain(int gain) {
 }
 
 static void publishInfo() {
-  uint8_t info[40];
+  uint8_t info[44];
   info[0] = 1;                          // codec: 1 = IMA ADPCM
   info[1] = use16k ? 1 : 0;
   info[2] = FRAME_MS;
@@ -402,6 +434,13 @@ static void publishInfo() {
   info[24] = (uint8_t)(az & 0xFF);
   info[25] = (uint8_t)((az >> 8) & 0xFF);
   info[26] = accelPeakByte();
+  /* Frames the radio would not take. Bytes 40-43, because every one of the
+     first 40 was already used -- putting this in 36 would have overwritten
+     the battery percentage, which is how layouts quietly break. */
+  info[40] = (uint8_t)(notifyDrops & 0xFF);
+  info[41] = (uint8_t)((notifyDrops >> 8) & 0xFF);
+  info[42] = (uint8_t)((notifyDrops >> 16) & 0xFF);
+  info[43] = (uint8_t)((notifyDrops >> 24) & 0xFF);
 
   info[5] |= (uint8_t)(backlogMode << 1);   // bit1 carries the backlog mode
   /* bit2 is whether capture is actually running.
@@ -428,7 +467,8 @@ static void publishInfo() {
   info[19] = INFO_FW_ARDUINO;
   {
     uint16_t caps = INFO_CAP_TAP_DIAG | INFO_CAP_FLASH | INFO_CAP_OVERRUNS |
-                    INFO_CAP_STATE | INFO_CAP_BOOTID;
+                    INFO_CAP_STATE | INFO_CAP_BOOTID |
+                    INFO_CAP_DROPS;
     info[20] = (uint8_t)(caps & 0xFF);
     info[21] = (uint8_t)(caps >> 8);
   }
@@ -501,6 +541,25 @@ void ctrl_write_cb(uint16_t handle, BLECharacteristic *chr,
     case 0x0D:
       micPowerSave = data[1] ? 1 : 0;
       break;
+    case 0x0F:
+      /* Reboot into the bootloader.
+       *
+       * Zephyr has had this and Arduino had not, which is not a cosmetic
+       * gap: with this firmware flashed there was no way to get back to the
+       * other one except a physical double-tap on RESET, because the tool
+       * that flashes over serial DFU asks the running firmware to reboot
+       * into it first. A drift test comparing the two opcode tables is what
+       * turned it up.
+       *
+       * The argument is deliberately awkward so a stray write cannot do it.
+       * 0x57 is the Adafruit bootloader's UF2 and serial-DFU magic; 0xA8 is
+       * its BLE OTA magic. */
+      if (data[1] == 0x5A || data[1] == 0xA5) {
+        NRF_POWER->GPREGRET = (data[1] == 0x5A) ? 0x57 : 0xA8;
+        NVIC_SystemReset();
+      }
+      break;
+
     case 0x0B:                       // 0 = steady, 1 = pulse
       ledMode = data[1] ? 1 : 0;
       if (ledMode == 0) applyLed(ledWantR, ledWantG, ledWantB);
@@ -545,7 +604,24 @@ void disconnect_cb(uint16_t handle, uint8_t reason) {
  * for a frame replayed from flash it is whatever was stored with it. */
 static uint32_t frameStampMs = 0;
 
+/* The levels this radio actually accepts. A stored value outside them was
+   assigned anyway and silently ignored by the stack. */
+static bool txPowerSupported(int8_t dbm) {
+  static const int8_t ok[] = { -40, -20, -16, -12, -8, -4, 0, 3, 4, 8 };
+  for (unsigned i = 0; i < sizeof(ok) / sizeof(ok[0]); i++) {
+    if (ok[i] == dbm) return true;
+  }
+  return false;
+}
+
 static uint16_t buildFrame(const int16_t *samples, int n, uint16_t sq, bool voiced) {
+  /* Same contract as the Zephyr codec: it dereferences sample zero and walks
+   * pairs, so a null pointer, a zero count or an odd one are out-of-bounds
+   * reads that happen to work. Returning zero costs one frame; the
+   * alternative is a fault on a board with no debugger attached. */
+  if (samples == NULL || n <= 0 || (n & 1) || n > MAX_SAMPLES) {
+    return 0;
+  }
   AdpcmState st = { samples[0], 0 };
   int16_t predictor0 = (int16_t)st.predictor;
   uint8_t index0     = (uint8_t)st.index;
@@ -575,7 +651,6 @@ static uint16_t buildFrame(const int16_t *samples, int n, uint16_t sq, bool voic
 }
 
 /* Live to the host when there is one, otherwise into flash. */
-static uint32_t notifyDrops = 0;   // frames the radio would not take
 /* Set while a backlog is replaying in strict order: live frames go to flash so
  * they queue behind it instead of overtaking it on the radio. */
 static bool storeOnly = false;
@@ -757,7 +832,25 @@ void setup() {
   audioChar.begin();
 
   ctrlChar.setProperties(CHR_PROPS_WRITE | CHR_PROPS_WRITE_WO_RESP);
+  /* Control writes arm the microphone, erase the backlog and now reboot into
+   * the bootloader, so leaving this open means anyone in radio range can do
+   * all three to a microphone somebody is wearing. That is the threat model,
+   * written down rather than implied.
+   *
+   * It ships open, and that is a decision. The same lock was built and tried
+   * on the Zephyr side: the board enforced it correctly and this host could
+   * not get past it, because the board has no display or keypad so pairing is
+   * Just Works, and Just Works pairing on a headless Linux host needs a BlueZ
+   * agent that is not running. Set BOSWELL_SECURE_CTRL to 1 to require an
+   * encrypted link; pair once from an interactive bluetoothctl session, which
+   * does have an agent. Note that Just Works encryption is unauthenticated --
+   * it stops a passer-by and not someone present when you pair. */
+#define BOSWELL_SECURE_CTRL 0
+#if BOSWELL_SECURE_CTRL
+  ctrlChar.setPermission(SECMODE_NO_ACCESS, SECMODE_ENC_NO_MITM);
+#else
   ctrlChar.setPermission(SECMODE_NO_ACCESS, SECMODE_OPEN);
+#endif
   ctrlChar.setMaxLen(2);
   ctrlChar.setWriteCallback(ctrl_write_cb);
   ctrlChar.begin();
@@ -786,16 +879,24 @@ void setup() {
   {
     Settings cfg;
     if (settingsLoad(&cfg)) {
-      currentGain  = cfg.gain;
-      use16k       = cfg.use16k;
-      vadEnabled   = cfg.vadEnabled;
+      /* Clamped on the way in.
+       *
+       * Magic and version prove the record was written by this firmware, not
+       * that its contents make sense -- a torn write or a layout change can
+       * put a value here that no control opcode would ever accept. backlogMode
+       * is the one that is not merely untidy: it is published as
+       * (backlogMode << 1) in info byte 5 and the capture-state bit is 4, so a
+       * restored 2 makes the host read "recording" on a device that is not. */
+      currentGain  = cfg.gain > 80 ? 80 : cfg.gain;
+      use16k       = cfg.use16k ? 1 : 0;
+      vadEnabled   = cfg.vadEnabled ? 1 : 0;
       vadThresh    = cfg.vadThresh;
-      ledLevel     = cfg.ledLevel;
-      ledMode      = cfg.ledMode;
-      backlogMode  = cfg.backlogMode;
-      micPowerSave = cfg.micPowerSave;
-      tapEnabled   = cfg.tapEnabled;
-      txPower      = cfg.txPower;
+      ledLevel     = cfg.ledLevel;              /* a byte is the range */
+      ledMode      = cfg.ledMode ? 1 : 0;
+      backlogMode  = cfg.backlogMode ? 1 : 0;
+      micPowerSave = cfg.micPowerSave ? 1 : 0;
+      tapEnabled   = cfg.tapEnabled ? 1 : 0;
+      txPower      = txPowerSupported(cfg.txPower) ? cfg.txPower : 4;
       Serial.println("settings: restored");
     } else {
       Serial.println("settings: defaults");
@@ -812,6 +913,18 @@ void setup() {
     setFastCharge(settingsLoad(&cfg) ? cfg.fastCharge : false);
   }
   batteryMv = readBatteryMv();
+
+  /* Push the restored values into the hardware.
+   *
+   * They were assigned to variables after PDM, Bluefruit and the LED had
+   * already been initialised, so the device reported the saved gain, LED
+   * setting and transmit power while actually running the defaults -- and
+   * only started obeying them after the first control write. Everything that
+   * has a register behind it is applied here, once, now that the drivers
+   * exist. */
+  applyGain(currentGain);
+  updateLed();
+  Bluefruit.setTxPower(txPower);
 
   qspiOk = qspiBegin();
   Serial.println(qspiOk ? "QSPI: store-and-forward ready" : "QSPI: not found");
@@ -849,6 +962,8 @@ void loop() {
     batteryMv = readBatteryMv();
     charging = digitalRead(PIN_CHG) == LOW;   // ~CHG is active low
   }
+
+  if (qspiOk) qspiCursorService();
 
   static uint32_t lastInfoMs = 0;
   if (millis() - lastInfoMs > 500) { lastInfoMs = millis(); publishInfo(); }
