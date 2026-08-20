@@ -117,7 +117,19 @@ static qspi_ready_fn ready_cb;
  * once the reader reached the last byte of flash every header read failed
  * ("read error: address or size exceeds expected values. Addr: 0x1fffff
  * size 2") and the drain stopped for good: the backlog sat at nearly a
- * megabyte and the device buffered everything from then on. */
+ * megabyte and the device buffered everything from then on.
+ *
+ * Exercised at full capacity on 2026-08-20, which had never been done: the
+ * host was dropped and capture ran into flash at 8.5 KB/s until the erase
+ * count passed 1026 -- two complete laps of the 2 MB ring -- and every frame
+ * was then validated on the way out, checking header fields, the ADPCM step
+ * index range, the sample count and the payload length against it.
+ *
+ *     32,038 frames (5381 KB), 17,207 of them replayed from flash
+ *     malformed frames: 0
+ *
+ * The 150 frames the device reported dropped are the writer lapping the
+ * reader with nothing draining, which is the designed behaviour. */
 static int read_wrapped(int64_t pos, uint8_t *dst, uint32_t len);
 
 static uint32_t addr_of(int64_t pos)
