@@ -160,3 +160,84 @@ class TestInfoContract:
         from server import parse_info
         for n in range(0, 41):
             parse_info(bytearray(n))
+
+
+class TestSemanticReplace:
+    """Editing a transcript shorter used to leave the removed lines searchable."""
+
+    def _segments(self, texts):
+        return [{"text": t, "start": float(i), "speaker": "SPEAKER_00"}
+                for i, t in enumerate(texts)]
+
+    def test_shortening_removes_the_dropped_rows(self, tmp_path, monkeypatch):
+        import semantic
+        monkeypatch.setattr(semantic, "DB", str(tmp_path / "sem.db"))
+        # A deterministic stand-in for the embedding service; this test is
+        # about row lifetime, not about vector quality.
+        # 768 dimensions, because the vector table declares that width.
+        monkeypatch.setattr(semantic, "embed",
+                            lambda t: [float(len(t))] + [0.0] * 767)
+        monkeypatch.setattr(semantic, "MIN_CHARS", 1)
+
+        long = self._segments(["the first thing said", "the second thing said",
+                               "the third thing said"])
+        semantic.index_clip("c.wav", long, replace=True)
+        semantic.index_clip("c.wav", long[:1], replace=True)
+
+        db, _ = semantic._connect()
+        try:
+            rows = db.execute("SELECT idx, text FROM seg WHERE clip=? ORDER BY idx",
+                              ("c.wav",)).fetchall()
+        finally:
+            db.close()
+        assert [r["idx"] for r in rows] == [0]
+        assert "second" not in " ".join(r["text"] for r in rows)
+
+    def test_replace_updates_changed_text(self, tmp_path, monkeypatch):
+        import semantic
+        monkeypatch.setattr(semantic, "DB", str(tmp_path / "sem.db"))
+        monkeypatch.setattr(semantic, "embed",
+                            lambda t: [float(len(t))] + [0.0] * 767)
+        monkeypatch.setattr(semantic, "MIN_CHARS", 1)
+
+        semantic.index_clip("c.wav", self._segments(["before the correction"]),
+                            replace=True)
+        semantic.index_clip("c.wav", self._segments(["after the correction"]),
+                            replace=True)
+
+        db, _ = semantic._connect()
+        try:
+            rows = db.execute("SELECT text FROM seg WHERE clip=?", ("c.wav",)).fetchall()
+        finally:
+            db.close()
+        assert len(rows) == 1 and rows[0]["text"] == "after the correction"
+
+
+class TestTranscriptionQueue:
+    """The same clip could be queued four different ways."""
+
+    def _worker(self):
+        import pipeline
+        w = pipeline.Worker.__new__(pipeline.Worker)     # no models, no thread
+        import queue as _q, threading
+        w.q, w.busy = _q.Queue(), None
+        w._queued, w._qlock = set(), threading.Lock()
+        return w
+
+    def test_second_submit_is_refused(self):
+        w = self._worker()
+        assert w.submit("a.wav") is True
+        assert w.submit("a.wav") is False
+        assert w.q.qsize() == 1
+
+    def test_requeue_allowed_once_it_has_been_taken(self):
+        w = self._worker()
+        w.submit("a.wav")
+        w.q.get()
+        w._queued.discard("a.wav")
+        assert w.submit("a.wav") is True
+
+    def test_running_clip_is_not_requeued(self):
+        w = self._worker()
+        w.busy = "a.wav"
+        assert w.submit("a.wav") is False

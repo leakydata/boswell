@@ -50,6 +50,9 @@ DEFAULT_MODEL = "gpt-oss:20b"
 IDLE_SECONDS = 90.0        # silence that marks the end of a conversation
 MAX_WAIT = 900.0           # fire anyway if someone talks continuously
 MIN_CHARS = 120            # below this there is nothing worth reasoning about
+MAX_RETRIES = 3            # a batch survives this many failures before it is dropped
+RETRY_BACKOFF = 30         # seconds, doubling
+MAX_BACKOFF = 300
 # A batch that is only a clip or two is thirty seconds of speech, and thirty
 # seconds almost never contains a commitment, a date or a durable fact. The
 # agent was reviewing exactly that and correctly answering "nothing to
@@ -128,9 +131,7 @@ class ConversationAgent:
         Used by on-demand review; the scheduled path stays untouched so a
         manual review cannot disturb what is waiting to fire on its own.
         """
-        self._run(batch)
-        return self.last_result or {"clips": [c for c, _, _ in batch],
-                                    "actions": 0, "said": ""}
+        return self._run(batch)
 
     def flush_now(self):
         with self._lock:
@@ -153,9 +154,29 @@ class ConversationAgent:
                 self._pending = []
                 self._first_at = self._last_at = None
             try:
-                self._run(batch)
+                self.last_result = self._run(batch)
+                self._failures = 0
             except Exception as e:
-                self.notify("log", text=f"agent failed: {str(e)[:140]}")
+                # Put it back. The batch was removed from _pending before the
+                # run, so an Ollama timeout used to discard the transcripts
+                # permanently -- the work was gone and nothing said so.
+                self._failures = getattr(self, "_failures", 0) + 1
+                if self._failures <= MAX_RETRIES:
+                    with self._lock:
+                        self._pending = batch + self._pending
+                        self._first_at = self._first_at or time.time()
+                        self._last_at = time.time() + min(
+                            RETRY_BACKOFF * 2 ** (self._failures - 1), MAX_BACKOFF)
+                    self.notify("log", text=f"agent failed: {str(e)[:120]} "
+                                            f"-- retrying ({self._failures}/{MAX_RETRIES})")
+                else:
+                    self.last_result = {"clips": [c for c, _, _ in batch],
+                                        "actions": 0, "said": "", "at": time.time(),
+                                        "skipped_reason": f"failed {self._failures} "
+                                                          f"times: {str(e)[:120]}"}
+                    self.notify("log", text=f"agent gave up on {len(batch)} clip(s) "
+                                            f"after {self._failures} failures")
+                    self._failures = 0
 
     # ---- execution ----------------------------------------------------
     def _render(self, batch):
@@ -212,19 +233,29 @@ class ConversationAgent:
         return widened or batch
 
     def _run(self, batch):
+        """Run one review and return what *this* invocation did.
+
+        It used to return nothing and write to self.last_result, and it
+        returned early on a short batch without touching that field -- so an
+        on-demand review of a quiet conversation reported the result of some
+        earlier one. A caller cannot tell an answer from a leftover, which is
+        the one thing a result needs to be able to say.
+        """
         import sys
         sys.path.insert(0, os.path.join(HERE, "..", "host"))
         from tools_impl import REGISTRY, SCHEMAS
 
         batch = self._widen(batch)
+        clips = [c for c, _, _ in batch]
         text = self._render(batch)
         if len(text) < MIN_CHARS:
-            return
+            return {"clips": clips, "actions": 0, "said": "", "at": time.time(),
+                    "skipped_reason": f"only {len(text)} characters of speech; "
+                                      f"{MIN_CHARS} needed"}
         if len(text) > MAX_CHARS:
             text = text[-MAX_CHARS:]
             text = text[text.index("\n") + 1:] if "\n" in text else text
 
-        clips = [c for c, _, _ in batch]
         self.busy = f"{len(clips)} clip(s)"
         self.notify("agent", status="running", clips=len(clips), chars=len(text))
 
@@ -264,13 +295,15 @@ class ConversationAgent:
         finally:
             self.busy = None
 
-        self.last_result = {"clips": clips, "actions": len(actions),
-                            "said": said.strip()[:300], "at": time.time()}
+        result = {"clips": clips, "actions": len(actions),
+                  "said": said.strip()[:300], "at": time.time(),
+                  "skipped_reason": None}
         self.notify("agent", status="done", clips=len(clips), actions=len(actions),
                     said=said.strip()[:200])
         if actions:
             self.notify("log", text=f"agent recorded {len(actions)} item(s) "
                                     f"from {len(clips)} clip(s)")
+        return result
 
 
 def _backfill_ids(kind):

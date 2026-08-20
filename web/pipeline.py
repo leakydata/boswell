@@ -345,6 +345,13 @@ class Worker:
         # agent -- do not have to poll the filesystem for new work.
         self.on_transcript = on_transcript or (lambda *a, **k: None)
         self.busy = None
+        # What is queued or in flight. Rotation, a single request, a whole
+        # conversation and a bulk action can all name the same clip, and every
+        # one of them used to mean another full ASR and diarization pass --
+        # expensive, and a later pass could overwrite an edited transcript
+        # with an unedited one depending on which finished last.
+        self._queued = set()
+        self._qlock = threading.Lock()
         self._asr = None
         self._align = None
         self._diar = None
@@ -352,7 +359,17 @@ class Worker:
         threading.Thread(target=self._run, daemon=True).start()
 
     def submit(self, clip):
+        """Queue a clip. Returns False if it is already queued or running."""
+        with self._qlock:
+            if clip in self._queued or self.busy == clip:
+                return False
+            self._queued.add(clip)
         self.q.put(clip)
+        return True
+
+    def is_pending(self, clip):
+        with self._qlock:
+            return clip in self._queued or self.busy == clip
 
     def _load(self):
         terms = load_vocabulary()
@@ -399,6 +416,8 @@ class Worker:
     def _run(self):
         while True:
             clip = self.q.get()
+            with self._qlock:
+                self._queued.discard(clip)
             try:
                 self.busy = clip
                 self.notify("job", clip=clip, status="running")

@@ -90,6 +90,20 @@ def index_clip(name, segments, replace=False):
     failed = 0
     first_error = None
     try:
+        if replace:
+            # Clear the clip out first rather than upserting over it.
+            #
+            # Upserting only touches the indices the new transcript happens to
+            # have. Editing a transcript shorter, or splitting a clip, left the
+            # rows for the removed lines in place -- so semantic search kept
+            # returning text that no longer exists in the transcript, with a
+            # timestamp pointing at audio that says something else.
+            for r in db.execute("SELECT id FROM seg WHERE clip=?",
+                                (name,)).fetchall():
+                if have_vec:
+                    db.execute("DELETE FROM seg_vec WHERE rowid=?", (r["id"],))
+            db.execute("DELETE FROM seg WHERE clip=?", (name,))
+
         for i, seg in enumerate(segments):
             text = (seg.get("text") or "").strip()
             if len(text) < MIN_CHARS:
@@ -110,7 +124,7 @@ def index_clip(name, segments, replace=False):
                 if first_error is None:
                     first_error = f"{type(e).__name__}: {e}"[:120]
                 continue
-            cur = db.execute(
+            db.execute(
                 """INSERT INTO seg(clip, idx, start, text, speaker, vec)
                    VALUES(?,?,?,?,?,?)
                    ON CONFLICT(clip, idx) DO UPDATE SET
@@ -119,7 +133,9 @@ def index_clip(name, segments, replace=False):
                 (name, i, seg.get("start", 0.0), text, seg.get("speaker"),
                  _pack(v)))
             if have_vec:
-                rid = cur.lastrowid or db.execute(
+                # Selected, not taken from lastrowid: on a conflict that took
+                # the UPDATE branch, lastrowid is not the row that was updated.
+                rid = db.execute(
                     "SELECT id FROM seg WHERE clip=? AND idx=?",
                     (name, i)).fetchone()["id"]
                 db.execute("DELETE FROM seg_vec WHERE rowid=?", (rid,))

@@ -748,8 +748,8 @@ async def api_transcribe_all():
         tp = pipeline.transcript_path(f)
         if os.path.exists(tp):
             continue
-        worker.submit(f)
-        queued.append(f)
+        if worker.submit(f):
+            queued.append(f)
     device.event("log", text=f"queued {len(queued)} clip(s) for transcription")
     return {"queued": len(queued)}
 
@@ -933,7 +933,11 @@ async def api_transcribe(name: str, force: bool = False):
             raise
         except Exception:
             pass
-    worker.submit(name)
+    if not worker.submit(name):
+        # Not an error: rotation, a conversation request and a bulk action can
+        # all name the same clip, and running it twice costs a full ASR and
+        # diarization pass and can overwrite an edit with a re-run.
+        return {"queued": name, "already_queued": True}
     return {"queued": name}
 
 
