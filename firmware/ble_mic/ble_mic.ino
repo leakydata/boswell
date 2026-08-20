@@ -59,6 +59,7 @@
 #define INFO_CAP_OTA       0x0008
 #define INFO_CAP_TAP_DIAG  0x0010
 #define INFO_CAP_OVERRUNS  0x0020
+#define INFO_CAP_STATE     0x0040
 #include "imu_tap.h"
 #include "qspi_store.h"
 
@@ -387,6 +388,14 @@ static void publishInfo() {
   info[26] = accelPeakByte();
 
   info[5] |= (uint8_t)(backlogMode << 1);   // bit1 carries the backlog mode
+  /* bit2 is whether capture is actually running.
+   *
+   * This firmware did not publish it, and the host treats a missing bit as
+   * "the device is not capturing" and says so again. Its stream command
+   * starts from now by dropping whatever the ring already holds, so the host
+   * was discarding up to a second of buffered audio every second, forever,
+   * while both sides believed they were recording. */
+  info[5] |= (uint8_t)(streaming ? 4 : 0);
   info[27] = qspiOk ? 1 : 0;
   uint32_t pend = qspiOk ? qspiPendingBytes() : 0;
   info[28] = (uint8_t)(pend & 0xFF);
@@ -402,7 +411,8 @@ static void publishInfo() {
   info[18] = INFO_VERSION;
   info[19] = INFO_FW_ARDUINO;
   {
-    uint16_t caps = INFO_CAP_TAP_DIAG | INFO_CAP_FLASH | INFO_CAP_OVERRUNS;
+    uint16_t caps = INFO_CAP_TAP_DIAG | INFO_CAP_FLASH | INFO_CAP_OVERRUNS |
+                    INFO_CAP_STATE;
     info[20] = (uint8_t)(caps & 0xFF);
     info[21] = (uint8_t)(caps >> 8);
   }

@@ -33,9 +33,16 @@ CTRL_IMU_GYRO = 0x11
 HEADER = 10
 FLAG_GYRO = 0x01
 
-# +/-2 g over a signed 16-bit range, and 2000 dps for the gyroscope.
+# +/-2 g over a signed 16-bit range.
 ACCEL_G = 2.0 / 32768.0
-GYRO_DPS = 2000.0 / 32768.0
+
+# Gyroscope full scale is read from the frame rather than assumed. The device
+# configures 500 dps; this file used to divide by 2000, so every recorded
+# rotation was out by a factor of four. Neither side was wrong on its own --
+# they simply disagreed, which is why the range now travels with the data.
+GYRO_FS_DPS = {0: 250.0, 1: 500.0, 2: 1000.0, 3: 2000.0}
+GYRO_FS_SHIFT = 1
+GYRO_FS_MASK = 0x06
 
 
 async def main():
@@ -58,6 +65,7 @@ async def main():
     rows = []
     lost = 0
     last_seq = None
+    nonlocal_fs = [500.0]      # filled in from the first frame's flags
 
     def on_frame(_h, data):
         nonlocal lost, last_seq
@@ -72,6 +80,8 @@ async def main():
         last_seq = seq
 
         stride = 12 if (flags & FLAG_GYRO) else 6
+        nonlocal_fs[0] = GYRO_FS_DPS.get((flags & GYRO_FS_MASK) >> GYRO_FS_SHIFT,
+                                         500.0)
         vals = b[HEADER:HEADER + n * stride]
         per = stride // 2
         got = struct.unpack(f"<{n * per}h", vals)
@@ -113,7 +123,8 @@ async def main():
                 f.write(f"{t:.1f}," + ",".join(str(x) for x in v) + "\n")
             else:
                 acc = [x * ACCEL_G for x in v[:3]]
-                gyr = [x * GYRO_DPS for x in v[3:]]
+                gyro_scale = nonlocal_fs[0] / 32768.0
+                gyr = [x * gyro_scale for x in v[3:]]
                 f.write(f"{t:.1f}," + ",".join(f"{x:.4f}" for x in acc + gyr) + "\n")
 
     span = (rows[-1][0] - rows[0][0]) / 1000.0

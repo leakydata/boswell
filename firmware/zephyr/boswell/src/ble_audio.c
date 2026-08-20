@@ -445,7 +445,7 @@ void ble_audio_publish_info(void)
     info_buf[18] = INFO_VERSION;
     info_buf[19] = INFO_FW_ZEPHYR;
     uint16_t caps = INFO_CAP_STEPS | INFO_CAP_IMU_RAW | INFO_CAP_FLASH |
-                    INFO_CAP_OTA;
+                    INFO_CAP_OTA | INFO_CAP_STATE;
     info_buf[20] = (uint8_t)(caps & 0xFF);
     info_buf[21] = (uint8_t)(caps >> 8);
     info_buf[32] = g_state.led_level;

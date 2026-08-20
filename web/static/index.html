@@ -1253,7 +1253,7 @@ async function loadSearch(el){
     const b = document.createElement("button");
     b.className = "clip" + (selected.has(c.name) ? " sel" : "");
     const hits = c.hits.slice(0, 3).map(h =>
-      `<div class="h"><b>${Math.round(h.start)}s</b><span>${h.snippet}</span></div>`).join("");
+      `<div class="h"><b>${Math.round(h.start)}s</b><span>${escSnippet(h.snippet)}</span></div>`).join("");
     const more = c.hits.length > 3 ? `<div class="h"><b></b><span style="color:var(--faint)">
       +${c.hits.length - 3} more</span></div>` : "";
     b.innerHTML = (selectMode
@@ -1273,7 +1273,17 @@ async function loadSearch(el){
   }
 }
 
-function esc(t){ return (t||"").replace(/[&<>]/g, ch => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[ch])); }
+function esc(t){ return (t||"").replace(/[&<>"']/g, ch =>
+  ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[ch])); }
+
+// A search snippet is transcript text with SQLite's <mark> tags around the
+// hits. Everything else in it came off a microphone and is not ours to trust,
+// so escape the whole string first and then put back only the two tags we
+// asked the database for. Escaping first is what makes this safe: any real
+// markup in the transcript is already inert by the time the marks go back.
+function escSnippet(t){
+  return esc(t).replace(/&lt;mark&gt;/g, "<mark>").replace(/&lt;\/mark&gt;/g, "</mark>");
+}
 function highlight(text){
   const t = esc(text);
   if (!query) return t;
@@ -1946,8 +1956,8 @@ async function renderTranscript(name){
                            .reduce((a, x) => a + (x.end - x.start), 0);
     chip.innerHTML = `<i style="display:inline-block;width:9px;height:9px;border-radius:2px;
       background:${col};margin-right:6px;vertical-align:-1px"></i>` +
-      (known ? `${named[id].name} · ${secs.toFixed(0)}s · ${score.toFixed(2)}`
-             : `${id} · ${secs.toFixed(0)}s · tap to name`);
+      (known ? `${esc(named[id].name)} · ${secs.toFixed(0)}s · ${score.toFixed(2)}`
+             : `${esc(id)} · ${secs.toFixed(0)}s · tap to name`);
     chip.onclick = () => nameSpeaker(name, id, known || "");
     $("dSpeakers").appendChild(chip);
   }
@@ -1959,7 +1969,7 @@ async function renderTranscript(name){
     d.className = "seg";
     const col = s.speaker ? colorOf(spkColors[s.speaker] || "var(--accent)") : "";
     const who = s.speaker
-      ? `<span class="who" style="border-color:${col};color:${col};background:transparent">${lineLabel(s)}</span> `
+      ? `<span class="who" style="border-color:${col};color:${col};background:transparent">${esc(lineLabel(s))}</span> `
       : "";
     if (s.edited) d.classList.add("wasedited");
     d.innerHTML = `<button class="t" data-at="${s.start}" ` +

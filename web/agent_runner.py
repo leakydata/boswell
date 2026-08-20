@@ -20,6 +20,28 @@ import requests
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.abspath(os.path.join(HERE, "..", "data"))
 STORE = os.path.join(DATA, "agent")
+
+# The only files the agent store contains. Every entry point resolves a kind
+# through this: `kind` arrives from a query string, which may contain slashes,
+# and it used to be joined straight into a path and passed to os.remove().
+KINDS = ("tasks", "events", "notes", "facts")
+
+
+def _kinds(kind):
+    """Validate a caller-supplied kind, or return all of them."""
+    if kind is None:
+        return list(KINDS)
+    if kind not in KINDS:
+        raise ValueError(f"unknown agent kind: {kind!r}")
+    return [kind]
+
+
+def _store_path(kind):
+    """Path for one kind, proven to sit directly in the agent store."""
+    p = os.path.abspath(os.path.join(STORE, f"{kind}.jsonl"))
+    if os.path.dirname(p) != os.path.abspath(STORE):
+        raise ValueError(f"path escapes the agent store: {kind!r}")
+    return p
 OLLAMA = "http://localhost:11434/api/chat"
 
 # gpt-oss:20b is ~13 GB and fits beside Whisper's ~9 GB on a 24 GB card.
@@ -299,10 +321,10 @@ def delete_item(kind, item_id):
 
 
 def clear_items(kind=None):
-    kinds = [kind] if kind else ["tasks", "events", "notes", "facts"]
+    kinds = _kinds(kind)
     n = 0
     for k in kinds:
-        p = os.path.join(STORE, f"{k}.jsonl")
+        p = _store_path(k)
         if os.path.exists(p):
             n += sum(1 for line in open(p) if line.strip())
             os.remove(p)
@@ -311,12 +333,12 @@ def clear_items(kind=None):
 
 def load_items(kind=None, limit=200):
     """Everything the agent has recorded, newest first."""
-    kinds = [kind] if kind else ["tasks", "events", "notes", "facts"]
+    kinds = _kinds(kind)
     for k in kinds:
         _backfill_ids(k)
     out = []
     for k in kinds:
-        p = os.path.join(STORE, f"{k}.jsonl")
+        p = _store_path(k)
         if not os.path.exists(p):
             continue
         for line in open(p):

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Everything that can be checked without the board.
 set -u
+set -o pipefail   # else 'pytest | tail' reports tail's status and hides failures
 cd "$(dirname "$0")"
 fail=0
 

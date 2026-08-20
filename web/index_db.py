@@ -193,10 +193,23 @@ def list_clips(limit=1000):
              "preview": r["preview"] or ""} for r in rows]
 
 
+def fts_query(query):
+    """Turn what somebody typed into an FTS5 MATCH expression.
+
+    Each word becomes a quoted phrase so that FTS operators typed by accident
+    are searched for rather than executed. The quotes themselves have to be
+    doubled: without that, searching for a word containing an apostrophe or a
+    quotation mark -- which transcripts of speech are full of -- ended the
+    phrase early and raised sqlite3.OperationalError as a 500.
+    """
+    return " ".join('"' + w.replace('"', '""') + '"'
+                    for w in query.split() if w)
+
+
 def search(query, limit=200):
     """Full text over every segment, not just the preview."""
     c = _conn()
-    q = " ".join(f'"{w}"' for w in query.split() if w)
+    q = fts_query(query)
     if not q:
         return []
     rows = c.execute("""

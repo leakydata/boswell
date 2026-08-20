@@ -107,6 +107,7 @@
 #define INFO_CAP_OTA       0x0008   /* CTRL_DFU accepts the Bluetooth variant */
 #define INFO_CAP_TAP_DIAG  0x0010   /* bytes 13-26 are tap diagnostics */
 #define INFO_CAP_OVERRUNS  0x0020   /* byte 38 is meaningful */
+#define INFO_CAP_STATE     0x0040   /* byte 5 bit 2 is the real capture state */
 
 /* Control opcodes, unchanged from the Arduino build. */
 enum {

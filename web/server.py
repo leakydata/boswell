@@ -70,6 +70,87 @@ TIMES = os.path.join(DATA, "times")
 SEG_SECONDS = 30.0          # write a clip this long, then hand it to the pipeline
 
 
+def parse_info(info):
+    """Decode the 40-byte info characteristic into a state dictionary.
+
+    Module level and free of any device, so both firmware layouts can be fed
+    through the real parser in a test. The two builds disagree about what
+    bytes 13-26 mean and about which optional fields exist at all, and every
+    bug this has produced was a host reading one layout as the other.
+    """
+    out = {}
+
+    # Capabilities first.
+    #
+    # These say which optional fields this firmware actually fills in, and
+    # they used to be parsed last -- so every field that depends on them was
+    # decoded using the capabilities from the *previous* read. On the first
+    # read after connecting that meant the defaults; across a firmware change
+    # it meant the other build's layout.
+    caps, fw, version = 0, None, None
+    if len(info) >= 22:
+        version = info[18]
+        fw = {1: "arduino", 2: "zephyr"}.get(info[19])
+        caps = info[20] | (info[21] << 8)
+    has_steps = bool(caps & 0x0001)
+    has_overruns = bool(caps & 0x0020)
+    has_state = bool(caps & 0x0040)
+    out["info_version"] = version
+    out["firmware"] = fw
+    out["caps"] = caps
+    out["has_steps"] = has_steps
+    out["has_overruns"] = has_overruns
+
+    if len(info) >= 6:
+        out["rate"] = 16000 if info[1] else 8000
+        # What the device is actually doing, as opposed to what this process
+        # last asked for. They drift apart: the device boots with capture off
+        # after a firmware update, and a host that only remembers having armed
+        # it once will sit there believing it is recording while nothing is.
+        #
+        # Only where the firmware says the bit means something. A build that
+        # never sets it reads as "not capturing" forever, and the caller then
+        # re-sent the stream command every second -- which on the Arduino
+        # build discards the microphone ring, so the fix for one silent
+        # failure was causing a louder one.
+        out["device_streaming"] = bool(info[5] & 4) if has_state else None
+    if len(info) >= 8:
+        out["imu"] = info[6] != 0
+    if len(info) >= 18:
+        # Steps and motion from the IMU's own embedded functions. On the
+        # Arduino build the same bytes are tap diagnostics.
+        if has_steps:
+            out["steps"] = (info[13] | (info[14] << 8)
+                            | (info[15] << 16) | (info[16] << 24))
+            mflags = info[17]
+            out["tilt"] = bool(mflags & 1)
+            out["moving"] = bool(mflags & 2)
+            out["tap_enabled"] = bool(mflags & 4)
+        else:
+            out["tilt"] = out["moving"] = out["tap_enabled"] = None
+    if len(info) >= 32:
+        pend = info[28] | (info[29] << 8) | (info[30] << 16)
+        out["backlog_bytes"] = pend
+        out["backlog_seconds"] = round(pend / 4500.0, 1)
+        out["qspi_mb"] = round(info[31] * 65536 / 1048576)
+    if len(info) >= 34:
+        out["led_level"] = info[32]
+        out["led_mode"] = info[33]
+    if len(info) >= 38:
+        out["battery_mv"] = info[34] | (info[35] << 8)
+        out["battery_pct"] = info[36]
+        flags = info[37]
+        out["charging"] = bool(flags & 1)
+        out["fast_charge"] = bool(flags & 2)
+        out["mic_running"] = bool(flags & 4)
+    if len(info) >= 39:
+        # Samples the microphone produced with nowhere to put them. Any value
+        # above zero is audible as a click. Only meaningful on a firmware that
+        # says it keeps the counter.
+        out["ring_overruns"] = info[38] if has_overruns else None
+    return out
+
+
 class Device:
     """Owns the BLE connection and publishes state to any listening clients."""
 
@@ -255,7 +336,11 @@ class Device:
         self.state["frames"] += 1
 
         # A cheap level meter for the UI; full stats come from the clip.
-        peak = int(np.abs(pcm).max())
+        #
+        # Widen before abs(): in int16, abs(-32768) is -32768, so a full-scale
+        # negative sample reports a negative peak and the meter reads empty on
+        # the loudest audio the device can produce.
+        peak = int(np.abs(pcm.astype(np.int32)).max())
         self.state["peak"] = peak
         self.state["level"] = round(min(1.0, peak / 32767 * 3), 3)
 
@@ -370,65 +455,12 @@ class Device:
 
     async def _read_info(self, c):
         info = await c.read_gatt_char(INFO_UUID)
-        if len(info) >= 6:
-            self.state["rate"] = 16000 if info[1] else 8000
-            # What the device is actually doing, as opposed to what this
-            # process last asked for. They drift apart: the device boots with
-            # capture off after a firmware update, and a host that only
-            # remembers having armed it once will sit there believing it is
-            # recording while nothing is.
-            running = bool(info[5] & 4)
-            self.state["device_streaming"] = running
-            if self.state.get("armed") and not running:
-                self._rearm_needed = True
-        if len(info) >= 8:
-            self.state["imu"] = info[6] != 0
-        if len(info) >= 18:
-            # Steps and motion from the IMU's own embedded functions. The
-            # firmware reports them; nothing was reading them.
-            # Only where the firmware says these bytes are steps. On the
-            # Arduino build the same bytes are tap diagnostics.
-            if self.state.get("has_steps"):
-                self.state["steps"] = (info[13] | (info[14] << 8)
-                                       | (info[15] << 16) | (info[16] << 24))
-            mflags = info[17]
-            self.state["tilt"] = bool(mflags & 1)
-            self.state["moving"] = bool(mflags & 2)
-            self.state["tap_enabled"] = bool(mflags & 4)
-        if len(info) >= 34:
-            self.state["led_level"] = info[32]
-            self.state["led_mode"] = info[33]
-        if len(info) >= 38:
-            mv = info[34] | (info[35] << 8)
-            self.state["battery_mv"] = mv
-            self.state["battery_pct"] = info[36]
-            flags = info[37]
-            self.state["charging"] = bool(flags & 1)
-            self.state["fast_charge"] = bool(flags & 2)
-            self.state["mic_running"] = bool(flags & 4)
-        if len(info) >= 22:
-            # What is this firmware, and which optional fields did it fill in?
-            # Without this the host reads byte 13 as a step count on one
-            # firmware and as a tap counter on the other, and reports byte 38
-            # as zero overruns on a firmware that never writes it -- a
-            # confident number for something nobody measured.
-            self.state["info_version"] = info[18]
-            self.state["firmware"] = {1: "arduino", 2: "zephyr"}.get(info[19])
-            caps = info[20] | (info[21] << 8)
-            self.state["caps"] = caps
-            self.state["has_steps"] = bool(caps & 0x0001)
-            self.state["has_overruns"] = bool(caps & 0x0020)
-        if len(info) >= 39:
-            # Samples the microphone produced with nowhere to put them. Any
-            # value above zero is audible as a click. Only meaningful on a
-            # firmware that says it keeps the counter.
-            self.state["ring_overruns"] = (
-                info[38] if self.state.get("has_overruns") else None)
-        if len(info) >= 32:
-            pend = info[28] | (info[29] << 8) | (info[30] << 16)
-            self.state["backlog_bytes"] = pend
-            self.state["backlog_seconds"] = round(pend / 4500.0, 1)
-            self.state["qspi_mb"] = round(info[31] * 65536 / 1048576)
+        parsed = parse_info(info)
+        self.state.update(parsed)
+        # Say it again rather than assume it landed, but only when the device
+        # publishes a capture state to disagree with.
+        if parsed["device_streaming"] is False and self.state.get("armed"):
+            self._rearm_needed = True
 
     async def _ctrl(self, op: int, arg: int):
         """Write to the device control characteristic over whichever link we
@@ -577,8 +609,19 @@ app = FastAPI(lifespan=lifespan)
 # Set BOSWELL_TOKEN before exposing this anywhere else: every endpoint below
 # can arm the microphone or hand over recordings.
 TOKEN = os.environ.get("BOSWELL_TOKEN", "").strip()
-_BIND = os.environ.get("BOSWELL_HOST", "0.0.0.0")
-if not TOKEN and _BIND not in ("127.0.0.1", "localhost", "::1"):
+# Loopback by default. This serves recordings of whoever happens to be in the
+# room and can start the microphone remotely, so reaching it from another
+# machine should be a decision somebody made rather than the default.
+_BIND = os.environ.get("BOSWELL_HOST", "127.0.0.1")
+_LOOPBACK = ("127.0.0.1", "localhost", "::1")
+if not TOKEN and _BIND not in _LOOPBACK and \
+        os.environ.get("BOSWELL_ALLOW_INSECURE_LAN") != "1":
+    raise SystemExit(
+        f"refusing to listen on {_BIND} with no BOSWELL_TOKEN set: anyone who "
+        "can reach this machine could start the microphone and read every "
+        "recording. Set BOSWELL_TOKEN, or BOSWELL_ALLOW_INSECURE_LAN=1 to "
+        "accept that.")
+if not TOKEN and _BIND not in _LOOPBACK:
     # Every endpoint here can arm the microphone or hand over recordings. The
     # README says so; the process should too, at the moment it happens, since
     # that is when somebody is in a position to do something about it.
@@ -1055,16 +1098,24 @@ async def api_conversation(body: dict):
             "clip_speakers": clip_speakers, "not_transcribed": missing}
 
 
-@app.delete("/api/clip/{name}")
-async def api_delete(name: str):
-    if "/" in name or not name.endswith(".wav"):
-        raise HTTPException(400, "bad name")
-    path = os.path.join(DATA, name)
-    if not os.path.exists(path):
-        raise HTTPException(404, "no such clip")
+def derived_paths(name):
+    """Every file that exists only because this clip does.
+
+    One list, because there are two delete endpoints and they had drifted:
+    both removed the audio, transcript and waveform, and neither removed the
+    device-time sidecar. An orphaned sidecar is worse than a missing one --
+    filenames carry a timestamp to the second, so a later recording can be
+    given the wrong clip's authoritative timing.
+    """
+    return (pipeline.transcript_path(name),
+            os.path.join(ENVELOPES, name + ".json"),
+            os.path.join(TIMES, name + ".json"))
+
+
+def delete_clip_files(name):
+    """Remove a clip and its derived files. Returns what was actually there."""
     removed = []
-    for f in (path, pipeline.transcript_path(name),
-              os.path.join(ENVELOPES, name + ".json")):
+    for f in (os.path.join(DATA, name),) + derived_paths(name):
         if os.path.exists(f):
             os.remove(f)
             removed.append(os.path.basename(f))
@@ -1074,6 +1125,17 @@ async def api_delete(name: str):
         semantic.remove_clip(name)
     except Exception:
         pass
+    return removed
+
+
+@app.delete("/api/clip/{name}")
+async def api_delete(name: str):
+    if "/" in name or not name.endswith(".wav"):
+        raise HTTPException(400, "bad name")
+    path = os.path.join(DATA, name)
+    if not os.path.exists(path):
+        raise HTTPException(404, "no such clip")
+    removed = delete_clip_files(name)
     device.event("log", text=f"deleted {name}")
     return {"deleted": name, "files": removed}
 
@@ -1096,16 +1158,7 @@ async def api_delete_many(body: dict):
         if not os.path.exists(path):
             missing.append(name)
             continue
-        for f in (path, pipeline.transcript_path(name),
-                  os.path.join(ENVELOPES, name + ".json")):
-            if os.path.exists(f):
-                os.remove(f)
-        index_db.remove_clip(name)
-        try:
-            import semantic
-            semantic.remove_clip(name)
-        except Exception:
-            pass
+        delete_clip_files(name)
         removed.append(name)
     device.event("log", text=f"deleted {len(removed)} recording(s)")
     return {"deleted": len(removed), "missing": len(missing)}
@@ -1320,12 +1373,15 @@ async def api_agent_review(body: dict):
 
 @app.get("/api/agent/items")
 async def api_agent_items(kind: str | None = None, limit: int = 200):
-    return agent_runner.load_items(kind, limit)
+    try:
+        return agent_runner.load_items(kind, limit)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
 
 @app.delete("/api/agent/item/{kind}/{item_id}")
 async def api_delete_item(kind: str, item_id: str):
-    if kind not in ("tasks", "events", "notes", "facts"):
+    if kind not in agent_runner.KINDS:
         raise HTTPException(400, "unknown kind")
     if not agent_runner.delete_item(kind, item_id):
         raise HTTPException(404, "no such item")
@@ -1334,7 +1390,10 @@ async def api_delete_item(kind: str, item_id: str):
 
 @app.delete("/api/agent/items")
 async def api_clear_items(kind: str | None = None):
-    n = agent_runner.clear_items(kind)
+    try:
+        n = agent_runner.clear_items(kind)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     device.event("log", text=f"cleared {n} agent item(s)")
     return {"cleared": n}
 
