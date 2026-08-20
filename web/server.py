@@ -111,6 +111,9 @@ def parse_info(info):
     has_steps = bool(caps & 0x0001)
     has_overruns = bool(caps & 0x0020)
     has_state = bool(caps & 0x0040)
+    has_bootid = bool(caps & 0x0080)
+    out["boot_id"] = (info[22] | (info[23] << 8)) if (
+        has_bootid and len(info) >= 24) else None
     out["info_version"] = version
     out["firmware"] = fw
     out["caps"] = caps
@@ -577,6 +580,25 @@ class Device:
     async def _read_info(self, c):
         info = await c.read_gatt_char(INFO_UUID)
         parsed = parse_info(info)
+
+        # A new boot id means the device clock restarted at zero.
+        #
+        # Frame timestamps are milliseconds since the device booted, and this
+        # service maps them to wall-clock time through an anchor captured when
+        # it first saw one. After a reboot that anchor describes a clock that
+        # no longer exists, so fresh audio gets mapped to a moment well in the
+        # past -- and clip ordering, the thing those timestamps exist for,
+        # goes quietly wrong. The device rebooted several times during
+        # development tonight and nothing noticed.
+        new_id = parsed.get("boot_id")
+        old_id = self.state.get("boot_id")
+        if new_id is not None and old_id is not None and new_id != old_id:
+            self.event("log", text="device rebooted; re-anchoring its clock")
+            self._clock_host = None
+            self._clock_dev = 0
+            self._clip_tms_first = self._clip_tms_last = None
+            self._recovered_tms = None
+
         self.state.update(parsed)
         # Say it again rather than assume it landed, but only when the device
         # publishes a capture state to disagree with.

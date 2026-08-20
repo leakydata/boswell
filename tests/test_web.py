@@ -314,3 +314,37 @@ class TestClipNameValidation:
     def test_transcript_path_still_works_for_real_names(self):
         import pipeline
         assert pipeline.transcript_path("clip_1.wav").endswith("clip_1.json")
+
+
+class TestBootId:
+    """Frame timestamps restart at zero on reboot; the host must notice."""
+
+    CAP_BOOTID = 0x0080
+
+    def _frame(self, boot_id, with_cap=True):
+        info = bytearray(40)
+        info[18], info[19] = 1, 2
+        caps = self.CAP_BOOTID if with_cap else 0
+        info[20], info[21] = caps & 0xFF, caps >> 8
+        info[22], info[23] = boot_id & 0xFF, boot_id >> 8
+        return info
+
+    def test_boot_id_is_read(self):
+        from server import parse_info
+        assert parse_info(self._frame(49246))["boot_id"] == 49246
+
+    def test_absent_capability_reports_none(self):
+        """Firmware that does not publish it must not look like boot id 0."""
+        from server import parse_info
+        assert parse_info(self._frame(1234, with_cap=False))["boot_id"] is None
+
+    def test_a_reboot_changes_it(self):
+        """The two values observed on real hardware across a reboot."""
+        from server import parse_info
+        before = parse_info(self._frame(49246))["boot_id"]
+        after = parse_info(self._frame(44996))["boot_id"]
+        assert before != after
+
+    def test_short_frame_has_no_boot_id(self):
+        from server import parse_info
+        assert parse_info(bytearray(22))["boot_id"] is None

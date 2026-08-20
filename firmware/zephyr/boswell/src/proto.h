@@ -88,7 +88,7 @@
  *   18    info layout version           <- read this first
  *   19    firmware identity
  *   20-21 capability bits
- *   22-23 reserved
+ *   22-23 boot id, random per boot   (INFO_CAP_BOOTID)
  *   24-26 accelerometer sample          (Arduino only)
  *   27-31 QSPI ready, pending, capacity
  *   32-33 LED level and mode
@@ -108,6 +108,7 @@
 #define INFO_CAP_TAP_DIAG  0x0010   /* bytes 13-26 are tap diagnostics */
 #define INFO_CAP_OVERRUNS  0x0020   /* byte 38 is meaningful */
 #define INFO_CAP_STATE     0x0040   /* byte 5 bit 2 is the real capture state */
+#define INFO_CAP_BOOTID    0x0080   /* bytes 22-23 identify this boot */
 
 /* Control opcodes, unchanged from the Arduino build. */
 enum {

@@ -14,6 +14,7 @@
 #include "qspi_store.h"
 
 #include <zephyr/bluetooth/bluetooth.h>
+#include <zephyr/random/random.h>
 #include <zephyr/bluetooth/conn.h>
 #include <zephyr/bluetooth/gatt.h>
 #include <zephyr/bluetooth/uuid.h>
@@ -43,6 +44,8 @@ static bool advertising;
  */
 #define SUBSCRIBE_GRACE_MS 30000
 static uint32_t idle_arms, idle_fires, idle_drops;
+/* Identifies this boot, so the host can tell the device clock restarted. */
+static uint16_t boot_id;
 static void idle_link_fn(struct k_work *work);
 static K_WORK_DELAYABLE_DEFINE(idle_link, idle_link_fn);
 static bool notify_enabled;
@@ -519,9 +522,23 @@ void ble_audio_publish_info(void)
     info_buf[18] = INFO_VERSION;
     info_buf[19] = INFO_FW_ZEPHYR;
     uint16_t caps = INFO_CAP_STEPS | INFO_CAP_IMU_RAW | INFO_CAP_FLASH |
-                    INFO_CAP_OTA | INFO_CAP_STATE;
+                    INFO_CAP_OTA | INFO_CAP_STATE | INFO_CAP_BOOTID;
     info_buf[20] = (uint8_t)(caps & 0xFF);
     info_buf[21] = (uint8_t)(caps >> 8);
+    /* Which boot this is.
+     *
+     * Frame timestamps come from k_uptime_get_32(), which restarts at zero on
+     * every reboot. The host maps those to wall-clock time using an anchor it
+     * captured earlier, so after a reboot it maps fresh audio to a moment in
+     * the past -- and clip ordering, which is the whole reason the device
+     * publishes timestamps at all, silently goes wrong. There is nothing in
+     * the frame that says "this is a different clock now". This is that.
+     *
+     * Random rather than a counter: a counter needs somewhere durable to live
+     * and would still repeat after a factory erase, and the host only needs
+     * to know the value changed, not what it counts. */
+    info_buf[22] = (uint8_t)(boot_id & 0xFF);
+    info_buf[23] = (uint8_t)(boot_id >> 8);
     info_buf[32] = g_state.led_level;
     info_buf[33] = g_state.led_mode;
     uint16_t mv = battery_mv();
@@ -536,6 +553,13 @@ void ble_audio_publish_info(void)
 
 int ble_audio_init(ctrl_handler_t on_ctrl)
 {
+    /* A value that will not repeat across a reboot. sys_rand32_get() is
+     * seeded by the SoC's entropy source; zero is excluded so the host can
+     * treat it as "not published". */
+    do {
+        boot_id = (uint16_t)sys_rand32_get();
+    } while (boot_id == 0);
+
     ctrl_cb = on_ctrl;
 
     int err = bt_enable(NULL);

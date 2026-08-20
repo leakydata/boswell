@@ -60,6 +60,7 @@
 #define INFO_CAP_TAP_DIAG  0x0010
 #define INFO_CAP_OVERRUNS  0x0020
 #define INFO_CAP_STATE     0x0040
+#define INFO_CAP_BOOTID    0x0080
 #include "imu_tap.h"
 #include "qspi_store.h"
 
@@ -116,6 +117,7 @@ static volatile uint32_t ringHead = 0;     // written by the PDM callback
 static volatile uint32_t ringTail = 0;     // read by loop()
 static volatile uint32_t ringOverruns = 0;
 static uint32_t micFaults = 0;     // PDM restarts that did not take
+static uint16_t bootId = 0;        // random per boot; identifies this clock
 
 static int16_t  pdmChunk[512];
 static int16_t  frameSamples[MAX_SAMPLES];
@@ -390,8 +392,13 @@ static void publishInfo() {
    * so it is gone rather than relocated; 22-23 are reserved. */
   int16_t az = 0;
   imuReadback(NULL, &az);
-  info[22] = 0;
-  info[23] = 0;
+  /* Which boot this is. Frame timestamps are millis() since power-on, and a
+   * host that anchors them to wall-clock time has no other way to notice the
+   * clock restarted -- it would map fresh audio to a moment in the past. This
+   * firmware had a particular need for it: until tonight it reset every
+   * thirty seconds. */
+  info[22] = (uint8_t)(bootId & 0xFF);
+  info[23] = (uint8_t)(bootId >> 8);
   info[24] = (uint8_t)(az & 0xFF);
   info[25] = (uint8_t)((az >> 8) & 0xFF);
   info[26] = accelPeakByte();
@@ -421,7 +428,7 @@ static void publishInfo() {
   info[19] = INFO_FW_ARDUINO;
   {
     uint16_t caps = INFO_CAP_TAP_DIAG | INFO_CAP_FLASH | INFO_CAP_OVERRUNS |
-                    INFO_CAP_STATE;
+                    INFO_CAP_STATE | INFO_CAP_BOOTID;
     info[20] = (uint8_t)(caps & 0xFF);
     info[21] = (uint8_t)(caps >> 8);
   }
@@ -712,6 +719,12 @@ static void watchdogBegin() {
 static inline void watchdogFeed() { NRF_WDT->RR[0] = WDT_RR_RR_Reload; }
 
 void setup() {
+  /* Seeded from the SoC's random peripheral rather than millis(), which is
+     zero here on every boot and would give the same id every time. */
+  do {
+    bootId = (uint16_t)(NRF_RNG->VALUE ^ (analogRead(A0) << 8) ^ micros());
+  } while (bootId == 0);
+
   Serial.begin(115200);
 
   pinMode(LED_RED, OUTPUT);
