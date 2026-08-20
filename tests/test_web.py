@@ -241,3 +241,46 @@ class TestTranscriptionQueue:
         w = self._worker()
         w.busy = "a.wav"
         assert w.submit("a.wav") is False
+
+
+class TestClipWriting:
+    """Two clips in one second used to overwrite each other."""
+
+    def _device(self, tmp_path, monkeypatch):
+        import numpy as np
+        import server
+        monkeypatch.setattr(server, "DATA", str(tmp_path))
+        d = server.Device.__new__(server.Device)
+        return d, server, np
+
+    def test_same_second_does_not_overwrite(self, tmp_path, monkeypatch):
+        d, server, np = self._device(tmp_path, monkeypatch)
+        a = np.zeros(1600, dtype=np.int16)
+        p1 = d._save_wav("clip", 1000, a, 16000)
+        p2 = d._save_wav("clip", 1000, a, 16000)
+        assert p1 != p2
+        assert os.path.exists(p1) and os.path.exists(p2)
+
+    def test_no_partial_file_is_left_behind(self, tmp_path, monkeypatch):
+        d, server, np = self._device(tmp_path, monkeypatch)
+
+        def boom(*a, **k):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(server.sf, "write", boom)
+        with pytest.raises(OSError):
+            d._save_wav("clip", 1000, np.zeros(10, dtype=np.int16), 16000)
+        assert os.listdir(tmp_path) == []
+
+    def test_audio_survives_a_failed_write(self, tmp_path, monkeypatch):
+        """The buffer used to be emptied before the write, so a failure took
+        the only copy of the audio with it."""
+        d, server, np = self._device(tmp_path, monkeypatch)
+        d._pcm = [np.ones(1600, dtype=np.int16)]
+        d.state = {"rate": 16000}
+
+        monkeypatch.setattr(server.sf, "write",
+                            lambda *a, **k: (_ for _ in ()).throw(OSError("nope")))
+        with pytest.raises(OSError):
+            d.take_clip()
+        assert d._pcm, "audio was discarded before it reached disk"

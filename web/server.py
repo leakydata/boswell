@@ -217,13 +217,51 @@ class Device:
         phone relaying on our behalf. The format is identical either way."""
         self._on_audio(None, data)
 
+    def _save_wav(self, prefix, when, audio, rate):
+        """Write one clip, then hand back its path.
+
+        Three things this has to get right, each of which was wrong:
+
+        A name that cannot collide. Names carried a whole-second timestamp, so
+        two clips finalized in the same second silently overwrote one another.
+
+        A file that is either complete or absent. The WAV went straight to its
+        final name, so an interrupted write left a truncated file that looks
+        like a recording and indexes like one.
+
+        Audio that survives a failed write. take_clip() emptied the buffer
+        before writing, so anything that went wrong during the write took the
+        only copy with it. The caller now clears its buffer only after this
+        returns.
+        """
+        os.makedirs(DATA, exist_ok=True)
+        name = f"{prefix}_{int(when)}"
+        path = os.path.join(DATA, name + ".wav")
+        n = 1
+        while os.path.exists(path):
+            path = os.path.join(DATA, f"{name}-{n}.wav")
+            n += 1
+
+        tmp = path + ".part"
+        try:
+            # format is explicit: soundfile infers it from the extension, and
+            # the temporary name ends in .part.
+            sf.write(tmp, audio, rate, format="WAV", subtype="PCM_16")
+            with open(tmp, "rb") as f:
+                os.fsync(f.fileno())
+            os.replace(tmp, path)
+        except Exception:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            raise
+        return path
+
     def take_recovered(self):
         if not self._recovered:
             return None
         audio = np.concatenate(self._recovered)
-        self._recovered = []
-        self.state["recovered_seconds"] = 0.0
-        os.makedirs(DATA, exist_ok=True)
         # Name it for when it was spoken, not when it reached us. The device
         # clock is converted here rather than on arrival, because the anchor
         # to our clock may only have been established after the first live
@@ -234,10 +272,12 @@ class Device:
         if when is None:
             when = self._recovered_start or time.time()
         when = int(when)
+        path = self._save_wav("recovered", when, audio, self.state["rate"])
+        # Only now is the audio somewhere other than memory.
+        self._recovered = []
+        self.state["recovered_seconds"] = 0.0
         self._recovered_start = None
         self._recovered_tms = None
-        path = os.path.join(DATA, f"recovered_{when}.wav")
-        sf.write(path, audio, self.state["rate"], subtype="PCM_16")
         # Set the file's mtime too, since the UI orders and dates by it.
         #
         # It has to be the END of the audio, not the start. A live clip's
@@ -262,13 +302,25 @@ class Device:
         self.state["clip_seconds"] = round(self.clip_seconds(), 1)
         if self.clip_seconds() < SEG_SECONDS:
             return None
-        path = self.take_clip()
-        if path:
-            name = os.path.basename(path)
-            index_db.upsert_clip(name)
-            self.event("clip", path=name)
-            if auto_transcribe:
-                worker.submit(name)
+        return self.finalize(self.take_clip())
+
+    def finalize(self, path, note=None):
+        """Index a finished clip, announce it, and queue transcription.
+
+        One function for every way a clip can be closed. The WebSocket save
+        command wrote the file and stopped there -- no index row, no clip
+        event, no transcription -- so a manually saved recording was invisible
+        in the interface that had just been asked to save it.
+        """
+        if not path:
+            return None
+        name = os.path.basename(path)
+        index_db.upsert_clip(name)
+        self.event("clip", path=name)
+        if note:
+            self.event("log", text=note)
+        if auto_transcribe:
+            worker.submit(name)
         return path
 
     def maybe_rotate_recovered(self):
@@ -280,14 +332,8 @@ class Device:
         quiet_for = time.time() - self._recovered_at
         if secs < SEG_SECONDS and quiet_for < 3.0:
             return
-        path = self.take_recovered()
-        if path:
-            name = os.path.basename(path)
-            index_db.upsert_clip(name)
-            self.event("clip", path=name)
-            self.event("log", text=f"recovered {secs:.0f}s from device flash")
-            if auto_transcribe:
-                worker.submit(name)
+        self.finalize(self.take_recovered(),
+                      note=f"recovered {secs:.0f}s from device flash")
 
     def _on_audio(self, _sender, data: bytearray):
         if len(data) < HEADER_LEN:
@@ -312,6 +358,12 @@ class Device:
 
         pcm = decode_block(payload, predictor, index, nsamples)
         if flags & 0x08:                     # recovered from device flash
+            if not self._recovered:
+                # When the backlog started arriving. Used only to name a
+                # recovered clip that has no device-clock anchor -- better
+                # than the moment the drain happened to finish, which is what
+                # it used before, because this field was never assigned.
+                self._recovered_start = time.time()
             self._recovered.append(pcm)
             self._recovered_at = time.time()
             # Keep the device's own timestamp and convert it later. A host
@@ -384,10 +436,8 @@ class Device:
         if not self._pcm:
             return None
         audio = np.concatenate(self._pcm)
-        self._pcm = []
-        os.makedirs(DATA, exist_ok=True)
-        path = os.path.join(DATA, f"clip_{int(time.time())}.wav")
-        sf.write(path, audio, self.state["rate"], subtype="PCM_16")
+        path = self._save_wav("clip", time.time(), audio, self.state["rate"])
+        self._pcm = []          # only once the audio is on disk
         self._write_times(path, self._clip_tms_first, self._clip_tms_last,
                           "live", len(audio) / float(self.state["rate"] or 1))
         self._clip_tms_first = self._clip_tms_last = None
@@ -428,6 +478,28 @@ class Device:
             self.state.update(connected=True, error=None, source="ble",
                               frames=0, lost=0)
             await self._read_info(c)
+
+            # Ask for the full sample rate.
+            #
+            # The firmware boots at 8 kHz because that was the safe choice for
+            # a Bluetooth 4.0 host, and nothing ever asked it for anything
+            # else -- so every recording ever made by this device was
+            # telephone quality, which is exactly the band that speech
+            # recognition and speaker separation have the least to work with.
+            #
+            # Measured on the 4.0 dongle after the radio got its own thread:
+            # 8 kHz costs 4.5 KB/s and 16 kHz costs 8.4 KB/s, and both deliver
+            # 100% of the audio live over 25 s. The link has the room.
+            if RATE_16K and self.state.get("rate") != 16000:
+                # Finish anything already buffered at the old rate first.
+                # Samples from two rates concatenated into one file are
+                # written under whichever rate was current at the end, so
+                # half the clip plays at the wrong speed.
+                if self._pcm:
+                    self.finalize(self.take_clip())
+                await self._ctrl(0x02, 1)
+                self.state["rate"] = 16000
+
             await c.start_notify(AUDIO_UUID, self._on_audio)
             await self.set_armed(True)
             self.publish()
@@ -609,6 +681,10 @@ app = FastAPI(lifespan=lifespan)
 # Set BOSWELL_TOKEN before exposing this anywhere else: every endpoint below
 # can arm the microphone or hand over recordings.
 TOKEN = os.environ.get("BOSWELL_TOKEN", "").strip()
+
+# Record at 16 kHz. Set BOSWELL_8K=1 to go back to the firmware default, which
+# roughly halves the radio traffic at the cost of everything above 4 kHz.
+RATE_16K = os.environ.get("BOSWELL_8K", "") != "1"
 # Loopback by default. This serves recordings of whoever happens to be in the
 # room and can start the microphone remotely, so reaching it from another
 # machine should be a decision somebody made rather than the default.
@@ -1620,7 +1696,7 @@ async def ws(sock: WebSocket):
             elif cmd == "backlog_mode":
                 await device.set_backlog_mode(bool(msg.get("live_first")))
             elif cmd == "save":
-                path = device.take_clip()
+                path = device.finalize(device.take_clip())
                 device.event("log", text=f"saved {os.path.basename(path)}" if path
                              else "nothing to save")
     except WebSocketDisconnect:
