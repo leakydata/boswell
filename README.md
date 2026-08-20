@@ -19,6 +19,26 @@ so you don't have to.
 
 ---
 
+## Running it as a service
+
+The capture service is what turns the device's audio into recordings, so if
+it is not running, nothing is recorded no matter how well the device behaves.
+Started by hand it goes with the machine: a reboot here once stopped the
+recording for three hours before anyone noticed.
+
+    mkdir -p ~/.config/systemd/user
+    cp host/boswell.service ~/.config/systemd/user/
+    systemctl --user daemon-reload
+    systemctl --user enable --now boswell
+    sudo loginctl enable-linger $USER     # start without a login
+
+    systemctl --user status boswell
+    journalctl --user -u boswell -f
+
+The unit restarts on failure and starts at boot. The device buffers to its
+own flash meanwhile, and that backlog survives a reset, so an interruption on
+this side costs latency rather than audio.
+
 ## The interface
 
 ![Device tab](docs/ui-device.jpg)

@@ -1,0 +1,39 @@
+# Bring the recorder back after a reboot.
+#
+# The workstation restarted at about 07:00 one morning and nothing noticed
+# for three hours: the capture service had been started by hand, so it went
+# with the machine, and an always-on recorder that stops when the computer
+# reboots is not always-on. The device itself kept its side of the bargain --
+# it buffered to flash and, since the backlog now survives a reset, the audio
+# was still there.
+#
+# Install:
+#   mkdir -p ~/.config/systemd/user
+#   cp host/boswell.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now boswell
+#   sudo loginctl enable-linger $USER     # so it starts without a login
+#
+# Status and logs:
+#   systemctl --user status boswell
+#   journalctl --user -u boswell -f
+
+[Unit]
+Description=Boswell capture and transcription service
+After=network.target bluetooth.target
+Wants=bluetooth.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Documents/electronics/nRF52840
+ExecStart=%h/.local/bin/uv run web/server.py
+Restart=always
+# Long enough that a crash loop backs off rather than hammering the device,
+# short enough that a real restart is not a gap in the recording.
+RestartSec=10
+# The models take a while to load; do not call that a failed start.
+TimeoutStartSec=300
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=default.target
