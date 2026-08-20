@@ -12,9 +12,17 @@ cd "$(dirname "$0")/../firmware/zephyr"
 HEX=/tmp/boswell-zephyr-build/zephyr/zephyr.hex
 [ -f "$HEX" ] || { echo "no hex produced" >&2; exit 1; }
 
-# Newer than the build start, so a stale artifact cannot be flashed silently.
-find "$HEX" -newermt '-5 minutes' -print -quit | grep -q . \
-  || { echo "hex is stale -- build did not regenerate it" >&2; exit 1; }
+# Newer than every source, so a stale artifact cannot be flashed silently.
+#
+# This used to require the hex to be less than five minutes old, which fails
+# on a build that legitimately had nothing to do -- the artifact was correct
+# and the script refused to flash it. Age is not the question; whether it is
+# older than the code it was built from is.
+NEWER=$(find boswell -newer "$HEX" \
+          \( -name '*.c' -o -name '*.h' -o -name '*.conf' -o -name '*.overlay' \
+             -o -name 'CMakeLists.txt' -o -name '*.dts*' \) -print -quit)
+[ -z "$NEWER" ] \
+  || { echo "hex is older than $NEWER -- build did not regenerate it" >&2; exit 1; }
 
 
 # Confirm what is actually running.
@@ -60,8 +68,33 @@ try:
             pass
 except Exception:
     pass   # already in the bootloader, or running the Arduino build
+
+# The Arduino build has no DFU command, so the shell request above does
+# nothing when it is the firmware in place -- and getting back to Zephyr then
+# needed someone physically double-tapping RESET. The Adafruit bootloader also
+# enters DFU on a 1200-baud open-and-close, which is how the Arduino IDE does
+# it, and that works whatever is running.
+try:
+    import serial, time, glob
+    for port in sorted(glob.glob('/dev/ttyACM*')):
+        try:
+            s = serial.Serial(port, 1200)
+            s.dtr = False
+            s.close()
+            time.sleep(2)
+        except Exception:
+            pass
+    time.sleep(3)
+except Exception:
+    pass
 PY
-sleep 5
+# Wait for the bootloader to actually appear rather than guessing at a delay.
+# 2886:0045 is the bootloader; 2886:8045 is the application.
+for _ in $(seq 1 20); do
+  lsusb | grep -q "2886:0045" && break
+  sleep 1
+done
+
 # Serial DFU first, then the UF2 mass-storage drive. The bootloader exposes
 # both, and which one answers is not reliable: serial DFU intermittently
 # reports "not in DFU mode" on a board that is plainly sitting in the

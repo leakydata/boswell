@@ -124,6 +124,27 @@ static bool qspiPush(const uint8_t *data, uint8_t len) {
   return true;
 }
 
+/* Read len bytes from a logical address, splitting the read where the flash
+ * ends.
+ *
+ * The header above is read a byte at a time through modular addressing and so
+ * wraps correctly, but the payload was one readBuffer() at (addr % capacity)
+ * for the full length -- which runs off the end of the device for any record
+ * that straddles address zero. That is one record out of every lap of the
+ * ring, and only ever at the moment the buffer is fullest. The same fault in
+ * the Zephyr store was the other way round: payload wrapped, header did not.
+ */
+static void qspiReadWrapped(uint32_t addr, uint8_t *out, uint32_t len) {
+  addr %= qspiCapacity;
+  uint32_t first = qspiCapacity - addr;
+  if (first >= len) {
+    qspiFlash.readBuffer(addr, out, len);
+  } else {
+    qspiFlash.readBuffer(addr, out, first);
+    qspiFlash.readBuffer(0, out + first, len - first);
+  }
+}
+
 static uint8_t qspiPeekByte(uint32_t addr) {
   uint8_t b = 0;
   qspiFlash.readBuffer(addr % qspiCapacity, &b, 1);
@@ -142,7 +163,7 @@ static uint8_t qspiPop(uint8_t *out, uint8_t maxLen) {
       uint8_t len = qspiPeekByte(qspiRead + 1);
       if (len > 0 && len <= QSPI_MAX_PAYLOAD && len <= maxLen &&
           qspiPending >= (uint32_t)len + 2) {
-        qspiFlash.readBuffer((qspiRead + 2) % qspiCapacity, out, len);
+        qspiReadWrapped(qspiRead + 2, out, len);
         qspiRead = (qspiRead + 2 + len) % qspiCapacity;
         qspiPending -= (len + 2);
         return len;

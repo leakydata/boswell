@@ -559,11 +559,36 @@ static uint16_t buildFrame(const int16_t *samples, int n, uint16_t sq, bool voic
 }
 
 /* Live to the host when there is one, otherwise into flash. */
+static uint32_t notifyDrops = 0;   // frames the radio would not take
+/* Set while a backlog is replaying in strict order: live frames go to flash so
+ * they queue behind it instead of overtaking it on the radio. */
+static bool storeOnly = false;
+
 static void emitFrame(const int16_t *samples, int n, uint16_t sq, bool voiced) {
   frameStampMs = millis();
   uint16_t len = buildFrame(samples, n, sq, voiced);
-  if (connected) audioChar.notify(frameBuf, len);
-  else if (qspiOk) qspiPush(frameBuf, (uint8_t)len);
+
+  /* Connected is not the same as listening, and a queued notification is not
+   * the same as a sent one.
+   *
+   * This used to be "if (connected) notify(), else store". A central that
+   * connects without subscribing to the audio characteristic -- which is every
+   * central, for the moment between GAP connect and the CCC write, and some
+   * for much longer -- had its audio handed to a notify() that could not
+   * deliver it, and the store-and-forward branch was skipped because the link
+   * was technically up. The same happened whenever the notification queue was
+   * momentarily full. Either way the audio was gone and nothing counted it.
+   *
+   * Flash is the fallback for both cases: it exists precisely so that audio
+   * the radio cannot take right now is not audio that is lost. */
+  bool sent = false;
+  if (!storeOnly && connected && audioChar.notifyEnabled()) {
+    sent = audioChar.notify(frameBuf, len);
+  }
+  if (!sent) {
+    notifyDrops++;
+    if (qspiOk) qspiPush(frameBuf, (uint8_t)len);
+  }
 }
 
 /* Push buffered frames out a few at a time so draining never starves the
@@ -619,7 +644,7 @@ static void flushPreRoll() {
 // ---------------------------------------------------------------- setup
 
 /* Two firmware hangs during development left the board dark with no way back
- * except a manual reset. A watchdog turns that into a two-second gap. The
+ * except a manual reset. A watchdog turns that into a thirty-second gap. The
  * timeout is generous so a slow flash erase or a DFU session is never mistaken
  * for a hang; the bootloader feeds it during an update. */
 #define WDT_SECONDS 30
@@ -733,6 +758,21 @@ void setup() {
 // ---------------------------------------------------------------- loop
 
 void loop() {
+  /* Feed the watchdog.
+   *
+   * It was started in setup() and never reloaded once, anywhere -- so the
+   * board reset every thirty seconds, forever, and the only reason that never
+   * looked like a fault is that no test of this firmware had ever run longer
+   * than one watchdog period. Once TASKS_START is written the counter cannot
+   * be stopped by software, so the reload has to happen here.
+   *
+   * At the top of the loop rather than the bottom: several paths below return
+   * early -- no frame ready, silence under the voice gate, nothing to drain --
+   * and a feed at the end would be skipped on exactly the quiet stretches this
+   * device spends most of its time in.
+   */
+  watchdogFeed();
+
   servicePulse();
 
   // Sampling the battery is slow and it moves slowly; once every few seconds
@@ -789,16 +829,19 @@ void loop() {
 
   const bool haveBacklog = connected && qspiOk && (qspiPendingBytes() || drainLen);
 
-  // Mode 0: finish the backlog first, so the host receives the conversation in
-  // order rather than with a hole in the middle. Live audio waits.
-  if (haveBacklog && backlogMode == 0) {
-    // Live audio is deliberately discarded while catching up, so keep the
-    // ring drained rather than letting it overflow. Otherwise the overrun
-    // counter fills with events that are expected and harmless, and the one
-    // number that would reveal real dropped audio becomes meaningless.
-    ringTail = ringHead;
+  /* Mode 0: finish the backlog first, so the host receives the conversation in
+   * order rather than with a hole in the middle.
+   *
+   * "Live audio waits" is what this was supposed to do and was not what it
+   * did: it set ringTail = ringHead and returned, which throws the current
+   * conversation away to preserve the ordering of an older one. The comment
+   * inside even said so. Waiting means going to the back of the queue, not
+   * being deleted -- Zephyr queues live frames behind the backlog and this
+   * now does the same. Capture continues below; storeOnly routes those frames
+   * to flash so they come out after the replay rather than in front of it. */
+  storeOnly = (haveBacklog && backlogMode == 0);
+  if (storeOnly) {
     drainBacklog();
-    return;
   }
 
   const int outSamples = use16k ? MAX_SAMPLES : MAX_SAMPLES / 2;
