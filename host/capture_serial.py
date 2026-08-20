@@ -23,12 +23,27 @@ HEADER_LEN = 8
 SAMPLE_RATE = 16000
 
 
+RESYNC_TIMEOUT_S = 5.0
+
+
 def resync(port):
-    """Scan byte-by-byte until the magic prefix lands, then return the header."""
+    """Scan byte-by-byte until the magic prefix lands, then return the header.
+
+    Every read phase is under one deadline. The loop that fills the first two
+    bytes had none: on a silent port read(1) returns empty and it span there
+    forever, so a device that was not sending -- unplugged, wrong port, not
+    yet booted -- hung the tool with no output and no error, before any of the
+    timeout handling below could run.
+    """
+    deadline = time.monotonic() + RESYNC_TIMEOUT_S
     window = b""
     while len(window) < 2:
+        if time.monotonic() > deadline:
+            return None
         window += port.read(1)
     while window[-2:] != MAGIC:
+        if time.monotonic() > deadline:
+            return None
         b = port.read(1)
         if not b:
             return None

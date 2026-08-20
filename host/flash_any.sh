@@ -23,11 +23,19 @@ for i in $(seq 1 "$ITERS"); do
     sudo mkdir -p /mnt/xiao
     sudo umount /mnt/xiao 2>/dev/null
     if sudo mount "$DEV" /mnt/xiao; then
-      sudo cp "$UF2" /mnt/xiao/ && sync
+      sudo cp "$UF2" /mnt/xiao/ || echo "copy reported an error; checking the board"
+      sync 2>/dev/null || true
       sleep 3
       sudo umount /mnt/xiao 2>/dev/null
-      echo "flashed via UF2"
-      exit 0
+      # Ask the board rather than assume. The drive vanishes underneath the
+      # copy when the bootloader reboots, so cp can fail on a good flash and
+      # succeed on nothing useful; only what is running afterwards settles it.
+      for _ in $(seq 1 25); do
+        lsusb | grep -q "2886:8045" && { echo "flashed via UF2 (running 2886:8045)"; exit 0; }
+        sleep 1
+      done
+      echo "UF2 copy did not produce a running application" >&2
+      exit 1
     fi
   fi
   # Serial DFU: CDC only, no drive.

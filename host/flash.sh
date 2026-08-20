@@ -26,7 +26,30 @@ sudo mkdir -p /mnt/xiao
 sudo umount /mnt/xiao 2>/dev/null
 sudo mount "$DEV" /mnt/xiao || { echo "mount failed" >&2; exit 1; }
 echo "flashing $(basename "$UF2") ($(stat -c%s "$UF2") bytes) ..."
-sudo cp "$UF2" /mnt/xiao/ && sync
+# cp's exit status is not the question here.
+#
+# A UF2 write ends with the bootloader rebooting into the new firmware, so the
+# drive disappears underneath the copy and cp can report an I/O error on a
+# flash that worked. It can equally fail for real. This script used to run
+# `cp ... && sync` and then unconditionally print that the board had rebooted
+# into the new firmware, exiting zero either way, so a failed flash was
+# indistinguishable from a good one -- and a later measurement would be taken
+# against whatever was on the board before.
+#
+# So: ask the board what it is running. 2886:0045 is the bootloader and
+# 2886:8045 is the application.
+sudo cp "$UF2" /mnt/xiao/ || echo "copy reported an error; checking the board anyway"
+sync 2>/dev/null || true
 sleep 3
 sudo umount /mnt/xiao 2>/dev/null
-echo "done — board reboots into the new firmware."
+
+for _ in $(seq 1 25); do
+  if lsusb | grep -q "2886:8045"; then
+    echo "done — board is running the application (2886:8045)."
+    exit 0
+  fi
+  sleep 1
+done
+echo "flash did not take: the board is not running an application" >&2
+lsusb | grep 2886 >&2 || true
+exit 1

@@ -39,12 +39,27 @@ async def relay(args):
             loop = asyncio.get_running_loop()
             outbox: asyncio.Queue = asyncio.Queue(maxsize=512)
 
+            dropped = [0]
+
+            def _enqueue(frame: bytes):
+                # Runs on the event loop, which is where put_nowait can raise.
+                try:
+                    outbox.put_nowait(frame)
+                except asyncio.QueueFull:
+                    dropped[0] += 1
+
             def on_frame(_sender, data: bytearray):
                 # Called from the BLE thread; hand off without blocking it.
+                #
+                # The except clause used to sit around call_soon_threadsafe,
+                # which only schedules the put -- so QueueFull was raised
+                # later, on the event loop, outside any handler. Drops printed
+                # a traceback from asyncio instead of being counted, and the
+                # count that was supposed to exist never incremented.
                 try:
-                    loop.call_soon_threadsafe(outbox.put_nowait, bytes(data))
-                except asyncio.QueueFull:
-                    pass          # a dropped frame costs one frame, by design
+                    loop.call_soon_threadsafe(_enqueue, bytes(data))
+                except RuntimeError:
+                    dropped[0] += 1      # loop already closed
 
             await board.start_notify(AUDIO_UUID, on_frame)
             await board.write_gatt_char(CTRL_UUID, bytes([0x01, 1]), response=True)
@@ -81,6 +96,19 @@ async def relay(args):
                         msg["backlog_bytes"] = pend
                         msg["backlog_seconds"] = round(pend / 4500.0, 1)
                         msg["qspi_mb"] = round(info[31] * 65536 / 1048576)
+                    if len(info) >= 22:
+                        # Whether the device is actually capturing, and which
+                        # firmware said so. Relayed status reported the rate,
+                        # the IMU and the backlog but never this, so a relay
+                        # could show a healthy link beside a device that was
+                        # not recording. Only read where the firmware declares
+                        # the bit means something (INFO_CAP_STATE, 0x0040).
+                        caps = info[20] | (info[21] << 8)
+                        msg["firmware"] = {1: "arduino", 2: "zephyr"}.get(info[19])
+                        msg["device_streaming"] = (
+                            bool(info[5] & 4) if caps & 0x0040 else None)
+                    if dropped[0]:
+                        msg["relay_dropped"] = dropped[0]
                     await server.send(json.dumps(msg))
                     await asyncio.sleep(2)
 
