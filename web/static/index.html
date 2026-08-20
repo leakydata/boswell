@@ -5,9 +5,24 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#0C1215">
 <title>Boswell</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2312697A'/%3E%3Crect x='14' y='7' width='4' height='11' rx='2' fill='white'/%3E%3Cpath d='M10 15v2a6 6 0 0 0 12 0v-2' stroke='white' stroke-width='2' fill='none' stroke-linecap='round'/%3E%3Crect x='15' y='23' width='2' height='3' fill='white'/%3E%3C/svg%3E">
+<style>
+/* Fonts are served from this machine, not from Google.
+ *
+ * The page used to link Google's font CDN, which tells a third party the
+ * IP address and browser of anyone who opens the interface, every time they
+ * open it. This device exists to record private conversations in a house and
+ * the project's whole claim is that nothing leaves the machine; a stylesheet
+ * that phones out on page load contradicts that claim before a single
+ * recording is made. Subset to the characters the interface uses: all six
+ * faces together are 75 KB, less than the request they replace. */
+@font-face{font-family:"IBM Plex Sans";font-style:normal;font-weight:400;font-display:swap;src:url("/static/fonts/IBMPlexSans-Regular.woff2") format("woff2")}
+@font-face{font-family:"IBM Plex Sans";font-style:normal;font-weight:500;font-display:swap;src:url("/static/fonts/IBMPlexSans-Medium.woff2") format("woff2")}
+@font-face{font-family:"IBM Plex Sans";font-style:normal;font-weight:600;font-display:swap;src:url("/static/fonts/IBMPlexSans-SemiBold.woff2") format("woff2")}
+@font-face{font-family:"IBM Plex Mono";font-style:normal;font-weight:400;font-display:swap;src:url("/static/fonts/IBMPlexMono-Regular.woff2") format("woff2")}
+@font-face{font-family:"IBM Plex Mono";font-style:normal;font-weight:500;font-display:swap;src:url("/static/fonts/IBMPlexMono-Medium.woff2") format("woff2")}
+@font-face{font-family:"IBM Plex Mono";font-style:normal;font-weight:600;font-display:swap;src:url("/static/fonts/IBMPlexMono-SemiBold.woff2") format("woff2")}
+</style>
 <style>
 :root{
   --paper:#F1F4F5; --surface:#FFF; --sunk:#E7ECEE;
@@ -302,20 +317,25 @@ button.who{font-size:11px}
 .samp button{flex:none;min-height:34px;padding:5px 10px;font-size:12px}
 
 /* naming sheet -- replaces prompt(), which mobile browsers block */
-#editor{position:fixed;left:0;right:0;bottom:0;z-index:50;background:var(--surface);
+.skip{position:absolute;left:-9999px;top:0;z-index:100;background:var(--surface);
+  color:var(--ink);padding:10px 14px;border:1px solid var(--rule);border-radius:0 0 8px 0}
+.skip:focus{left:0}
+/* Sticky navigation would otherwise sit over whatever was just focused. */
+html{scroll-padding-top:120px}
+#editor{position:fixed;left:0;right:0;bottom:0;z-index:50;background:var(--surface);visibility:hidden;
   border-top:1px solid var(--rule);border-radius:14px 14px 0 0;
   padding:18px 16px calc(18px + env(safe-area-inset-bottom));
   box-shadow:0 -8px 32px #0003;transform:translateY(110%);transition:transform .2s ease}
-#editor.open{transform:none}
+#editor.open{transform:none;visibility:visible}
 #editor,#namer{overscroll-behavior:contain}
 #editor h3{margin:0 0 4px;font-size:17px;font-weight:600}
 #editor .hint{font-family:var(--mono);font-size:12px;color:var(--muted);margin-bottom:12px}
 #edErr{color:var(--bad);font-family:var(--mono);font-size:12px;min-height:16px}
-#namer{position:fixed;left:0;right:0;bottom:0;z-index:50;background:var(--surface);
+#namer{position:fixed;left:0;right:0;bottom:0;z-index:50;background:var(--surface);visibility:hidden;
   border-top:1px solid var(--rule);border-radius:14px 14px 0 0;
   padding:18px 16px calc(18px + env(safe-area-inset-bottom));
   box-shadow:0 -8px 32px #0003;transform:translateY(110%);transition:transform .2s ease}
-#namer.open{transform:none}
+#namer.open{transform:none;visibility:visible}
 #namer h3{margin:0 0 4px;font-size:17px;font-weight:600}
 #namer .hint{font-family:var(--mono);font-size:12px;color:var(--muted);margin-bottom:14px}
 #namer input[type=text]{width:100%;font-family:var(--sans);font-size:17px;padding:13px;
@@ -338,14 +358,16 @@ button.who{font-size:11px}
     <span class="ver"><span id="ver">disconnected</span> · build __BUILD__</span>
   </header>
 
-  <nav class="tabs" role="tablist">
-    <button id="tabDev" role="tab" aria-selected="true">Device</button>
-    <button id="tabRec" role="tab" aria-selected="false">Recordings</button>
-    <button id="tabPpl" role="tab" aria-selected="false">People</button>
-    <button id="tabNotes" role="tab" aria-selected="false">Notes</button>
+  <a class="skip" href="#main">Skip to content</a>
+  <nav class="tabs" role="tablist" aria-label="Sections">
+    <button id="tabDev" role="tab" aria-controls="viewDev" aria-selected="true" tabindex="0">Device</button>
+    <button id="tabRec" role="tab" aria-controls="viewRec" aria-selected="false" tabindex="-1">Recordings</button>
+    <button id="tabPpl" role="tab" aria-controls="viewPpl" aria-selected="false" tabindex="-1">People</button>
+    <button id="tabNotes" role="tab" aria-controls="viewNotes" aria-selected="false" tabindex="-1">Notes</button>
   </nav>
 
-  <div class="view" id="viewDev">
+  <main id="main">
+  <div class="view" id="viewDev" role="tabpanel" aria-labelledby="tabDev" tabindex="0">
   <div class="grid">
     <div class="card">
       <h2>Device</h2>
@@ -437,7 +459,7 @@ button.who{font-size:11px}
   </div>
   </div>
 
-  <div class="view" id="viewRec" hidden>
+  <div class="view" id="viewRec" role="tabpanel" aria-labelledby="tabRec" tabindex="0" hidden>
     <div class="toolbar">
       <span class="search">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15.5 14h-.79l-.28-.27A6.47 6.47 0 0016 9.5 6.5 6.5 0 109.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
@@ -539,9 +561,8 @@ button.who{font-size:11px}
            min-height:16px;margin-top:10px"></div>
     </div>
   </div>
-</div>
 
-  <div class="view" id="viewPpl" hidden>
+  <div class="view" id="viewPpl" role="tabpanel" aria-labelledby="tabPpl" tabindex="0" hidden>
     <div class="card">
       <h2>Enrolled voices</h2>
       <p class="intro" style="font-size:14px;color:var(--muted);margin:0 0 14px">
@@ -571,7 +592,7 @@ button.who{font-size:11px}
     </div>
   </div>
 
-  <div class="view" id="viewNotes" hidden>
+  <div class="view" id="viewNotes" role="tabpanel" aria-labelledby="tabNotes" tabindex="0" hidden>
     <div class="card">
       <h2>From your conversations</h2>
       <p class="intro" style="font-size:14px;color:var(--muted);margin:0 0 12px">
@@ -604,6 +625,9 @@ button.who{font-size:11px}
       <div id="itemList"><div class="empty">loading…</div></div>
     </div>
   </div>
+
+  </main>
+</div>
 
 <div id="scrim"></div>
 <div id="editor" role="dialog" aria-modal="true" aria-labelledby="edT">
@@ -810,17 +834,34 @@ let current = null;
 function showTab(which){
   for (const [t, v, k] of [["tabDev","viewDev","dev"],["tabRec","viewRec","rec"],
                            ["tabPpl","viewPpl","ppl"],["tabNotes","viewNotes","notes"]]){
-    $(t).setAttribute("aria-selected", which === k);
-    $(v).hidden = which !== k;
+    const on = which === k;
+    $(t).setAttribute("aria-selected", on);
+    // Roving tabindex: one stop for the whole tablist, then arrow keys move
+    // between tabs. Four separate tab stops is not the tablist pattern and
+    // makes the keyboard walk every section header to reach the content.
+    $(t).tabIndex = on ? 0 : -1;
+    $(v).hidden = !on;
   }
   if (which === "rec") loadClips();
   if (which === "ppl"){ loadPeople(); loadVocab(); }
   if (which === "notes"){ loadAgent(); loadItems(); }
 }
-$("tabDev").onclick = () => showTab("dev");
-$("tabRec").onclick = () => showTab("rec");
-$("tabPpl").onclick = () => showTab("ppl");
-$("tabNotes").onclick = () => showTab("notes");
+const TABS = [["tabDev","dev"],["tabRec","rec"],["tabPpl","ppl"],["tabNotes","notes"]];
+for (const [id, key] of TABS) $(id).onclick = () => showTab(key);
+for (const [id] of TABS){
+  $(id).addEventListener("keydown", e => {
+    const i = TABS.findIndex(([t]) => t === id);
+    let j = null;
+    if (e.key === "ArrowRight") j = (i + 1) % TABS.length;
+    else if (e.key === "ArrowLeft") j = (i - 1 + TABS.length) % TABS.length;
+    else if (e.key === "Home") j = 0;
+    else if (e.key === "End") j = TABS.length - 1;
+    if (j === null) return;
+    e.preventDefault();
+    showTab(TABS[j][1]);
+    $(TABS[j][0]).focus();
+  });
+}
 
 async function loadAgent(){
   try{
@@ -1204,8 +1245,7 @@ async function editLine(name, index, seg, ids, named){
     }catch(e){ $("edErr").textContent = "Could not reach the server"; }
   };
 
-  $("scrim").classList.add("open");
-  $("editor").classList.add("open");
+  openSheet("editor", "editArea");
 }
 
 /* Downloads are blocked in some embedded viewers, so export opens the text
@@ -1222,8 +1262,7 @@ function showText(text, title){
     try{ await navigator.clipboard.writeText(text); $("edErr").textContent = "Copied."; }
     catch(e){ $("editArea").select(); $("edErr").textContent = "Press Ctrl+C to copy."; }
   };
-  $("scrim").classList.add("open");
-  $("editor").classList.add("open");
+  openSheet("editor", "editArea");
 }
 
 // Debounced so a fast typist does not trigger a render per keystroke.
@@ -2018,9 +2057,7 @@ async function nameSpeaker(clip, speaker, existing, onSaved){
     }
   }catch(e){}
 
-  $("scrim").classList.add("open");
-  $("namer").classList.add("open");
-  setTimeout(() => $("namerInput").focus(), 220);
+  openSheet("namer", "namerInput");
 }
 
 /* Naming succeeded; only the voiceprint was skipped. Say so plainly and offer
@@ -2054,10 +2091,37 @@ function msgAfterNaming(name, reason, clip, speaker){
   $("namerSave").onclick = () => { closeNamer(); };
 }
 
+
+/* Where focus was when a sheet opened, so it can be put back.
+ *
+ * A sheet that closes without restoring focus drops the caret at the top of
+ * the document, so a keyboard user who edits one transcript line has to tab
+ * back through the whole page to reach the next one. The sheets are also
+ * hidden with visibility rather than a transform alone, so their controls
+ * leave the tab order and the accessibility tree while closed instead of
+ * sitting there invisibly focusable.
+ */
+let sheetReturn = null;
+
+function openSheet(id, focusId){
+  sheetReturn = document.activeElement;
+  $("scrim").classList.add("open");
+  $(id).classList.add("open");
+  if (focusId) setTimeout(() => { const el = $(focusId); if (el) el.focus(); }, 220);
+}
+
+function restoreSheetFocus(){
+  const el = sheetReturn;
+  sheetReturn = null;
+  if (el && document.contains(el)) el.focus();
+}
+
 function closeNamer(){
+  const wasOpen = $("namer").classList.contains("open");
   $("scrim").classList.remove("open");
   $("namer").classList.remove("open");
   namerCtx = null;
+  if (wasOpen) restoreSheetFocus();
 }
 
 /* Closes the editor/export sheet.
@@ -2066,10 +2130,12 @@ function closeNamer(){
    button had no handler either, and the scrim sits over the page with
    pointer-events on. Opening an export was a dead end that needed a reload. */
 function closeEditor(){
+  const wasOpen = $("editor").classList.contains("open");
   $("editor").classList.remove("open");
   if (!$("namer").classList.contains("open")){
     $("scrim").classList.remove("open");
   }
+  if (wasOpen) restoreSheetFocus();
 }
 
 async function saveName(){
