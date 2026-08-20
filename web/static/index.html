@@ -950,7 +950,17 @@ async function loadPeople(){
     for (const p of people){
       const d = document.createElement("div");
       d.className = "person";
-      d.innerHTML = `<h3>${p.name}<span class="cnt">${p.count} sample${p.count===1?"":"s"}</span></h3>`;
+      /* Built as nodes, not markup. A speaker name is typed by a person and
+         goes straight into the page; interpolating it into innerHTML made
+         the one field a user actually authors the one field that was not
+         escaped. The clip name comes off the filesystem, which is no safer. */
+      const h = document.createElement("h3");
+      h.textContent = p.name;
+      const cnt = document.createElement("span");
+      cnt.className = "cnt";
+      cnt.textContent = `${p.count} sample${p.count === 1 ? "" : "s"}`;
+      h.appendChild(cnt);
+      d.appendChild(h);
       for (const e of p.samples){
         const row = document.createElement("div");
         row.className = "samp";
@@ -959,7 +969,10 @@ async function loadPeople(){
         if (e.clip) bits.push(e.clip);
         if (e.seconds) bits.push(`${e.seconds}s`);
         if (e.score !== null && e.score !== undefined) bits.push(`match ${e.score}`);
-        row.innerHTML = `<span class="s1">${bits.join(" · ") || "sample"}</span>`;
+        const s1 = document.createElement("span");
+        s1.className = "s1";
+        s1.textContent = bits.join(" · ") || "sample";
+        row.appendChild(s1);
         const rm = document.createElement("button");
         rm.textContent = "Remove";
         rm.onclick = async () => {

@@ -240,17 +240,25 @@ def conversations(gap_seconds=300, limit=400):
         # recorded before this existed has.
         return c["modified"] - (c["seconds"] or 0)
 
+    def ended_at(c):
+        t = device_times(c["name"])
+        return t[1] if t else c["modified"]
+
     clips.sort(key=started_at)
     groups = []
     for c in clips:
-        start = c["modified"] - (c["seconds"] or 0)
+        # Grouping uses the same clock the sort does. Ordering by device time
+        # while deciding conversation boundaries from file mtime meant a
+        # recovered clip could be placed correctly in the sequence and still
+        # fall into the wrong conversation.
+        start = started_at(c)
         if groups and start - groups[-1]["end"] <= gap_seconds:
             g = groups[-1]
         else:
             g = {"start": start, "end": start, "clips": [], "speakers": [],
                  "seconds": 0.0, "preview": "", "with_speech": 0}
             groups.append(g)
-        g["end"] = max(g["end"], c["modified"])
+        g["end"] = max(g["end"], ended_at(c))
         g["clips"].append(c["name"])
         g["seconds"] += c["seconds"] or 0
         if c["has_speech"]:
