@@ -612,6 +612,33 @@ html{scroll-padding-top:120px}
         <select class="filter" id="agentModel" aria-label="Agent model"></select>
       </label>
     </div>
+    <div class="card" id="topicsCard">
+      <h2>Topics</h2>
+      <p class="intro" style="font-size:14px;color:var(--muted);margin:0 0 12px">
+        What conversations were about, as the model labelled them. Pick one to
+        search every recording on that subject.</p>
+      <div id="topicList" class="quick"><span class="ssub">loading…</span></div>
+    </div>
+
+    <div class="card" id="dupCard" hidden>
+      <h2>Possible duplicates</h2>
+      <p class="intro" style="font-size:14px;color:var(--muted);margin:0 0 12px">
+        Entries that look like the same thing recorded twice. Proposed, not
+        applied — a similarity score cannot tell agreement from contradiction,
+        and two entries about one subject can disagree with each other.</p>
+      <div class="toolbar2" style="margin-bottom:12px">
+        <label class="ssub" for="dupThresh">How alike</label>
+        <select class="filter" id="dupThresh" aria-label="Similarity threshold">
+          <option value="0.97">Nearly identical</option>
+          <option value="0.95" selected>Very similar</option>
+          <option value="0.92">Similar</option>
+          <option value="0.88">Loosely similar</option>
+        </select>
+        <button id="bDupRefresh">Check again</button>
+      </div>
+      <div id="dupList"></div>
+    </div>
+
     <div class="card">
       <div class="toolbar" style="margin-bottom:12px">
         <select class="filter" id="itemKind" aria-label="Filter by type">
@@ -620,6 +647,7 @@ html{scroll-padding-top:120px}
           <option value="events">Events</option>
           <option value="notes">Notes</option>
           <option value="facts">Facts</option>
+          <option value="topics">Topics</option>
         </select>
         <button class="dang" id="bClearItems" style="min-height:40px;flex:0 0 auto">Clear all</button>
       </div>
@@ -845,7 +873,7 @@ function showTab(which){
   }
   if (which === "rec") loadClips();
   if (which === "ppl"){ loadPeople(); loadVocab(); }
-  if (which === "notes"){ loadAgent(); loadItems(); }
+  if (which === "notes"){ loadAgent(); loadItems(); loadTopics(); loadDuplicates(); }
 }
 const TABS = [["tabDev","dev"],["tabRec","rec"],["tabPpl","ppl"],["tabNotes","notes"]];
 for (const [id, key] of TABS) $(id).onclick = () => showTab(key);
@@ -863,6 +891,113 @@ for (const [id] of TABS){
     $(TABS[j][0]).focus();
   });
 }
+
+/* Topics and duplicate review.
+ *
+ * Built with DOM nodes rather than interpolated HTML: every string here is
+ * either model output or transcript text, which is exactly the material that
+ * put script tags through innerHTML the last time this was done by hand.
+ */
+async function loadTopics(){
+  const el = $("topicList");
+  let d;
+  try{ d = await (await fetch("/api/topics")).json(); }
+  catch(e){ el.textContent = "could not load topics"; return; }
+  const topics = d.topics || [];
+  el.replaceChildren();
+  if (!topics.length){
+    const s = document.createElement("span");
+    s.className = "ssub";
+    s.textContent = "No topics yet — they are added as conversations are reviewed.";
+    el.appendChild(s);
+    return;
+  }
+  for (const t of topics){
+    const b = document.createElement("button");
+    b.textContent = `${t.topic} · ${t.count}`;
+    b.title = `${t.clips.length} recording${t.clips.length===1?"":"s"}`;
+    b.onclick = () => {
+      showTab("rec");
+      const q = $("q");
+      q.value = t.topic;
+      q.dispatchEvent(new Event("input", {bubbles: true}));
+    };
+    el.appendChild(b);
+  }
+}
+
+function stripKind(text, kind){
+  const lead = kind.replace(/s$/, "") + " · ";
+  return text.startsWith(lead) ? text.slice(lead.length) : text;
+}
+
+async function loadDuplicates(){
+  const card = $("dupCard"), el = $("dupList");
+  const th = $("dupThresh").value;
+  el.replaceChildren();
+  const wait = document.createElement("div");
+  wait.className = "empty"; wait.textContent = "checking…";
+  el.appendChild(wait);
+  card.hidden = false;
+  let d;
+  try{ d = await (await fetch("/api/agent/duplicates?threshold=" + th)).json(); }
+  catch(e){ el.replaceChildren(); card.hidden = true; return; }
+  const clusters = d.clusters || [];
+  el.replaceChildren();
+  if (!clusters.length){
+    const e = document.createElement("div");
+    e.className = "empty";
+    e.textContent = "Nothing looks duplicated at this setting.";
+    el.appendChild(e);
+    return;
+  }
+  for (const c of clusters){
+    const box = document.createElement("div");
+    box.className = "item";
+
+    const t1 = document.createElement("div");
+    t1.className = "t1";
+    const k = document.createElement("span");
+    k.className = "k " + c.kind;
+    k.textContent = c.kind.replace(/s$/, "");
+    // The stored text begins with the kind, because that is embedded with it
+    // on purpose. The chip beside it already says so, and printing both gave
+    // "factfact · Nathan · ...".
+    t1.append(k, document.createTextNode(stripKind(c.keep.text, c.kind)));
+    box.appendChild(t1);
+
+    for (const x of c.duplicates){
+      const d2 = document.createElement("div");
+      d2.className = "t2";
+      d2.textContent = `+ ${stripKind(x.text, c.kind)}  (${x.score})`;
+      box.appendChild(d2);
+    }
+
+    const go = document.createElement("button");
+    go.textContent = `Merge ${c.duplicates.length + 1} into one`;
+    go.onclick = async () => {
+      go.disabled = true;
+      go.textContent = "merging…";
+      try{
+        const r = await fetch("/api/agent/merge", {
+          method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({kind: c.kind, keep_id: c.keep.id,
+                                drop_ids: c.duplicates.map(x => x.id)})});
+        if (!r.ok) throw new Error(await r.text());
+        await loadDuplicates();
+        await loadItems();
+      }catch(e){
+        go.disabled = false;
+        go.textContent = "could not merge";
+      }
+    };
+    box.appendChild(go);
+    el.appendChild(box);
+  }
+}
+
+on("dupThresh", "change", loadDuplicates);
+on("bDupRefresh", "click", loadDuplicates);
 
 async function loadAgent(){
   try{
