@@ -1593,7 +1593,12 @@ async function openConversation(conv){
       const bar = document.createElement("div");
       bar.className = "cvclip";
       const b = document.createElement("button");
-      b.textContent = info.started ? fmtClockSec(info.started) : seg.clip;
+      /* When the clip BEGAN. started is the file's timestamp, which is the
+         moment the audio ended; labelling with that put the dividers out of
+         order against a list sorted by start time, because clips are not all
+         the same length. */
+      const began = info.started ? info.started - (info.seconds || 0) : null;
+      b.textContent = began ? fmtClockSec(began) : seg.clip;
       b.title = "Open this clip on its own";
       b.onclick = () => openClip(seg.clip);
       bar.innerHTML = "<hr>";

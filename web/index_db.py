@@ -137,7 +137,8 @@ def sync():
     c = _conn()
     on_disk = {f for f in os.listdir(DATA)} if os.path.isdir(DATA) else set()
     wavs = {f for f in on_disk if f.endswith(".wav")}
-    known = {r["name"]: r["indexed_at"] or 0 for r in c.execute("SELECT name, indexed_at FROM clips")}
+    known = {r["name"]: (r["indexed_at"] or 0, r["modified"] or 0)
+             for r in c.execute("SELECT name, indexed_at, modified FROM clips")}
 
     for gone in set(known) - wavs:
         remove_clip(gone)
@@ -148,7 +149,14 @@ def sync():
         newest = os.path.getmtime(wav)
         if os.path.exists(tp):
             newest = max(newest, os.path.getmtime(tp))
-        if known.get(name, 0) < newest:
+        seen_at, seen_mtime = known.get(name, (0, 0))
+        # Re-index if the file is newer than the last pass, OR if its
+        # timestamp has changed at all. A file whose mtime moved BACKWARDS is
+        # invisible to a "newer than" test: restamping recovered clips to
+        # their true capture time left the index holding the old drain-time
+        # values, and clips came out of the conversation in the wrong order
+        # while every file on disk was correct.
+        if seen_at < newest or abs(seen_mtime - os.path.getmtime(wav)) > 0.5:
             upsert_clip(name)
             added += 1
     return {"indexed": added, "removed": len(set(known) - wavs), "total": len(wavs)}
@@ -186,7 +194,9 @@ def search(query, limit=200):
                                        "seconds": r["seconds"], "hits": []})
         e["hits"].append({"start": r["start"], "end": r["end"],
                           "speaker": r["speaker"], "snippet": r["snip"]})
-    return sorted(out.values(), key=lambda d: d["modified"], reverse=True)
+    return sorted(out.values(),
+                  key=lambda d: d["modified"] - (d.get("seconds") or 0),
+                  reverse=True)
 
 
 def conversations(gap_seconds=300, limit=400):
@@ -197,7 +207,14 @@ def conversations(gap_seconds=300, limit=400):
     clips are grouped and a gap longer than `gap_seconds` starts a new one.
     """
     clips = list_clips(limit)
-    clips.sort(key=lambda c: c["modified"])
+    # Order by when each clip STARTED, not when it finished.
+    #
+    # modified is the end of the audio, and clips are not all the same length:
+    # a 10 s clip that began later can finish before a 30 s clip that began
+    # earlier. Sorting on the end time therefore put recovered audio out of
+    # sequence against the live clips around it -- 20 clips out of 210 in one
+    # measurement, all of them pairs whose durations differed.
+    clips.sort(key=lambda c: c["modified"] - (c["seconds"] or 0))
     groups = []
     for c in clips:
         start = c["modified"] - (c["seconds"] or 0)
