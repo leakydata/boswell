@@ -328,6 +328,18 @@ void imu_steps_reset(void)
     }
 }
 
+/* Peek and take are separate.
+ *
+ * These latches used to be cleared by whoever asked, and two callers ask: the
+ * info characteristic, which the host reads about once a second, and the
+ * shell's status command. So running "boswell status" to see whether a tilt
+ * had been detected consumed the tilt, and the host never saw it -- a
+ * diagnostic that changes the state it reports on. The host reading info is
+ * the consumer; everything else looks without touching.
+ */
+bool imu_tilt_peek(void)             { return saw_tilt; }
+bool imu_significant_motion_peek(void) { return saw_sign_motion; }
+
 bool imu_tilt(void)
 {
     bool v = saw_tilt;

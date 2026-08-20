@@ -425,7 +425,7 @@ static int cmd_status(const struct shell *sh, size_t argc, char **argv)
     shell_print(sh, "imu_stream=%u Hz gyro=%d", g_state.imu_hz,
                 imu_gyro_enabled());
     shell_print(sh, "steps=%u tilt=%d motion=%d tap=%d ctrl10=0x%02x",
-                imu_steps(), imu_tilt(), imu_significant_motion(),
+                imu_steps(), imu_tilt_peek(), imu_significant_motion_peek(),
                 imu_tap_enabled(), imu_motion_config());
     shell_print(sh, "battery=%u mV (%u%%) charging=%d  imu=%d",
                 battery_mv(), battery_percent(), battery_charging(),
@@ -578,21 +578,44 @@ static void settings_snapshot(struct boswell_settings *s)
     s->tx_power        = g_state.tx_power;
 }
 
+/* Every field, clamped at the boundary where it comes back from storage.
+ *
+ * The control opcodes validate their arguments, and this path did not -- so a
+ * value that could never arrive over Bluetooth could arrive from flash after
+ * a corrupted write or a layout change. One of them is not merely untidy:
+ * backlog_mode is published as (backlog_mode << 1) in info byte 5, and the
+ * capture-state bit is 4, so a restored value of 2 makes the host read
+ * "recording" on a device that is not. That is the failure this project keeps
+ * finding in other forms.
+ */
+static bool tx_power_supported(int8_t dbm)
+{
+    static const int8_t ok[] = { -40, -20, -16, -12, -8, -4, 0, 3, 4, 8 };
+
+    for (size_t i = 0; i < ARRAY_SIZE(ok); i++) {
+        if (ok[i] == dbm) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static void settings_apply(const struct boswell_settings *s)
 {
-    g_state.gain           = s->gain;
-    g_state.use16k         = s->use16k;
-    g_state.vad_enabled    = s->vad_enabled;
-    g_state.vad_thresh     = s->vad_thresh;
-    g_state.led_level      = s->led_level;
-    g_state.led_mode       = s->led_mode;
-    g_state.backlog_mode   = s->backlog_mode;
-    g_state.mic_power_save = s->mic_power_save;
-    g_state.tx_power       = s->tx_power;
-    if (s->tap_thresh) {
+    g_state.gain           = s->gain > 0x50 ? 0x50 : s->gain;
+    g_state.use16k         = !!s->use16k;
+    g_state.vad_enabled    = !!s->vad_enabled;
+    /* Set over the wire as arg * 32 with arg a byte, so this is its ceiling. */
+    g_state.vad_thresh     = s->vad_thresh > 255 * 32 ? 255 * 32 : s->vad_thresh;
+    g_state.led_level      = s->led_level;          /* a byte is the range */
+    g_state.led_mode       = s->led_mode ? 1 : 0;
+    g_state.backlog_mode   = s->backlog_mode ? 1 : 0;
+    g_state.mic_power_save = !!s->mic_power_save;
+    g_state.tx_power       = tx_power_supported(s->tx_power) ? s->tx_power : 0;
+    if (s->tap_thresh && s->tap_thresh <= 31) {     /* TAP_THS_6D is 5 bits */
         imu_tap_set_threshold(s->tap_thresh);
     }
-    if (s->tap_debounce_ms) {
+    if (s->tap_debounce_ms >= 50 && s->tap_debounce_ms <= 5000) {
         imu_tap_set_debounce(s->tap_debounce_ms);
     }
 }

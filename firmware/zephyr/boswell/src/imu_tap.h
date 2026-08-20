@@ -43,7 +43,11 @@ void     imu_tap_set_enabled(bool on);
  * to last a day. */
 uint32_t imu_steps(void);
 void     imu_steps_reset(void);
-bool     imu_tilt(void);            /* seen since the last read */
+/* peek leaves the latch set; the plain form consumes it. Diagnostics peek,
+ * so that looking at the state does not change it. */
+bool     imu_tilt_peek(void);
+bool     imu_significant_motion_peek(void);
+bool     imu_tilt(void);            /* seen since the last read; consumes */
 bool     imu_significant_motion(void);
 void     imu_motion_poll(void);     /* refresh the cached readings */
 /* CTRL10_C read back from the part. Zero steps on a desk is the same reading
