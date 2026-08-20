@@ -165,6 +165,13 @@ select.filter:focus{outline:2px solid var(--accent);outline-offset:-1px}
   padding:13px 12px;background:var(--surface);border:1px solid var(--rule);
   border-radius:8px;margin-bottom:8px;min-height:auto}
 .clip:hover{border-color:var(--accent)}
+/* Skip layout and paint for rows that are scrolled out of sight.
+ *
+ * The recordings list can return a thousand rows and builds every one of
+ * them. contain-intrinsic-size gives each skipped row a placeholder height so
+ * the scrollbar stays honest -- without it the page height jumps around as
+ * rows come into view. Roughly the height of a real row. */
+.clip, .item, .conv{content-visibility:auto;contain-intrinsic-size:auto 64px}
 .clip .ci{flex:1;min-width:0}
 .clip .cn{font-family:var(--mono);font-size:12px;color:var(--muted)}
 .hits{margin-top:6px;display:flex;flex-direction:column;gap:3px}
@@ -580,7 +587,8 @@ html{scroll-padding-top:120px}
         boosted while it listens and corrected afterwards, so
         <em>met form in</em> comes back as the real word. Enrolled people are
         included automatically. One per line.</p>
-      <textarea id="vocabBox" rows="7" placeholder="Metformin&#10;Vinod&#10;nRF52840"
+      <textarea id="vocabBox" rows="7" aria-label="Custom words, one per line"
+        placeholder="Metformin&#10;Vinod&#10;nRF52840"
         spellcheck="false" autocapitalize="off"
         style="width:100%;font-family:var(--mono);font-size:14px;padding:11px;
                border-radius:8px;border:1px solid var(--rule);background:var(--paper);
@@ -662,7 +670,8 @@ html{scroll-padding-top:120px}
 <div id="editor" role="dialog" aria-modal="true" aria-labelledby="edT">
   <h3 id="edT">Correct this line</h3>
   <div class="hint" id="edSub"></div>
-  <textarea id="editArea" enterkeyhint="done"></textarea>
+  <textarea id="editArea" enterkeyhint="done"
+            aria-label="Corrected text for this line"></textarea>
   <div class="quick" id="edSpk"></div>
   <input type="text" id="edNewName" placeholder="Name for this line only" hidden
          autocomplete="off" autocapitalize="words"
@@ -680,7 +689,8 @@ html{scroll-padding-top:120px}
   <h3 id="namerT">Who is this?</h3>
   <div class="hint" id="namerSub"></div>
   <div class="quick" id="namerQuick"></div>
-  <input type="text" id="namerInput" placeholder="Type a name" autocomplete="off"
+  <input type="text" id="namerInput" placeholder="Type a name"
+         aria-label="Name for this voice" autocomplete="off"
          autocapitalize="words" enterkeyhint="done">
   <div id="namerErr"></div>
   <div class="btns" style="margin-top:10px">

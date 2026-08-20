@@ -268,10 +268,6 @@ def save_vocabulary(terms):
     return clean
 
 
-def vocabulary_signature(terms):
-    return "|".join(sorted(t.lower() for t in terms))
-
-
 def apply_vocabulary(text, terms):
     """Fix near-misses the decoder bias did not catch.
 
@@ -371,7 +367,6 @@ class Worker:
         self._asr = None
         self._align = None
         self._diar = None
-        self._vocab_sig = None
         threading.Thread(target=self._run, daemon=True).start()
 
     def submit(self, clip):
@@ -388,16 +383,21 @@ class Worker:
             return clip in self._queued or self.busy == clip
 
     def _load(self):
-        terms = load_vocabulary()
-        sig = vocabulary_signature(terms)
-        # Boosting is baked in when the model is built, so a changed word list
-        # means rebuilding it. Cheap relative to how often the list changes.
-        if self._asr is not None and sig == self._vocab_sig:
+        # The models are loaded once and kept.
+        #
+        # This used to rebuild them whenever the custom word list changed, on
+        # the reasoning that boosting is baked in at load time. It is not:
+        # decode-time boosting was tried, measured, and removed -- see the
+        # note below -- and the word list is applied afterwards in
+        # apply_vocabulary(). So every edit to the list cost a twenty-second
+        # reload that changed nothing about the result, and did it by
+        # assigning a new model over a reference the old one was still held
+        # by, so both sat in GPU memory at once. Three models, one card, and
+        # no reason for the risk.
+        if self._asr is not None:
             return
-        reloading = self._asr is not None
-        self.notify("log", text=("reloading ASR with the updated word list"
-                                 if reloading else
-                                 "loading transcription models (first run, ~20s)"))
+        self.notify("log",
+                    text="loading transcription models (first run, ~20s)")
         import whisperx
         # Decode-time boosting is deliberately NOT used. Measured on a real
         # 45-second recording: plain decoding produced two segments covering
@@ -409,7 +409,6 @@ class Worker:
         # Custom words are applied afterwards instead, in apply_vocabulary().
         # That fixes the same mistakes -- including terms split across words --
         # and cannot cause audio to go missing.
-        self._vocab_sig = sig
         self._asr = whisperx.load_model("large-v3", "cuda",
                                         compute_type="float16", language="en")
         self._align = whisperx.load_align_model(language_code="en", device="cuda")
