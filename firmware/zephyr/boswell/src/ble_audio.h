@@ -13,6 +13,8 @@ bool ble_audio_connected(void);
 bool ble_audio_ready(void);
 int  ble_audio_send(const uint8_t *frame, uint16_t len);
 void ble_audio_send_stats(uint32_t out[4]);
+void ble_audio_dead_link_stats(uint32_t out[3]);
+void ble_audio_note_delivery_attempt(void);
 void ble_audio_publish_info(void);
 
 /* Re-negotiate the connection interval. Streaming wants a tight one; idling

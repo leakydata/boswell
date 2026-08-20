@@ -414,6 +414,8 @@ static int cmd_status(const struct shell *sh, size_t argc, char **argv)
     ble_audio_idle_stats(idle);
     shell_print(sh, "notify drops=%u", notify_drops);
     { uint32_t ss[4]; ble_audio_send_stats(ss); shell_print(sh, "send calls=%u retries=%u avg=%u us max=%u us", ss[0], ss[1], ss[3], ss[2]); }
+    { uint32_t dl[3]; ble_audio_dead_link_stats(dl);
+      shell_print(sh, "dead-link fails=%u drops=%u silent=%u s", dl[0], dl[1], dl[2]); }
     shell_print(sh, "idle-guard armed=%u fired=%u dropped=%u",
                 idle[0], idle[1], idle[2]);
     shell_print(sh, "last reset=0x%08x%s%s%s", last_reset_reason,
@@ -860,6 +862,11 @@ static void capture_fn(void *a, void *b, void *c)
         if (qspi_store_pending() > 0 && g_state.backlog_mode &&
             qspi_store_ready()) {
             qspi_store_push(wire, (uint8_t)len);
+            /* This branch never touches the radio, so a counter of failed
+             * sends cannot see a link that has died underneath it. Say that
+             * we tried; the guard measures how long since anything actually
+             * left the device. */
+            ble_audio_note_delivery_attempt();
             seq++;
             continue;
         }

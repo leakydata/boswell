@@ -383,10 +383,84 @@ static int ble_audio_send_inner(const uint8_t *frame, uint16_t len)
     return -ENOMEM;
 }
 
+/* A link that stops accepting audio is a link that is gone.
+ *
+ * Observed: the host process was killed, the controller showed no connection
+ * at all, and the firmware went on believing it had a subscribed central for
+ * forty minutes. It never re-advertised, so nothing could reach it, and the
+ * flash filled and then dropped 8011 frames. The subscribe guard did not help
+ * -- that one only watches for a central that never subscribes, and this one
+ * had.
+ *
+ * Every notification during those forty minutes was failing, which is why the
+ * backlog grew, so the evidence was already here and nothing acted on it.
+ * Five seconds of audio in which not one frame reaches the radio is a dead
+ * link by any useful definition; drop it and advertise, so the host can find
+ * the device again and drain what was buffered. */
+#define DEAD_LINK_FRAMES 250       /* at 20 ms a frame, about five seconds */
+/* Nothing delivered at all for this long, while the firmware believes it has
+ * a link, means the link is not there. Sixty seconds is far longer than any
+ * backlog burst and far shorter than the forty minutes this went unnoticed. */
+#define DEAD_LINK_SILENT_MS 60000
+static uint32_t consecutive_fails;
+static uint32_t dead_link_drops;
+static int64_t  last_delivery_ms;
+
+void ble_audio_dead_link_stats(uint32_t out[3])
+{
+    out[0] = consecutive_fails;
+    out[1] = dead_link_drops;
+    out[2] = (current_conn && last_delivery_ms)
+             ? (uint32_t)(k_uptime_get() - last_delivery_ms) / 1000 : 0;
+}
+
+/* Called from the writer thread as it tries to drain.
+ *
+ * The send-failure counter above only sees frames that were offered to the
+ * radio, and in backlog mode the capture thread does not offer them -- it
+ * pushes straight to flash for ordering and lets the writer drain. So during
+ * the outage no send ever failed, because no send was ever attempted, and a
+ * counter of failures could not have noticed. What was observable is that
+ * nothing left the device at all while the firmware insisted it had a
+ * subscribed central. That is what this checks. */
+void ble_audio_note_delivery_attempt(void)
+{
+    if (current_conn == NULL) {
+        last_delivery_ms = 0;
+        return;
+    }
+    if (last_delivery_ms == 0) {
+        last_delivery_ms = k_uptime_get();
+        return;
+    }
+    if (k_uptime_get() - last_delivery_ms < DEAD_LINK_SILENT_MS) {
+        return;
+    }
+    LOG_WRN("nothing delivered for %d s on a link we believe is up; dropping it",
+            DEAD_LINK_SILENT_MS / 1000);
+    if (bt_conn_disconnect(current_conn, BT_HCI_ERR_REMOTE_USER_TERM_CONN) == 0) {
+        dead_link_drops++;
+    }
+    last_delivery_ms = 0;
+}
+
 int ble_audio_send(const uint8_t *frame, uint16_t len)
 {
     uint32_t t0 = k_cycle_get_32();
     int rc = ble_audio_send_inner(frame, len);
+
+    if (rc == 0) {
+        consecutive_fails = 0;
+        last_delivery_ms = k_uptime_get();
+    } else if (current_conn && ++consecutive_fails == DEAD_LINK_FRAMES) {
+        LOG_WRN("no frame has reached the radio in %u tries; dropping the link",
+                consecutive_fails);
+        if (bt_conn_disconnect(current_conn,
+                               BT_HCI_ERR_REMOTE_USER_TERM_CONN) == 0) {
+            dead_link_drops++;
+        }
+        consecutive_fails = 0;
+    }
     uint32_t us = k_cyc_to_us_floor32(k_cycle_get_32() - t0);
 
     send_calls++;
