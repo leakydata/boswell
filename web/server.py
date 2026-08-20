@@ -950,6 +950,41 @@ async def api_search_semantic(q: str, limit: int = 25):
     return await loop.run_in_executor(None, semantic.search, q, limit)
 
 
+@app.get("/api/topics")
+async def api_topics(limit: int = 200):
+    """Subjects the agent has labelled conversations with, commonest first.
+
+    A conversation is not usefully identified by its timestamp. These are what
+    it was about, attached to the clips it came from, so everything said on a
+    subject over weeks can be pulled together.
+    """
+    counts, clips = {}, {}
+    for it in agent_runner.load_items("topics", limit=10000):
+        for t in it.get("topics") or []:
+            counts[t] = counts.get(t, 0) + 1
+            clips.setdefault(t, set()).update(it.get("_clips") or [])
+    out = [{"topic": t, "count": n, "clips": sorted(clips.get(t, []))}
+           for t, n in counts.items()]
+    out.sort(key=lambda r: (-r["count"], r["topic"]))
+    return {"topics": out[:limit]}
+
+
+@app.get("/api/search/hybrid")
+async def api_search_hybrid(q: str, limit: int = 25):
+    """Both searches at once, fused into one ranking.
+
+    Keyword search misses a conversation whose words you do not remember, or
+    that the transcriber heard differently. Meaning search drifts past exact
+    terms -- names, part numbers, figures. Run both and let agreement decide.
+    """
+    if not q.strip():
+        return {"hits": []}
+    import semantic
+    loop = asyncio.get_running_loop()
+    kw = await loop.run_in_executor(None, index_db.search, q, limit * 2)
+    return await loop.run_in_executor(None, semantic.hybrid, q, kw, limit)
+
+
 @app.get("/api/search/semantic/stats")
 async def api_semantic_stats():
     import semantic

@@ -163,6 +163,69 @@ def index_clip(name, segments, replace=False):
     return {"added": added, "failed": failed, "error": first_error}
 
 
+def hybrid(query, keyword_hits, limit=25):
+    """Fuse keyword and meaning results into one ranking.
+
+    They fail in opposite directions. Keyword search cannot find a
+    conversation unless you remember a word from it, and misses it entirely
+    when the transcriber heard the word differently. Meaning search finds the
+    subject but drifts past exact terms -- a name, a part number, a figure --
+    because those carry little semantic weight.
+
+    Reciprocal rank fusion, which needs only the orderings and not the scores.
+    That matters here: a cosine distance and an FTS5 rank are not on any
+    common scale, so any weighted sum of them would be an invented number.
+    Something both methods rank highly rises above something either ranks
+    first alone, which is the behaviour worth having.
+    """
+    K = 60          # the usual damping constant; keeps rank 1 from dominating
+    scored = {}
+    origin = {}
+
+    for rank, h in enumerate(keyword_hits[:limit * 2]):
+        name = h.get("name")
+        if not name:
+            continue
+        scored[name] = scored.get(name, 0.0) + 1.0 / (K + rank + 1)
+        origin.setdefault(name, set()).add("keyword")
+
+    # Best rank per clip, not one contribution per matching line.
+    #
+    # The two sides are not the same shape: keyword results are already
+    # grouped by clip, while meaning results are individual segments. Adding
+    # a term for every segment let a clip with several near-matching lines
+    # outscore a clip both methods agreed on -- which is precisely the
+    # judgement fusion exists to make. Measured before the fix: searching
+    # "asphalt" ranked a meaning-only clip above the one clip that actually
+    # contains the word.
+    sem = search(query, limit=limit * 2)
+    sem_rank = {}
+    for rank, h in enumerate(sem.get("hits", [])):
+        name = h.get("clip")
+        if name and name not in sem_rank:
+            sem_rank[name] = rank
+    for name, rank in sem_rank.items():
+        scored[name] = scored.get(name, 0.0) + 1.0 / (K + rank + 1)
+        origin.setdefault(name, set()).add("meaning")
+
+    by_name = {h.get("name"): h for h in keyword_hits if h.get("name")}
+    sem_by_name = {}
+    for h in sem.get("hits", []):
+        sem_by_name.setdefault(h.get("clip"), []).append(h)
+
+    out = []
+    for name, sc in sorted(scored.items(), key=lambda kv: -kv[1])[:limit]:
+        row = dict(by_name.get(name) or {"name": name})
+        row["score"] = round(sc, 5)
+        row["found_by"] = sorted(origin.get(name, []))
+        if not row.get("hits") and sem_by_name.get(name):
+            row["hits"] = [{"start": x.get("start"), "snippet": x.get("text"),
+                            "speaker": x.get("speaker")}
+                           for x in sem_by_name[name][:3]]
+        out.append(row)
+    return {"hits": out, "error": sem.get("error")}
+
+
 def item_text(item):
     """One line describing an agent item, for embedding and for recall.
 

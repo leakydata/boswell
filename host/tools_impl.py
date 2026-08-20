@@ -39,9 +39,26 @@ def store_lock():
             fcntl.flock(f.fileno(), fcntl.LOCK_UN)
 
 
+# Which clips the review currently in progress is about.
+#
+# The tools are called by a model that has no idea what a clip is, so the
+# caller sets this before running and the provenance is attached here. Without
+# it an item is a sentence with no way back to the audio it came from -- you
+# cannot listen to what was actually said, or tell whether the transcriber
+# heard it right.
+_context_clips = []
+
+
+def set_context(clips):
+    global _context_clips
+    _context_clips = list(clips or [])
+
+
 def _append(kind, record):
     os.makedirs(STORE, exist_ok=True)
     record = dict(record)
+    if _context_clips:
+        record["_clips"] = list(_context_clips)
     record["_recorded_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
     # A stable id so a single item can be removed later. Line numbers shift
     # as soon as anything else is deleted, so they cannot serve as identity.
@@ -98,14 +115,42 @@ def remember_fact(subject, fact):
     return {"ok": True, "saved": "fact", "subject": r["subject"]}
 
 
+def tag_topics(topics):
+    """Label this conversation with the subjects it covers."""
+    if isinstance(topics, str):
+        topics = [t.strip() for t in topics.split(",")]
+    clean = []
+    for t in topics or []:
+        t = str(t).strip().lower()
+        # Short, plain labels. A "topic" that is really a sentence cannot be
+        # matched against the next conversation about the same thing.
+        if t and len(t) <= 40 and t not in clean:
+            clean.append(t)
+    if not clean:
+        return {"ok": False, "error": "no usable topics"}
+    r = _append("topics", {"topics": clean})
+    return {"ok": True, "saved": "topics", "topics": r["topics"]}
+
+
 REGISTRY = {
     "add_note": add_note,
     "add_task": add_task,
     "add_calendar_event": add_calendar_event,
     "remember_fact": remember_fact,
+    "tag_topics": tag_topics,
 }
 
 SCHEMAS = [
+    {"type": "function", "function": {
+        "name": "tag_topics",
+        "description": ("Label this conversation with the two to five subjects "
+                        "it is actually about, as short lowercase phrases, so "
+                        "later conversations on the same subject can be found "
+                        "together. Examples: 'shoulder injury', 'dog training', "
+                        "'asphalt experiment'."),
+        "parameters": {"type": "object", "properties": {
+            "topics": {"type": "array", "items": {"type": "string"}}},
+            "required": ["topics"]}}},
     {"type": "function", "function": {
         "name": "add_note",
         "description": "Save a note capturing something discussed. Use for context worth keeping that is not an action item.",

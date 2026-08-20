@@ -24,7 +24,7 @@ STORE = os.path.join(DATA, "agent")
 # The only files the agent store contains. Every entry point resolves a kind
 # through this: `kind` arrives from a query string, which may contain slashes,
 # and it used to be joined straight into a path and passed to os.remove().
-KINDS = ("tasks", "events", "notes", "facts")
+KINDS = ("tasks", "events", "notes", "facts", "topics")
 
 
 def _store_lock():
@@ -96,7 +96,11 @@ Record only what was actually said and is worth keeping:
 Rules:
 - Never invent details. If it was not said, do not record it.
 - Skip smalltalk, filler and thinking aloud. Most conversation is not worth saving.
-- If nothing is worth recording, call no tools and say so in one short sentence.
+- Always call tag_topics once, whatever else you do. It labels what this
+  conversation was about so later conversations on the same subject can be
+  found with it, and that is worth doing even when there is nothing new to
+  record.
+- If nothing else is worth recording, say so in one short sentence.
 - Attribute owners by the speaker name shown.
 - Transcription is imperfect; ignore garbled fragments rather than guessing.
 
@@ -317,6 +321,12 @@ class ConversationAgent:
             text = text[-MAX_CHARS:]
             text = text[text.index("\n") + 1:] if "\n" in text else text
 
+        REGISTRY  # noqa: B018 -- imported above; kept for clarity of intent
+        try:
+            import tools_impl
+            tools_impl.set_context(clips)
+        except Exception:
+            pass
         self.busy = f"{len(clips)} clip(s)"
         self.notify("agent", status="running", clips=len(clips), chars=len(text))
 
@@ -359,6 +369,11 @@ class ConversationAgent:
                                      "content": json.dumps(result)})
         finally:
             self.busy = None
+            try:
+                import tools_impl
+                tools_impl.set_context([])
+            except Exception:
+                pass
 
         result = {"clips": clips, "actions": len(actions),
                   "said": said.strip()[:300], "at": time.time(),
