@@ -337,6 +337,12 @@ def transcript_path(clip):
     return os.path.join(TRANSCRIPTS, os.path.splitext(clip)[0] + ".json")
 
 
+# Longest transcript that a clip with no detected voice is allowed to have
+# before it is treated as real. Whisper's silence phrases are short; anything
+# longer is more likely to be speech the diarizer merely failed to cluster.
+HALLUCINATION_CHARS = 40
+
+
 class Worker:
     def __init__(self, notify=None, on_transcript=None):
         self.q: queue.Queue = queue.Queue()
@@ -469,6 +475,29 @@ class Worker:
         segs = [x for x in segs
                 if all(isinstance(x[k], (int, float)) and math.isfinite(x[k])
                        for k in ("start", "end"))]
+
+        # Whisper writes a phrase over silence, and the diarizer is the check.
+        #
+        # Nine clips in the archive had a transcript of exactly one segment
+        # reading "Thank you." or "Hmm." with no speaker on it. Measured, they
+        # are room tone -- around -30 dBFS RMS across thirty seconds -- and
+        # WhisperX's own VAD had already logged "No active speech found in
+        # audio" for each. The phrase is the model's habit on near-silence,
+        # and it was reaching search, the conversation view and the agent as
+        # though somebody had said it.
+        #
+        # The test is the diarizer rather than a list of known phrases: if it
+        # found no voice anywhere in the clip, no one spoke, whatever the
+        # decoder wrote. A real short utterance -- "Yeah." -- is still kept,
+        # because it comes with a speaker. Only applied when diarization
+        # actually ran, so disabling it does not silently discard everything.
+        if (self._diar is not None and segs
+                and not any(x.get("speaker") for x in segs)
+                and sum(len(x["text"]) for x in segs) <= HALLUCINATION_CHARS):
+            self.notify("log", text=(
+                f"{clip}: no voice found; discarding "
+                f"{' '.join(x['text'] for x in segs)[:40]!r} as silence"))
+            segs = []
 
         os.makedirs(TRANSCRIPTS, exist_ok=True)
         atomicio.write_json(transcript_path(clip),
