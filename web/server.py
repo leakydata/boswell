@@ -88,6 +88,10 @@ def safe_clip(name):
     return path
 
 
+TELEMETRY_PATH = os.path.join(DATA, "telemetry.jsonl")
+# How often to record a sample while connected.
+TELEMETRY_EVERY_S = 60.0
+
 PREFS_PATH = os.path.join(DATA, "prefs.json")
 
 # What the service remembers across restarts.
@@ -647,6 +651,35 @@ class Device:
                 self.state.update(connected=False, source=None)
             self.publish()
 
+    def _record_telemetry(self):
+        """Keep the numbers the device reports, once a minute.
+
+        Battery voltage was read every second and thrown away, so the one
+        thing needed to check the percentage table -- a cell actually
+        discharging -- could happen and leave no evidence. The same goes for
+        the step count and the drop counters: they are only useful as a series.
+
+        One line per sample, appended. Cheap enough to leave running.
+        """
+        now = time.time()
+        if now - getattr(self, "_telemetry_at", 0) < TELEMETRY_EVERY_S:
+            return
+        self._telemetry_at = now
+        st = self.state
+        if not st.get("battery_mv"):
+            return                      # nothing to say yet
+        row = {"t": round(now, 1),
+               "mv": st.get("battery_mv"),
+               "pct": st.get("battery_pct"),
+               "charging": bool(st.get("charging")),
+               "steps": st.get("steps"),
+               "backlog": st.get("backlog_bytes"),
+               "boot": st.get("boot_id")}
+        try:
+            atomicio.append_line(TELEMETRY_PATH, json.dumps(row))
+        except Exception:
+            pass
+
     async def _read_info(self, c):
         info = await c.read_gatt_char(INFO_UUID)
         parsed = parse_info(info)
@@ -670,6 +703,7 @@ class Device:
             self._recovered_tms = None
 
         self.state.update(parsed)
+        self._record_telemetry()
         # Say it again rather than assume it landed, but only when the device
         # publishes a capture state to disagree with.
         if parsed["device_streaming"] is False and self.state.get("armed"):
@@ -1188,6 +1222,65 @@ async def api_agent_merge(body: dict):
         raise HTTPException(400, r.get("error", "merge failed"))
     device.event("log", text=f"merged {r['merged']} duplicate {kind}")
     return r
+
+
+@app.get("/api/telemetry")
+async def api_telemetry(limit: int = 5000):
+    """The recorded battery, step and backlog series, oldest first."""
+    rows = []
+    try:
+        with open(TELEMETRY_PATH) as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    try:
+                        rows.append(json.loads(line))
+                    except Exception:
+                        pass
+    except FileNotFoundError:
+        pass
+    return {"samples": rows[-limit:], "total": len(rows)}
+
+
+@app.get("/api/battery/curve")
+async def api_battery_curve():
+    """How the percentage table compares with what the cell actually did.
+
+    The table was written from a datasheet and has never seen this cell
+    discharge. This reports what has been observed so far rather than
+    asserting the table is right: pairs of voltage and the percentage the
+    firmware derived, taken only while not charging.
+    """
+    rows = []
+    try:
+        with open(TELEMETRY_PATH) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    r = json.loads(line)
+                except Exception:
+                    continue
+                if r.get("mv") and not r.get("charging"):
+                    rows.append(r)
+    except FileNotFoundError:
+        pass
+    if not rows:
+        return {"samples": 0,
+                "note": "nothing recorded yet; fit a cell and unplug USB"}
+    mv = [r["mv"] for r in rows]
+    span = (rows[-1]["t"] - rows[0]["t"]) / 3600.0
+    return {"samples": len(rows),
+            "hours_observed": round(span, 2),
+            "mv_high": max(mv), "mv_low": min(mv),
+            "pct_at_start": rows[0].get("pct"), "pct_now": rows[-1].get("pct"),
+            "note": ("a discharge is only meaningful once the voltage has "
+                     "actually fallen; charging samples are excluded. With no "
+                     "cell fitted the divider reads the USB rail, which looks "
+                     "like a full battery and cannot be told apart from one "
+                     "by voltage alone -- so a flat series near 4.1 V "
+                     "probably means no cell rather than a healthy one")}
 
 
 @app.get("/api/topics")
