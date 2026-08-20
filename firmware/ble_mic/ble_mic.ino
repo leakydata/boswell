@@ -857,7 +857,10 @@ void setup() {
 
   infoChar.setProperties(CHR_PROPS_READ);
   infoChar.setPermission(SECMODE_OPEN, SECMODE_NO_ACCESS);
-  infoChar.setMaxLen(40);
+  /* 44, matching the buffer. Growing the buffer and leaving this at 40 meant
+     the four new bytes were written and never transmitted -- the host read a
+     short characteristic and indexed off the end of it. */
+  infoChar.setMaxLen(44);
   infoChar.begin();
   publishInfo();
 

@@ -92,7 +92,8 @@ bool cfg_store_load_backlog(struct boswell_backlog *out)
     return true;
 }
 
-void cfg_store_save_backlog(int64_t w_pos, int64_t r_pos)
+void cfg_store_save_backlog(int64_t w_pos, int64_t r_pos,
+                            const uint8_t fingerprint[8])
 {
     if (!ready) {
         return;
@@ -103,6 +104,10 @@ void cfg_store_save_backlog(int64_t w_pos, int64_t r_pos)
         .w_pos = w_pos,
         .r_pos = r_pos,
     };
+
+    if (fingerprint) {
+        memcpy(rec.fingerprint, fingerprint, sizeof(rec.fingerprint));
+    }
     /* NVS skips a write whose contents match what is stored, so calling this
      * with unchanged cursors costs nothing. */
     ssize_t n = nvs_write(&fs, BACKLOG_ID, &rec, sizeof(rec));

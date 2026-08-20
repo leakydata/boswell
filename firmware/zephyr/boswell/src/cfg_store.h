@@ -52,7 +52,8 @@ struct boswell_settings {
 #define BOSWELL_BACKLOG_MAGIC 0xB0C5
 /* 2: records gained a CRC byte, so a version 1 cursor describes a layout
    that no longer exists and must not be trusted. */
-#define BOSWELL_BACKLOG_VER   2
+/* 3: the record fingerprint was added. */
+#define BOSWELL_BACKLOG_VER   3
 
 struct boswell_backlog {
     uint16_t magic;
@@ -60,11 +61,25 @@ struct boswell_backlog {
     uint8_t  _pad;
     int64_t  w_pos;
     int64_t  r_pos;
+    /* The first bytes of the record the read cursor points at.
+     *
+     * A cursor describes a layout, and the flash can be rewritten by
+     * something that does not share it -- flashing the other firmware and
+     * back is enough, since both write the same external flash with their own
+     * independent cursors. The cursor then survives while the data under it
+     * does not, and the drain stalls on a record that is real but in the
+     * wrong place. Verified on the board by doing exactly that: the store
+     * came back with a valid-looking cursor, sent five frames, and stopped.
+     *
+     * Cheap to store and decisive on restore: if these bytes are not still
+     * there, the cursor is describing somebody else's flash. */
+    uint8_t  fingerprint[8];
 };
 
 int  cfg_store_init(void);
 bool cfg_store_load_backlog(struct boswell_backlog *out);
-void cfg_store_save_backlog(int64_t w_pos, int64_t r_pos);
+void cfg_store_save_backlog(int64_t w_pos, int64_t r_pos,
+                            const uint8_t fingerprint[8]);
 bool cfg_store_load(struct boswell_settings *out);
 /* Mark dirty; the actual write happens a few seconds later. */
 void cfg_store_touch(void);

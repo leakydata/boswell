@@ -327,6 +327,22 @@ int qspi_store_init(void)
                     sane = true;       /* single record; nothing after it */
                 }
             }
+            /* And the bytes must still be the ones that were there when the
+             * cursor was written. */
+            if (sane) {
+                uint8_t fp[8] = { 0 };
+
+                if ((saved.w_pos - saved.r_pos) >= (int64_t)sizeof(fp) &&
+                    flash_read(flash_dev,
+                               (uint32_t)(saved.r_pos % capacity),
+                               fp, sizeof(fp)) == 0) {
+                    if (memcmp(fp, saved.fingerprint, sizeof(fp)) != 0) {
+                        LOG_WRN("backlog cursor does not match the flash "
+                                "underneath it; starting empty");
+                        sane = false;
+                    }
+                }
+            }
             if (sane) {
                 w_pos = saved.w_pos;
                 r_pos = saved.r_pos;
@@ -439,6 +455,18 @@ int qspi_store_push(const uint8_t *data, uint8_t len)
  */
 #define CURSOR_SAVE_MS 60000
 
+static void save_cursors_now(void)
+{
+    uint8_t fp[8] = { 0 };
+
+    /* Best effort: a fingerprint we could not read is stored as zeroes, and
+     * a zero fingerprint simply fails to match on restore. */
+    if ((w_pos - r_pos) >= (int64_t)sizeof(fp)) {
+        (void)read_wrapped(r_pos, fp, sizeof(fp));
+    }
+    cfg_store_save_backlog(w_pos, r_pos, fp);
+}
+
 static void persist_cursors(void)
 {
     static int64_t last_save_ms;
@@ -450,12 +478,12 @@ static void persist_cursors(void)
     if (has != had_backlog) {
         had_backlog = has;
         last_save_ms = now;
-        cfg_store_save_backlog(w_pos, r_pos);
+        save_cursors_now();
         return;
     }
     if (has && now - last_save_ms >= CURSOR_SAVE_MS) {
         last_save_ms = now;
-        cfg_store_save_backlog(w_pos, r_pos);
+        save_cursors_now();
     }
 }
 
