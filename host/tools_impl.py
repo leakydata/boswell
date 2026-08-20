@@ -56,6 +56,20 @@ def _append(kind, record):
             f.write(json.dumps(record) + "\n")
             f.flush()
             os.fsync(f.fileno())
+
+    # Into the agent's memory as well, so the next review can recall it.
+    # Best effort: the item is already durable on disk, and an embedding
+    # service that is down should not fail the tool call the model just made.
+    try:
+        import sys
+        here = os.path.dirname(os.path.abspath(__file__))
+        web = os.path.join(here, "..", "web")
+        if web not in sys.path:
+            sys.path.insert(0, web)
+        import semantic
+        semantic.index_item(dict(record, _kind=kind))
+    except Exception:
+        pass
     return record
 
 

@@ -66,6 +66,12 @@ MIN_CHARS = 120            # below this there is nothing worth reasoning about
 MAX_RETRIES = 3            # a batch survives this many failures before it is dropped
 RETRY_BACKOFF = 30         # seconds, doubling
 MAX_BACKOFF = 300
+# How much of the transcript to search memory with, how many entries to show,
+# and how close they must be. Loose enough to catch a rephrasing, tight enough
+# that unrelated recall does not crowd out the transcript.
+RECALL_QUERY_CHARS = 2000
+RECALL_ITEMS = 12
+RECALL_MIN_SCORE = 0.55
 # A batch that is only a clip or two is thirty seconds of speech, and thirty
 # seconds almost never contains a commitment, a date or a durable fact. The
 # agent was reviewing exactly that and correctly answering "nothing to
@@ -92,7 +98,16 @@ Rules:
 - Skip smalltalk, filler and thinking aloud. Most conversation is not worth saving.
 - If nothing is worth recording, call no tools and say so in one short sentence.
 - Attribute owners by the speaker name shown.
-- Transcription is imperfect; ignore garbled fragments rather than guessing."""
+- Transcription is imperfect; ignore garbled fragments rather than guessing.
+
+You may be shown ALREADY KNOWN entries retrieved from earlier conversations.
+They are what you have recorded before. Use them:
+- Do not record something you already know. Say so instead.
+- If this conversation adds to one, record the new part only, and say which
+  entry it extends.
+- If it contradicts one, record the correction and say what changed.
+- Use the same subject name an existing entry uses for the same person or
+  project, so one subject does not end up split across several names."""
 
 
 class ConversationAgent:
@@ -192,6 +207,38 @@ class ConversationAgent:
                     self._failures = 0
 
     # ---- execution ----------------------------------------------------
+    def _recall(self, text):
+        """What is already recorded that bears on this conversation.
+
+        Without this every review started from nothing: the model saw a system
+        prompt and a transcript and had no way to know it had written the same
+        thing down before. The store shows the cost -- one goal recorded four
+        times in slightly different words, a shoulder injury as three
+        unrelated facts, and one person filed under two different subjects
+        because nothing told the model which name it had used last time.
+
+        Best effort. If the embedding service is down the review still runs,
+        with the memory it used to have, which is none.
+        """
+        try:
+            import semantic
+        except Exception:
+            return ""
+        try:
+            # The end of the transcript, which is what the review is about.
+            r = semantic.recall(text[-RECALL_QUERY_CHARS:], limit=RECALL_ITEMS)
+        except Exception as e:
+            self.notify("log", text=f"recall unavailable: {str(e)[:80]}")
+            return ""
+        lines = []
+        for h in r.get("hits", []):
+            if h.get("score", 0) < RECALL_MIN_SCORE:
+                continue
+            when = (h.get("recorded_at") or "")[:10]
+            lines.append(f"- [{h.get('kind','?')}] {h.get('text','')}"
+                         + (f"  ({when})" if when else ""))
+        return "\n".join(lines)
+
     def _render(self, batch):
         lines = []
         for clip, segs, names in batch:
@@ -261,6 +308,7 @@ class ConversationAgent:
         batch = self._widen(batch)
         clips = [c for c, _, _ in batch]
         text = self._render(batch)
+        known = self._recall(text)
         if len(text) < MIN_CHARS:
             return {"clips": clips, "actions": 0, "said": "", "at": time.time(),
                     "skipped_reason": f"only {len(text)} characters of speech; "
@@ -272,8 +320,12 @@ class ConversationAgent:
         self.busy = f"{len(clips)} clip(s)"
         self.notify("agent", status="running", clips=len(clips), chars=len(text))
 
+        user = ""
+        if known:
+            user += "ALREADY KNOWN, from earlier conversations:\n" + known + "\n\n"
+        user += f"Conversation transcript:\n\n{text}"
         messages = [{"role": "system", "content": SYSTEM},
-                    {"role": "user", "content": f"Conversation transcript:\n\n{text}"}]
+                    {"role": "user", "content": user}]
         actions, said = [], ""
         try:
             for _ in range(6):
@@ -369,6 +421,13 @@ def _delete_item_locked(p, item_id):
             continue
         if d.get("_id") == item_id:
             removed = True
+            # Out of memory too, or the agent keeps recalling something the
+            # user deleted precisely because they did not want it kept.
+            try:
+                import semantic
+                semantic.remove_item(item_id)
+            except Exception:
+                pass
             continue
         rows.append(d)
     if removed:
