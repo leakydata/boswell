@@ -1207,8 +1207,63 @@ on("fDate",    "change", () => { dateFilter = $("fDate").value;    loadClips(); 
 on("fGroup",   "change", () => { groupMode  = $("fGroup").value;   loadClips(); });
 /* Keyword search only finds a conversation if you remember a word from it.
    Meaning search embeds the query and compares it against every line. */
+/* Display choices live in the browser, not on the server.
+ *
+ * How you group recordings or which similarity setting you last looked at is
+ * a property of the person looking, not of the device -- two browsers should
+ * be able to disagree, and none of it should travel to a machine that also
+ * holds the recordings. Device settings are a different question and are
+ * remembered server-side, because they describe what the hardware is doing.
+ */
+const VIEW_PREFS = ["fMode", "fGroup", "fContent", "fDate", "itemKind", "dupThresh"];
+
+function loadViewPrefs(){
+  let saved = {};
+  try{ saved = JSON.parse(localStorage.getItem("boswell_view") || "{}"); }
+  catch(e){ saved = {}; }
+  for (const id of VIEW_PREFS){
+    const el = $(id);
+    if (!el || !(id in saved)) continue;
+    // Only if the stored value is still one this build offers, so a renamed
+    // option leaves the control on its default rather than blank.
+    if ([...el.options].some(o => o.value === saved[id])) el.value = saved[id];
+  }
+}
+
+/* Restore the controls and the variables that mirror them.
+ *
+ * Setting a <select>'s value does not fire change, so the module-level
+ * variables the rest of the code reads -- searchMode, groupMode and the two
+ * filters -- would still hold their defaults while the controls showed
+ * something else. Two sources of truth disagreeing is how the interface ends
+ * up showing one thing and doing another.
+ */
+function applyViewPrefs(){
+  loadViewPrefs();
+  searchMode = $("fMode").value;
+  groupMode  = $("fGroup").value;
+  clipFilter = $("fContent").value;
+  dateFilter = $("fDate").value;
+}
+
+function saveViewPrefs(){
+  const out = {};
+  for (const id of VIEW_PREFS){
+    const el = $(id);
+    if (el) out[id] = el.value;
+  }
+  try{ localStorage.setItem("boswell_view", JSON.stringify(out)); }catch(e){}
+}
+
+for (const id of VIEW_PREFS) on(id, "change", saveViewPrefs);
+
 let searchMode = "both";
 on("fMode", "change", () => { searchMode = $("fMode").value; loadClips(); });
+
+/* Called here, not at startup further up: applyViewPrefs assigns the four
+   variables above, and a let is unreachable until its own declaration has
+   run. Calling it earlier threw before the page finished loading. */
+applyViewPrefs();
 
 function fmtClock(t){
   return new Date(t*1000).toLocaleTimeString([], {hour:"numeric", minute:"2-digit"});

@@ -86,6 +86,50 @@ def safe_clip(name):
     return path
 
 
+PREFS_PATH = os.path.join(DATA, "prefs.json")
+
+# What the service remembers across restarts.
+#
+# Three separate things were being conflated. The device keeps its own
+# settings in flash and restores them on boot. The browser has display
+# choices -- grouping, filters, search mode -- that are per-browser and
+# belong in the browser. And in between sits what this service intends the
+# device to be doing, which was held only in memory.
+#
+# That last one was not merely forgotten on restart, it was actively harmful:
+# the connect path asserts the settings this service intends, and with
+# nothing remembered it asserted the defaults -- so restarting the service
+# turned the voice gate off on a device that had correctly remembered it was
+# on. Worse than not remembering.
+PREF_KEYS = ("armed", "vad", "backlog_mode", "gain", "led_level", "led_mode",
+             "fast_charge", "mic_power_save", "rate16",
+             "agent_enabled", "agent_model", "agent_idle_seconds")
+
+
+def load_prefs():
+    try:
+        with open(PREFS_PATH) as f:
+            d = json.load(f)
+        return {k: v for k, v in d.items() if k in PREF_KEYS}
+    except FileNotFoundError:
+        return {}
+    except Exception as e:
+        # A corrupt file must not stop the recorder starting.
+        print(f"prefs unreadable ({e}); using defaults", flush=True)
+        return {}
+
+
+def save_prefs(d):
+    keep = {k: v for k, v in d.items() if k in PREF_KEYS}
+    try:
+        atomicio.write_json(PREFS_PATH, keep, indent=2)
+    except Exception as e:
+        print(f"could not save prefs: {e}", flush=True)
+
+
+PREFS = load_prefs()
+
+
 def parse_info(info):
     """Decode the 40-byte info characteristic into a state dictionary.
 
@@ -186,7 +230,13 @@ class Device:
             "ring_overruns": 0,
             "battery_mv": 0, "battery_pct": 0, "charging": False,
             "fast_charge": False, "mic_running": True,
+            "vad": False,
         }
+        # Anything remembered from a previous run wins over the defaults
+        # above, so a restart resumes rather than resets.
+        for k in ("vad", "backlog_mode", "led_level", "led_mode"):
+            if k in PREFS:
+                self.state[k] = PREFS[k]
         self.relay: WebSocket | None = None
         self.listeners: set[asyncio.Queue] = set()
         self.client: BleakClient | None = None
@@ -529,9 +579,26 @@ class Device:
             # recordings. Anything the host has an opinion about, it states.
             await self._ctrl(0x04, 1 if self.state.get("vad") else 0)
             await self._ctrl(0x09, 1 if self.state.get("backlog_mode") else 0)
+            for op, key, default in ((0x03, "gain", None),
+                                     (0x0A, "led_level", None),
+                                     (0x0B, "led_mode", None),
+                                     (0x0C, "fast_charge", None),
+                                     (0x0D, "mic_power_save", None)):
+                if key in PREFS:
+                    await self._ctrl(op, int(PREFS[key]))
 
             await c.start_notify(AUDIO_UUID, self._on_audio)
-            await self.set_armed(True)
+            # Whatever was last chosen, not always on.
+            #
+            # This armed unconditionally, so turning recording off and
+            # restarting the service turned it back on -- the wrong direction
+            # for a surprise on a device that records the room. It also left
+            # the re-arm safety net useless in the case it exists for: that
+            # net only fires when this service already believes it is armed,
+            # so once the flag was false nothing ever armed the device again,
+            # and capture stayed off with both sides agreeing it should be.
+            # Default on, because that is what an always-on recorder is for.
+            await self.set_armed(bool(PREFS.get("armed", True)))
             self.publish()
             self.event("log", text="connected to device")
 
@@ -619,13 +686,21 @@ class Device:
                 return False
         return False
 
+    def remember(self, **kw):
+        """Record an intended setting so a restart resumes it."""
+        PREFS.update(kw)
+        save_prefs(PREFS)
+
     async def set_armed(self, on: bool):
         self.state["armed"] = bool(on)
+        self.remember(armed=bool(on))
         await self._ctrl(0x01, 1 if on else 0)
         self.publish()
 
     async def set_gain(self, g: int):
-        if await self._ctrl(0x03, max(0, min(80, g))):
+        g = max(0, min(80, g))
+        if await self._ctrl(0x03, g):
+            self.remember(gain=g)
             self.event("log", text=f"gain set to {g}")
 
     async def set_led(self, level: int, pulse: bool):
@@ -633,14 +708,18 @@ class Device:
         self.state["led_mode"] = 1 if pulse else 0
         await self._ctrl(0x0A, self.state["led_level"])
         await self._ctrl(0x0B, self.state["led_mode"])
+        self.remember(led_level=self.state["led_level"],
+                      led_mode=self.state["led_mode"])
         self.publish()
 
     async def set_fast_charge(self, on: bool):
         if await self._ctrl(0x0C, 1 if on else 0):
+            self.remember(fast_charge=bool(on))
             self.event("log", text=f"charge current: {'100' if on else '50'} mA")
 
     async def set_mic_power_save(self, on: bool):
         if await self._ctrl(0x0D, 1 if on else 0):
+            self.remember(mic_power_save=bool(on))
             self.event("log", text=f"mic power saving {'on' if on else 'off'}")
 
     async def clear_buffer(self):
@@ -649,6 +728,7 @@ class Device:
 
     async def set_backlog_mode(self, live_first: bool):
         self.state["backlog_mode"] = 1 if live_first else 0
+        self.remember(backlog_mode=self.state["backlog_mode"])
         if await self._ctrl(0x09, 1 if live_first else 0):
             self.event("log", text="backlog: " +
                        ("live first, recover alongside" if live_first
@@ -660,6 +740,7 @@ class Device:
             # Remembered, so a reconnect re-asserts it rather than inheriting
             # whatever the device happens to be set to.
             self.state["vad"] = bool(on)
+            self.remember(vad=bool(on))
             self.event("log", text=f"VAD {'on' if on else 'off'}")
 
     def want(self, on: bool):
@@ -673,6 +754,13 @@ auto_transcribe = True
 device = Device()
 agent = agent_runner.ConversationAgent(
     notify=lambda kind, **kw: device.event(kind, **kw))
+# Restore what was chosen last time rather than starting from the defaults.
+if "agent_enabled" in PREFS:
+    agent.enabled = bool(PREFS["agent_enabled"])
+if PREFS.get("agent_model"):
+    agent.model = str(PREFS["agent_model"])
+if "agent_idle_seconds" in PREFS:
+    agent.idle_seconds = max(10.0, float(PREFS["agent_idle_seconds"]))
 worker = pipeline.Worker(
     notify=lambda kind, **kw: device.event(kind, **kw),
     on_transcript=agent.add)
@@ -1579,6 +1667,11 @@ async def api_agent_config(body: dict):
         agent.model = str(body["model"])
     if "idle_seconds" in body:
         agent.idle_seconds = max(10.0, float(body["idle_seconds"]))
+    # Turning the agent off and finding it back on after a restart is the
+    # kind of surprise that matters: it decides what gets read by a model.
+    PREFS.update(agent_enabled=agent.enabled, agent_model=agent.model,
+                 agent_idle_seconds=agent.idle_seconds)
+    save_prefs(PREFS)
     return agent.status()
 
 
