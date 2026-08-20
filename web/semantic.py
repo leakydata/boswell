@@ -285,8 +285,15 @@ def item_text(item):
     """
     kind = (item.get("_kind") or "").rstrip("s")
     subject = item.get("subject") or item.get("owner") or ""
-    body = (item.get("fact") or item.get("title") or item.get("text")
-            or item.get("body") or "")
+    # A topics item carries a list, not a sentence. Without this it rendered
+    # as the bare word "topic", so every topics item embedded identically and
+    # the duplicate finder scored them 1.0 against each other -- three
+    # genuinely different tag sets proposed for merging.
+    if item.get("topics"):
+        body = ", ".join(str(t) for t in item["topics"])
+    else:
+        body = (item.get("fact") or item.get("title") or item.get("text")
+                or item.get("body") or "")
     extra = item.get("body") if item.get("title") else ""
     parts = [p for p in (kind, subject, body, extra) if p]
     return " · ".join(parts)[:1000]
