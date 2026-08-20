@@ -284,3 +284,33 @@ class TestClipWriting:
         with pytest.raises(OSError):
             d.take_clip()
         assert d._pcm, "audio was discarded before it reached disk"
+
+
+class TestClipNameValidation:
+    """Eight endpoints each had their own version of this and they had drifted."""
+
+    @pytest.mark.parametrize("bad", [
+        "../../etc/passwd.wav", "sub/x.wav", "/abs/x.wav", "x.mp3",
+        "", ".wav.", "x.wav/", "..", "x.WAV",
+    ])
+    def test_rejected(self, bad):
+        from fastapi import HTTPException
+        import server
+        with pytest.raises(HTTPException):
+            server.safe_clip(bad)
+
+    @pytest.mark.parametrize("good", ["clip_1.wav", "recovered_2.wav", "a.wav"])
+    def test_accepted_and_lands_in_data(self, good):
+        import server
+        p = server.safe_clip(good)
+        assert os.path.dirname(os.path.abspath(p)) == os.path.abspath(server.DATA)
+
+    def test_transcript_path_requires_a_bare_name(self):
+        import pipeline
+        for bad in ("../x.wav", "sub/x.wav", "/abs/x.wav", ""):
+            with pytest.raises(ValueError):
+                pipeline.transcript_path(bad)
+
+    def test_transcript_path_still_works_for_real_names(self):
+        import pipeline
+        assert pipeline.transcript_path("clip_1.wav").endswith("clip_1.json")

@@ -334,7 +334,17 @@ def apply_vocabulary(text, terms):
 
 
 def transcript_path(clip):
-    return os.path.join(TRANSCRIPTS, os.path.splitext(clip)[0] + ".json")
+    """Where a clip's transcript lives.
+
+    Enforces a bare filename. This took whatever it was given and joined it,
+    so a name carrying a path would have produced a transcript path outside
+    the store -- the callers happened to validate first, which is not the
+    same as this being safe to call.
+    """
+    name = os.path.basename(clip)
+    if name != clip or not name:
+        raise ValueError(f"clip name must be a bare filename: {clip!r}")
+    return os.path.join(TRANSCRIPTS, os.path.splitext(name)[0] + ".json")
 
 
 # Longest transcript that a clip with no detected voice is allowed to have

@@ -70,6 +70,22 @@ TIMES = os.path.join(DATA, "times")
 SEG_SECONDS = 30.0          # write a clip this long, then hand it to the pipeline
 
 
+def safe_clip(name):
+    """Validate a caller-supplied clip name and return its path.
+
+    Eight endpoints each wrote their own version of this, and they had
+    drifted: most required a .wav extension, one checked only for a slash,
+    and none of them resolved the result to prove it lands in DATA. A single
+    resolver means a new endpoint cannot quietly get it wrong.
+    """
+    if not name or os.path.basename(name) != name or not name.endswith(".wav"):
+        raise HTTPException(400, "bad name")
+    path = os.path.abspath(os.path.join(DATA, name))
+    if os.path.dirname(path) != os.path.abspath(DATA):
+        raise HTTPException(400, "bad name")
+    return path
+
+
 def parse_info(info):
     """Decode the 40-byte info characteristic into a state dictionary.
 
@@ -506,11 +522,33 @@ class Device:
             self.event("log", text="connected to device")
 
             last_info = time.time()
+            info_errors = 0
             while self._want and c.is_connected:
                 await asyncio.sleep(0.25)
                 if time.time() - last_info > 1.0:
                     last_info = time.time()
-                    await self._read_info(c)
+                    # A failed status read is not a failed session.
+                    #
+                    # This call used to sit bare in the loop, so one transient
+                    # GATT read exception escaped all the way out of the
+                    # session, disconnected the device and restarted discovery
+                    # -- throwing away a link whose audio notifications were
+                    # arriving perfectly, because a once-a-second status poll
+                    # hiccuped. Audio is the thing worth protecting; the info
+                    # characteristic is telemetry.
+                    try:
+                        await self._read_info(c)
+                        info_errors = 0
+                    except Exception as e:
+                        info_errors += 1
+                        self.state["info_errors"] = info_errors
+                        if info_errors >= INFO_ERROR_LIMIT:
+                            self.event("log", text=(
+                                f"status reads failing ({info_errors}); "
+                                f"reconnecting: {str(e)[:80]}"))
+                            raise
+                        self.publish()
+                        continue
                     if getattr(self, "_rearm_needed", False):
                         # Say it again rather than assume it landed. This
                         # costs one control write and is the difference
@@ -685,6 +723,11 @@ TOKEN = os.environ.get("BOSWELL_TOKEN", "").strip()
 # Record at 16 kHz. Set BOSWELL_8K=1 to go back to the firmware default, which
 # roughly halves the radio traffic at the cost of everything above 4 kHz.
 RATE_16K = os.environ.get("BOSWELL_8K", "") != "1"
+
+# Consecutive info-characteristic read failures tolerated before the link is
+# treated as gone. At one poll a second this is a few seconds of telemetry
+# loss, against tearing down a session that is still delivering audio.
+INFO_ERROR_LIMIT = 5
 # Loopback by default. This serves recordings of whoever happens to be in the
 # room and can start the microphone remotely, so reaching it from another
 # machine should be a decision somebody made rather than the default.
@@ -776,8 +819,7 @@ ENVELOPES = os.path.join(DATA, "envelopes")
 async def api_envelope(name: str):
     """Per-frame loudness for the waveform view. Cached: the arithmetic is
     cheap but re-reading a WAV on every scrub is not."""
-    if "/" in name or not name.endswith(".wav"):
-        raise HTTPException(400, "bad name")
+    safe_clip(name)
     path = os.path.join(DATA, name)
     if not os.path.exists(path):
         raise HTTPException(404, "no such clip")
@@ -986,8 +1028,7 @@ async def api_index_rebuild():
 
 @app.get("/api/audio/{name}")
 async def api_audio(name: str):
-    if "/" in name or not name.endswith(".wav"):
-        raise HTTPException(400, "bad name")
+    safe_clip(name)
     path = os.path.join(DATA, name)
     if not os.path.exists(path):
         raise HTTPException(404, "no such clip")
@@ -996,7 +1037,7 @@ async def api_audio(name: str):
 
 @app.post("/api/transcribe/{name}")
 async def api_transcribe(name: str, force: bool = False):
-    if "/" in name or not os.path.exists(os.path.join(DATA, name)):
+    if not os.path.exists(safe_clip(name)):
         raise HTTPException(404, "no such clip")
     tp = pipeline.transcript_path(name)
     if os.path.exists(tp) and not force:
@@ -1099,8 +1140,7 @@ async def api_conversation(body: dict):
     missing = 0
 
     for name in names:
-        if "/" in name or not name.endswith(".wav"):
-            raise HTTPException(400, f"bad name: {name}")
+        safe_clip(name)
         tp = pipeline.transcript_path(name)
         wav = os.path.join(DATA, name)
         started = os.path.getmtime(wav) if os.path.exists(wav) else 0
@@ -1210,8 +1250,7 @@ def delete_clip_files(name):
 
 @app.delete("/api/clip/{name}")
 async def api_delete(name: str):
-    if "/" in name or not name.endswith(".wav"):
-        raise HTTPException(400, "bad name")
+    safe_clip(name)
     path = os.path.join(DATA, name)
     if not os.path.exists(path):
         raise HTTPException(404, "no such clip")
@@ -1232,7 +1271,7 @@ async def api_delete_many(body: dict):
         raise HTTPException(400, "names must be a list")
     removed, missing = [], []
     for name in names:
-        if "/" in name or not name.endswith(".wav"):
+        if os.path.basename(name) != name or not name.endswith(".wav"):
             continue
         path = os.path.join(DATA, name)
         if not os.path.exists(path):
@@ -1254,8 +1293,7 @@ async def api_split(name: str):
     person is far stronger than one built from a clip where two people
     overlap.
     """
-    if "/" in name or not name.endswith(".wav"):
-        raise HTTPException(400, "bad name")
+    safe_clip(name)
     src = os.path.join(DATA, name)
     tp = pipeline.transcript_path(name)
     if not os.path.exists(src):
@@ -1431,8 +1469,7 @@ async def api_agent_review(body: dict):
 
     batch = []
     for name in names:
-        if "/" in name or not name.endswith(".wav"):
-            raise HTTPException(400, f"bad name: {name}")
+        safe_clip(name)
         tp = pipeline.transcript_path(name)
         if not os.path.exists(tp):
             continue
