@@ -185,6 +185,9 @@ static void watchdog_init(void)
 static atomic_t wdt_seen;
 /* Frames the radio refused after every retry. */
 static uint32_t notify_drops;
+/* Motion reads the sensor refused, and frames abandoned because none
+ * succeeded. A count is the difference between a quiet sensor and a dead one. */
+static uint32_t imu_read_fails, imu_empty_frames;
 /* Which threads exist. Requiring a check-in from a thread that was never
  * created is a reboot loop with no way out: if the flash fails to probe, the
  * writer thread is never started, WDT_QSPI is never set, and the watchdog
@@ -415,6 +418,11 @@ static int cmd_status(const struct shell *sh, size_t argc, char **argv)
     ble_audio_idle_stats(idle);
     shell_print(sh, "notify drops=%u", notify_drops);
     { uint32_t ss[4]; ble_audio_send_stats(ss); shell_print(sh, "send calls=%u retries=%u avg=%u us max=%u us", ss[0], ss[1], ss[3], ss[2]); }
+    shell_print(sh, "imu read fails=%u empty frames=%u",
+                imu_read_fails, imu_empty_frames);
+    { uint32_t ws[2]; int we = 0; qspi_store_write_stats(ws, &we);
+      shell_print(sh, "qspi write fails=%u erase fails=%u err=%d",
+                  ws[0], ws[1], we); }
     { uint32_t ps[8]; int le = 0; qspi_store_pop_stats(ps, &le);
       shell_print(sh, "qspi peeks=%u refused=%u skipped=%u unstuck=%u fails=%u scanned=%u err=%d",
                   ps[4], ps[5], ps[6], ps[7], ps[0], ps[3], le); }
@@ -711,8 +719,24 @@ static void imu_stream_fn(void *a, void *b, void *c)
         int n = 0;
         uint8_t *p = frame + IMU_HEADER_LEN;
         int64_t t0 = k_uptime_get();
-        while (n < IMU_MAX_SAMPLES) {
+        /* Bounded by attempts, not only by successes.
+         *
+         * This waited for IMU_MAX_SAMPLES good reads and nothing else, so a
+         * sensor that had stopped answering left the thread here for as long
+         * as the device stayed on: no frame, no error, and no watchdog either
+         * because this thread does not check in. Motion simply stopped, and
+         * the only way to find out was to notice the absence.
+         *
+         * Twice the samples wanted is enough slack for the odd failed read on
+         * a shared bus and short enough that a dead sensor is reported within
+         * one frame's time. */
+        int attempts = 0;
+        const int max_attempts = IMU_MAX_SAMPLES * 2;
+
+        while (n < IMU_MAX_SAMPLES && attempts < max_attempts) {
             struct imu_sample s;
+
+            attempts++;
             if (imu_read_motion(&s, gyro)) {
                 const int16_t *src = &s.ax;
                 for (int i = 0; i < (gyro ? 6 : 3); i++) {
@@ -720,8 +744,18 @@ static void imu_stream_fn(void *a, void *b, void *c)
                     *p++ = (uint8_t)((src[i] >> 8) & 0xFF);
                 }
                 n++;
+            } else {
+                imu_read_fails++;
             }
             k_sleep(K_USEC(period_us));
+        }
+        if (n == 0) {
+            /* Nothing to send, and saying so beats an empty frame that looks
+             * like stillness. */
+            if (imu_empty_frames++ % 50 == 0) {
+                LOG_WRN("IMU returned no samples in %d attempts", attempts);
+            }
+            continue;
         }
 
         frame[0] = (uint8_t)(seq & 0xFF);

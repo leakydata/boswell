@@ -32,6 +32,9 @@ static uint32_t dropped;
  * exactly like an empty one. */
 static uint32_t pop_fail_read, pop_fail_short, pop_fail_big, pop_scanned;
 static uint32_t pop_ok, drain_refused, drain_skipped, drain_stuck_drops;
+/* Writes and erases the flash rejected. Silence here reads as an idle store. */
+static uint32_t write_fails, erase_fails;
+static int      last_write_err;
 static uint32_t stuck_offers;
 /* About ten seconds of retries at the writer's 20 ms tick. */
 #define STUCK_OFFER_LIMIT 500
@@ -195,6 +198,20 @@ static int erase_ahead(void)
     return 0;
 }
 
+/* Commit the staged page.
+ *
+ * A failure here leaves page_fill at PAGE, which makes room zero on the next
+ * pass, so the writer stops taking bytes out of the staging ring rather than
+ * overwriting a page it never wrote -- and retries this on the following
+ * wake. That much was already right, by construction rather than by
+ * intention.
+ *
+ * What was missing is that it said nothing. The return value was discarded at
+ * both call sites, so a flash that had stopped accepting writes looked like a
+ * quiet one: the staging ring filled, frames were dropped at the far end as
+ * stage_drops, and the only number that moved was one whose name gives no
+ * hint that the flash is the reason.
+ */
 static int flush_page(void)
 {
     if (page_fill == 0) {
@@ -206,12 +223,21 @@ static int flush_page(void)
 
     int err = erase_ahead();
     if (err) {
+        if (erase_fails++ == 0) {
+            LOG_ERR("erase ahead of 0x%x failed (%d); the backlog is stalling",
+                    addr_of(w_pos), err);
+        }
+        last_write_err = err;
         return err;
     }
     flash_wake();
     err = flash_write(flash_dev, addr_of(w_pos), page_buf, PAGE);
     if (err) {
-        LOG_ERR("write at 0x%x failed (%d)", addr_of(w_pos), err);
+        if (write_fails++ == 0) {
+            LOG_ERR("write at 0x%x failed (%d); the backlog is stalling",
+                    addr_of(w_pos), err);
+        }
+        last_write_err = err;
         return err;
     }
     n_pages++;
@@ -497,6 +523,9 @@ static void writer_fn(void *a, void *b, void *cc)
 
             page_fill += got;
             if (page_fill == PAGE) {
+                /* Not discarded: on failure page_fill stays full, room goes
+                 * to zero, and this loop stops consuming until a later pass
+                 * gets the page committed. */
                 (void)flush_page();
             }
             k_mutex_unlock(&lock);
@@ -518,6 +547,14 @@ void qspi_store_commit(uint8_t len)
         peeked_len = 0;
     }
     k_mutex_unlock(&lock);
+}
+
+void qspi_store_write_stats(uint32_t out[2], int *last_err)
+{
+    out[0] = write_fails; out[1] = erase_fails;
+    if (last_err) {
+        *last_err = last_write_err;
+    }
 }
 
 void qspi_store_pop_stats(uint32_t out[8], int *last_err)

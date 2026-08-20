@@ -36,7 +36,9 @@ int      qspi_store_init(void);
 bool     qspi_store_ready(void);
 uint32_t qspi_store_pending(void);
 /* read failures, short records, oversize, bytes scanned, last errno */
-void qspi_store_pop_stats(uint32_t out[8], int *last_err);     /* bytes not yet drained */
+void qspi_store_pop_stats(uint32_t out[8], int *last_err);
+/* write failures, erase failures, last errno */
+void qspi_store_write_stats(uint32_t out[2], int *last_err);     /* bytes not yet drained */
 uint32_t qspi_store_capacity(void);
 uint32_t qspi_store_dropped(void);     /* records lost to lapping */
 
