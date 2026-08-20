@@ -729,7 +729,12 @@ function paint(s){
     : (s.mic_running ? "running" : "powered down");
   /* From the IMU's embedded pedometer and motion detectors, which run in the
      part itself rather than costing samples on the CPU. */
-  if (s.steps !== undefined){
+  /* Absent is not zero: a firmware that says it does not keep a counter
+     should read as unavailable, not as a confident zero for something nobody
+     measured. There is no overruns row in this view, so nothing to draw --
+     the host already reports it as None and anything added later inherits
+     that rather than a fabricated 0. */
+  if (s.steps !== undefined && s.has_steps !== false){
     const bits = [];
     if (s.moving) bits.push("moving");
     if (s.tilt) bits.push("tilt");

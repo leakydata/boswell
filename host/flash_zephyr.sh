@@ -20,8 +20,23 @@ export PATH="$HOME/.local/bin:$PATH"
 python3 - <<'PY' || true
 import serial, time
 try:
-    s = serial.Serial('/dev/ttyACM1', 115200, timeout=1)
-    s.write(b'\r\nboswell dfu\r\n'); time.sleep(1); s.close()
+    # Find the shell rather than assume a port. The device exposes two CDC
+    # ports and which one carries the shell moves between reflashes; a
+    # hardcoded path meant the DFU request went to the wrong port and the
+    # flash silently did nothing while reporting a failure that looked like
+    # the bootloader's fault.
+    import glob
+    for port in sorted(glob.glob('/dev/ttyACM*')):
+        try:
+            s = serial.Serial(port, 115200, timeout=1)
+            s.reset_input_buffer()
+            s.write(b'\r\nboswell status\r\n'); time.sleep(1.5)
+            if b'link=' not in s.read(4000):
+                s.close(); continue
+            s.write(b'\r\nboswell dfu\r\n'); time.sleep(1); s.close()
+            break
+        except Exception:
+            pass
 except Exception:
     pass   # already in the bootloader, or running the Arduino build
 PY
@@ -33,12 +48,16 @@ sleep 5
 adafruit-nrfutil dfu genpkg --dev-type 0x0052 --sd-req 0x0123 \
   --application "$HEX" /tmp/boswell.zip >/dev/null
 
-if [ -e /dev/ttyACM0 ] && \
-   adafruit-nrfutil dfu serial -pkg /tmp/boswell.zip -p /dev/ttyACM0 \
-     -b 115200 --singlebank 2>/dev/null | tail -1 | grep -q "Device programmed"; then
-  echo "flashed over serial DFU"
-  exit 0
-fi
+# The bootloader's DFU port is whichever one appears after the reboot; try
+# each rather than assuming the first.
+for port in /dev/ttyACM*; do
+  [ -e "$port" ] || continue
+  if adafruit-nrfutil dfu serial -pkg /tmp/boswell.zip -p "$port" \
+       -b 115200 --singlebank 2>/dev/null | tail -1 | grep -q "Device programmed"; then
+    echo "flashed over serial DFU ($port)"
+    exit 0
+  fi
+done
 
 UF2=/tmp/boswell-zephyr-build/zephyr/zephyr.uf2
 DEV=""

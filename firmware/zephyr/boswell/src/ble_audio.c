@@ -66,6 +66,16 @@ static void ccc_changed(const struct bt_gatt_attr *attr, uint16_t value)
     LOG_INF("notifications %s", notify_enabled ? "on" : "off");
     if (notify_enabled) {
         k_work_cancel_delayable(&idle_link);
+    } else if (current_conn != NULL) {
+        /* Subscribed and then stopped, without disconnecting. The guard was
+         * cancelled when the subscription arrived and nothing re-armed it, so
+         * a link that went quiet after subscribing was never reclaimed --
+         * which is how the board sat linked-but-silent for a hundred seconds
+         * with the guard armed and idle. Arming on connect alone is not
+         * enough; the condition to watch for is "linked and not carrying
+         * audio", however it got there. */
+        idle_arms++;
+        k_work_reschedule(&idle_link, K_MSEC(SUBSCRIBE_GRACE_MS));
     }
     /* Deliberately does not renegotiate here. The host subscribes and then
      * immediately sends CTRL_STREAM, and Zephyr rejects a second parameter
@@ -402,6 +412,14 @@ void ble_audio_publish_info(void)
     info_buf[17] = (uint8_t)((imu_tilt() ? 1 : 0) |
                              (imu_significant_motion() ? 2 : 0) |
                              (imu_tap_enabled() ? 4 : 0));
+    /* Tell the host what it is talking to, so it does not have to guess
+     * which firmware wrote bytes 13-26 or whether byte 38 means anything. */
+    info_buf[18] = INFO_VERSION;
+    info_buf[19] = INFO_FW_ZEPHYR;
+    uint16_t caps = INFO_CAP_STEPS | INFO_CAP_IMU_RAW | INFO_CAP_FLASH |
+                    INFO_CAP_OTA;
+    info_buf[20] = (uint8_t)(caps & 0xFF);
+    info_buf[21] = (uint8_t)(caps >> 8);
     info_buf[32] = g_state.led_level;
     info_buf[33] = g_state.led_mode;
     uint16_t mv = battery_mv();

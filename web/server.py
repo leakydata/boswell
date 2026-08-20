@@ -386,8 +386,11 @@ class Device:
         if len(info) >= 18:
             # Steps and motion from the IMU's own embedded functions. The
             # firmware reports them; nothing was reading them.
-            self.state["steps"] = (info[13] | (info[14] << 8)
-                                   | (info[15] << 16) | (info[16] << 24))
+            # Only where the firmware says these bytes are steps. On the
+            # Arduino build the same bytes are tap diagnostics.
+            if self.state.get("has_steps"):
+                self.state["steps"] = (info[13] | (info[14] << 8)
+                                       | (info[15] << 16) | (info[16] << 24))
             mflags = info[17]
             self.state["tilt"] = bool(mflags & 1)
             self.state["moving"] = bool(mflags & 2)
@@ -403,10 +406,24 @@ class Device:
             self.state["charging"] = bool(flags & 1)
             self.state["fast_charge"] = bool(flags & 2)
             self.state["mic_running"] = bool(flags & 4)
+        if len(info) >= 22:
+            # What is this firmware, and which optional fields did it fill in?
+            # Without this the host reads byte 13 as a step count on one
+            # firmware and as a tap counter on the other, and reports byte 38
+            # as zero overruns on a firmware that never writes it -- a
+            # confident number for something nobody measured.
+            self.state["info_version"] = info[18]
+            self.state["firmware"] = {1: "arduino", 2: "zephyr"}.get(info[19])
+            caps = info[20] | (info[21] << 8)
+            self.state["caps"] = caps
+            self.state["has_steps"] = bool(caps & 0x0001)
+            self.state["has_overruns"] = bool(caps & 0x0020)
         if len(info) >= 39:
             # Samples the microphone produced with nowhere to put them. Any
-            # value above zero is audible as a click.
-            self.state["ring_overruns"] = info[38]
+            # value above zero is audible as a click. Only meaningful on a
+            # firmware that says it keeps the counter.
+            self.state["ring_overruns"] = (
+                info[38] if self.state.get("has_overruns") else None)
         if len(info) >= 32:
             pend = info[28] | (info[29] << 8) | (info[30] << 16)
             self.state["backlog_bytes"] = pend

@@ -54,6 +54,50 @@
 #define IMU_FLAG_GYRO    0x01
 #define IMU_MAX_SAMPLES  10
 
+/* ---- info characteristic layout -------------------------------------------
+ *
+ * Forty bytes, read by the host to learn what the device is and what it is
+ * doing. Both firmwares publish it and they do NOT agree on every field:
+ * Arduino puts tap diagnostics in 13-26, Zephyr puts step count and motion in
+ * 13-17. A host reading byte 13 cannot know which it got without being told.
+ *
+ * Hence bytes 18-21, which are free in both. Byte 18 is the layout version:
+ * a host seeing 0 is talking to firmware from before this existed and should
+ * treat everything outside the common core as unknown rather than as zero.
+ *
+ *   0     codec (1 = IMA ADPCM)
+ *   1     16 kHz flag
+ *   2     frame milliseconds
+ *   3-4   samples per frame
+ *   5     bit0 VAD on, bit1 backlog mode, bit2 capture running
+ *   6     IMU bus (0 = absent)
+ *   7     IMU address
+ *   8-11  WHO_AM_I probe results        (Arduino: four slots; Zephyr: two)
+ *   12    IMU power polarity            (Arduino only)
+ *   13-17 steps and motion flags        (ZEPHYR ONLY -- Arduino: tap counters)
+ *   18    info layout version           <- read this first
+ *   19    firmware identity
+ *   20-21 capability bits
+ *   22-23 reserved
+ *   24-26 accelerometer sample          (Arduino only)
+ *   27-31 QSPI ready, pending, capacity
+ *   32-33 LED level and mode
+ *   34-37 battery mV, percent, flags
+ *   38    ring overruns                 (Arduino only; Zephyr has no equivalent)
+ *   39    radio transmit power
+ */
+#define INFO_VERSION      1
+
+#define INFO_FW_ARDUINO   1
+#define INFO_FW_ZEPHYR    2
+
+#define INFO_CAP_STEPS     0x0001   /* bytes 13-17 are steps and motion */
+#define INFO_CAP_IMU_RAW   0x0002   /* raw motion characteristic exists */
+#define INFO_CAP_FLASH     0x0004   /* store-and-forward */
+#define INFO_CAP_OTA       0x0008   /* CTRL_DFU accepts the Bluetooth variant */
+#define INFO_CAP_TAP_DIAG  0x0010   /* bytes 13-26 are tap diagnostics */
+#define INFO_CAP_OVERRUNS  0x0020   /* byte 38 is meaningful */
+
 /* Control opcodes, unchanged from the Arduino build. */
 enum {
     CTRL_STREAM       = 0x01,

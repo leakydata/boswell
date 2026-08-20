@@ -46,6 +46,19 @@
 #include <PDM.h>
 #include "ima_adpcm.h"
 #include "settings.h"
+
+/* Shared with the Zephyr build's proto.h. Kept in step by hand: the two
+   firmwares must agree on what these numbers mean or the marker is worse
+   than none. */
+#define INFO_VERSION      1
+#define INFO_FW_ARDUINO   1
+#define INFO_FW_ZEPHYR    2
+#define INFO_CAP_STEPS     0x0001
+#define INFO_CAP_IMU_RAW   0x0002
+#define INFO_CAP_FLASH     0x0004
+#define INFO_CAP_OTA       0x0008
+#define INFO_CAP_TAP_DIAG  0x0010
+#define INFO_CAP_OVERRUNS  0x0020
 #include "imu_tap.h"
 #include "qspi_store.h"
 
@@ -382,6 +395,17 @@ static void publishInfo() {
   info[31] = (uint8_t)(qspiOk ? (qspiSizeBytes() >> 16) : 0);   // MiB-ish
   info[32] = ledLevel;
   info[33] = ledMode;
+  /* Layout version and capabilities. Zephyr uses bytes 13-17 for step count
+     while this firmware uses 13-26 for tap diagnostics, so a host reading
+     byte 13 needs to know which it is looking at. Bytes 18-21 are free in
+     both. */
+  info[18] = INFO_VERSION;
+  info[19] = INFO_FW_ARDUINO;
+  {
+    uint16_t caps = INFO_CAP_TAP_DIAG | INFO_CAP_FLASH | INFO_CAP_OVERRUNS;
+    info[20] = (uint8_t)(caps & 0xFF);
+    info[21] = (uint8_t)(caps >> 8);
+  }
   info[39] = (uint8_t)txPower;
   {
     uint32_t ro = ringOverruns;
