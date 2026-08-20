@@ -115,6 +115,7 @@ static int16_t  ring[RING_SAMPLES];
 static volatile uint32_t ringHead = 0;     // written by the PDM callback
 static volatile uint32_t ringTail = 0;     // read by loop()
 static volatile uint32_t ringOverruns = 0;
+static uint32_t micFaults = 0;     // PDM restarts that did not take
 
 static int16_t  pdmChunk[512];
 static int16_t  frameSamples[MAX_SAMPLES];
@@ -380,9 +381,17 @@ static void publishInfo() {
   info[11] = pr[3];   // bus2 @0x6B
   info[12] = imuPowerPolarity();
   for (int i = 0; i < 5; i++) info[13 + i] = tapDiag(i);
-  uint8_t rb[6]; int16_t az = 0;
-  imuReadback(rb, &az);
-  for (int i = 0; i < 6; i++) info[18 + i] = rb[i];
+  /* Bytes 18-21 carry the layout version, firmware id and capabilities, and
+   * are written below. Six IMU registers used to be published across 18-23
+   * and then half overwritten by that marker, leaving 22-23 as fragments of a
+   * layout nothing described -- while host/tap_test.py went on decoding all
+   * six and reporting the marker bytes as wrong register values. That
+   * readback was a bring-up aid for the tap work and that work is finished,
+   * so it is gone rather than relocated; 22-23 are reserved. */
+  int16_t az = 0;
+  imuReadback(NULL, &az);
+  info[22] = 0;
+  info[23] = 0;
   info[24] = (uint8_t)(az & 0xFF);
   info[25] = (uint8_t)((az >> 8) & 0xFF);
   info[26] = accelPeakByte();
@@ -564,8 +573,51 @@ static uint32_t notifyDrops = 0;   // frames the radio would not take
  * they queue behind it instead of overtaking it on the radio. */
 static bool storeOnly = false;
 
-static void emitFrame(const int16_t *samples, int n, uint16_t sq, bool voiced) {
-  frameStampMs = millis();
+/* stampMs is when the audio was captured, not when it is being sent.
+ *
+ * Pre-roll frames are held back until the voice gate opens and are then
+ * flushed all at once. emitFrame() used to set frameStampMs = millis() on the
+ * way past, so every one of them was dated at flush time -- stashPreRoll()
+ * had been recording preRollStamp[] faithfully into an array that nothing
+ * ever read. The device timestamps are what the host orders clips by, so this
+ * put the half-second before someone starts speaking at the wrong moment in
+ * the conversation. Pass 0 to mean "now". */
+/* Decimate 2:1 for 8 kHz output.
+ *
+ * This was an average of adjacent samples, described in the comment as a
+ * 2-tap FIR with its first null at 4 kHz. Its first null is at 8 kHz: for
+ * h = [1,1] at 16 kHz, |H(f)| = 2*cos(pi*f/fs), which is zero at fs/2. At the
+ * new Nyquist of 4 kHz it gives 2*cos(45 deg), or 3 dB down -- so everything
+ * from 4 to 8 kHz folded back into the passband, and speech has plenty up
+ * there. The same 23-tap half-band filter Zephyr uses gives about -40 dB at
+ * 5 kHz and -57 dB at 6 kHz.
+ *
+ * The delay line persists across frames because the audio does; resetting it
+ * per frame would put a discontinuity at every frame boundary.
+ */
+#define DEC_TAPS 23
+static const int16_t dec_h[DEC_TAPS] = {
+       64,    73,   -92,  -295,    41,   812,   482, -1538, -2217,  2188,
+     9924, 13884,  9924,  2188, -2217, -1538,   482,   812,    41,  -295,
+      -92,    73,    64
+};
+static int16_t dec_hist[DEC_TAPS];
+
+static inline int16_t decimateStep(int16_t a, int16_t b) {
+  int32_t acc = 0;
+  for (int k = DEC_TAPS - 1; k >= 2; k--) dec_hist[k] = dec_hist[k - 2];
+  dec_hist[1] = a;
+  dec_hist[0] = b;
+  for (int k = 0; k < DEC_TAPS; k++) acc += (int32_t)dec_h[k] * dec_hist[k];
+  acc >>= 15;
+  if (acc >  32767) acc =  32767;
+  if (acc < -32768) acc = -32768;
+  return (int16_t)acc;
+}
+
+static void emitFrame(const int16_t *samples, int n, uint16_t sq, bool voiced,
+                      uint32_t stampMs = 0) {
+  frameStampMs = stampMs ? stampMs : millis();
   uint16_t len = buildFrame(samples, n, sq, voiced);
 
   /* Connected is not the same as listening, and a queued notification is not
@@ -636,7 +688,8 @@ static void flushPreRoll() {
   int start = (preRollHead - preRollCount + PREROLL_FRAMES) % PREROLL_FRAMES;
   for (int i = 0; i < preRollCount; i++) {
     int idx = (start + i) % PREROLL_FRAMES;
-    emitFrame(preRoll[idx], preRollLen[idx], preRollSeq[idx], true);
+    emitFrame(preRoll[idx], preRollLen[idx], preRollSeq[idx], true,
+              preRollStamp[idx]);
   }
   preRollCount = 0;
 }
@@ -819,7 +872,16 @@ void loop() {
   if (!micRunning) {
     digitalWrite(PIN_PDM_PWR, HIGH);
     delay(5);
-    PDM.begin(1, PDM_RATE);
+    /* Check that it started. micRunning was set unconditionally, so a failed
+     * restart after power-save left the firmware reporting a live microphone
+     * while no samples were arriving -- silence that looks like a quiet room
+     * rather than like a fault. */
+    if (!PDM.begin(1, PDM_RATE)) {
+      digitalWrite(PIN_PDM_PWR, LOW);
+      micFaults++;
+      delay(200);                    // do not spin on a failing peripheral
+      return;
+    }
     PDM.setGain(currentGain);        // begin() resets gain -- see applyGain()
     micRunning = true;
     ringTail = ringHead;
@@ -852,9 +914,7 @@ void loop() {
     return;
   }
 
-  // Pull one frame, decimating 2:1 when running at 8 kHz. Averaging pairs is
-  // a 2-tap FIR with its first null at 4 kHz -- crude, but its stopband sits
-  // where the decimation folds. Proper Opus at 16 kHz supersedes this.
+  // Pull one frame, decimating 2:1 when running at 8 kHz.
   uint32_t tail = ringTail;
   if (use16k) {
     for (int i = 0; i < outSamples; i++) {
@@ -863,11 +923,11 @@ void loop() {
     }
   } else {
     for (int i = 0; i < outSamples; i++) {
-      int32_t a = ring[tail];
+      int16_t a = ring[tail];
       tail = (tail + 1) % RING_SAMPLES;
-      int32_t b = ring[tail];
+      int16_t b = ring[tail];
       tail = (tail + 1) % RING_SAMPLES;
-      frameSamples[i] = (int16_t)((a + b) / 2);
+      frameSamples[i] = decimateStep(a, b);
     }
   }
   ringTail = tail;

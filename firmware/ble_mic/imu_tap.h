@@ -251,12 +251,16 @@ static bool imuDoubleTap() {
 /* Read back the config we wrote, plus live Z acceleration. If the writes did
  * not stick, or the accelerometer is not sampling, tap detection cannot work
  * no matter how the tap registers are tuned. */
+/* out6 may be NULL: the six configuration registers are no longer published
+ * over Bluetooth, but reading accelZ still has a caller. */
 static void imuReadback(uint8_t *out6, int16_t *accelZ) {
-  const uint8_t regs[6] = { REG_CTRL1_XL, REG_TAP_CFG, REG_TAP_THS_6D,
-                            REG_INT_DUR2, REG_WAKE_UP_THS, REG_MD1_CFG };
-  for (int i = 0; i < 6; i++) {
-    uint8_t v = 0;
-    out6[i] = imuRead(regs[i], &v) ? v : 0xFF;
+  if (out6) {
+    const uint8_t regs[6] = { REG_CTRL1_XL, REG_TAP_CFG, REG_TAP_THS_6D,
+                              REG_INT_DUR2, REG_WAKE_UP_THS, REG_MD1_CFG };
+    for (int i = 0; i < 6; i++) {
+      uint8_t v = 0;
+      out6[i] = imuRead(regs[i], &v) ? v : 0xFF;
+    }
   }
   uint8_t lo = 0, hi = 0;
   if (imuRead(0x2C, &lo) && imuRead(0x2D, &hi))

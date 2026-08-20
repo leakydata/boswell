@@ -38,14 +38,14 @@ async def main(seconds=45, tap_thresh=None):
                     pdiag = diag
             if len(inf) >= 26:
                 import struct as _s
-                rb = inf[18:24]; az = _s.unpack("<h", bytes(inf[24:26]))[0]
-                want = [0x60,0x8F,0x03,0x7F,0x80,0x08]
-                names = ["CTRL1_XL","TAP_CFG","TAP_THS","INT_DUR2","WAKE_THS","MD1_CFG"]
-                line = " ".join(f"{n}=0x{v:02X}{'' if v==w else f'(want 0x{w:02X})'}"
-                                for n,v,w in zip(names,rb,want))
-                if line != globals().get("_prevrb"):
-                    print(f"    {line}")
-                    globals()["_prevrb"] = line
+                # Bytes 18-21 are the layout version, firmware id and
+                # capabilities. This used to decode 18-23 as six IMU
+                # configuration registers and print the marker bytes as
+                # register values that did not match what it expected --
+                # a diagnostic confidently reporting a fault in the thing
+                # it was pointed at, from bytes that were never registers.
+                # The firmware no longer publishes that readback at all.
+                az = _s.unpack("<h", bytes(inf[24:26]))[0]
                 g = az/16384.0
                 if abs(g - globals().get("_prevg", 99)) > 0.08:
                     print(f"    accel Z = {az:6d}  ({g:+.2f} g)"
