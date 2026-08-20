@@ -23,3 +23,7 @@ __pycache__/
 
 # working notes — my own tracking, not part of the project
 .notes/
+
+# browser automation snapshots — these capture the live interface,
+# including real names and transcript text
+.playwright-mcp/
