@@ -29,6 +29,21 @@ static struct bt_uuid_128 imu_uuid   = BT_UUID_INIT_128(BOSWELL_UUID_IMU);
 
 static struct bt_conn *current_conn;
 static bool advertising;
+
+/* Drops a central that connects and never subscribes.
+ *
+ * With one connection slot, a link that is not carrying audio is worse than
+ * no link: it blocks the real host from connecting AND stops advertising, so
+ * the device is unreachable while still believing it is connected. A stale
+ * BlueZ connection left by a test client did exactly that -- the board sat
+ * linked to nothing for three hours, buffering, with no way in.
+ *
+ * A host that means to listen subscribes within a second or two, so half a
+ * minute is generous.
+ */
+#define SUBSCRIBE_GRACE_MS 30000
+static void idle_link_fn(struct k_work *work);
+static K_WORK_DELAYABLE_DEFINE(idle_link, idle_link_fn);
 static bool notify_enabled;
 static bool imu_notify_enabled;
 static ctrl_handler_t ctrl_cb;
@@ -48,6 +63,9 @@ static void ccc_changed(const struct bt_gatt_attr *attr, uint16_t value)
     ARG_UNUSED(attr);
     notify_enabled = (value == BT_GATT_CCC_NOTIFY);
     LOG_INF("notifications %s", notify_enabled ? "on" : "off");
+    if (notify_enabled) {
+        k_work_cancel_delayable(&idle_link);
+    }
     /* Deliberately does not renegotiate here. The host subscribes and then
      * immediately sends CTRL_STREAM, and Zephyr rejects a second parameter
      * update while the first is still in flight (-EBUSY). Firing one here
@@ -144,6 +162,7 @@ static void connected(struct bt_conn *conn, uint8_t err)
     }
     current_conn = bt_conn_ref(conn);
     advertising = false;
+    k_work_reschedule(&idle_link, K_MSEC(SUBSCRIBE_GRACE_MS));
     struct bt_conn_info info;
     if (bt_conn_get_info(conn, &info) == 0) {
         LOG_INF("connected: interval %u, latency %u, timeout %u",
@@ -193,6 +212,16 @@ bool ble_audio_advertising(void)
     return advertising && current_conn == NULL;
 }
 
+static void idle_link_fn(struct k_work *work)
+{
+    ARG_UNUSED(work);
+    if (current_conn == NULL || notify_enabled) {
+        return;
+    }
+    LOG_WRN("central never subscribed; dropping the link");
+    bt_conn_disconnect(current_conn, BT_HCI_ERR_REMOTE_USER_TERM_CONN);
+}
+
 static void adv_restart_fn(struct k_work *work)
 {
     if (current_conn != NULL) {
@@ -214,6 +243,7 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
     }
     notify_enabled = false;
     imu_notify_enabled = false;
+    k_work_cancel_delayable(&idle_link);
     k_work_reschedule(&adv_restart, K_MSEC(100));
     /* Deliberately stays armed: capture continuing across a dropped link is
      * the whole point of the flash buffer. */
