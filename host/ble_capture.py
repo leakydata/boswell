@@ -10,6 +10,7 @@ Usage:
 
 import argparse
 import asyncio
+import os
 import struct
 import sys
 import time
@@ -25,6 +26,9 @@ INFO_UUID    = "4b1a0004-8f2c-4d5e-9a3b-1c7e6f8d0a21"
 
 DEVICE_NAME = "XIAO-MIC"
 HEADER_LEN = 12   # seq,flags,state,nsamples,t_ms
+# The firmware's largest frame is 20 ms at 16 kHz. Anything claiming more is
+# a corrupt header, not a long frame.
+MAX_SAMPLES_PER_FRAME = 320
 
 INDEX_TABLE = [-1, -1, -1, -1, 2, 4, 6, 8, -1, -1, -1, -1, 2, 4, 6, 8]
 
@@ -92,13 +96,20 @@ async def capture(args):
 
     print(f"found {dev.address}, connecting ...")
 
+    # Live and replayed audio are kept apart.
+    #
+    # Both used to be appended to one list and written to one WAV in arrival
+    # order, so catch-up mode spliced a stretch of older audio into the middle
+    # of the present -- and the file gave no sign it had happened. They are
+    # different moments and belong in different files.
     frames = []
+    replay_frames = []
     # Replayed frames are tracked apart from live ones. They carry the
     # sequence numbers they were captured with, so mixing the two streams
     # into one gap count makes the sequence look like it jumps backwards.
     stats = {"frames": 0, "gaps": 0, "bytes": 0, "last_seq": None,
              "vad_skipped": 0, "replayed": 0, "replay_last_seq": None,
-             "replay_gaps": 0}
+             "replay_gaps": 0, "malformed": 0}
 
     def on_audio(_sender, data: bytearray):
         if len(data) < HEADER_LEN:
@@ -107,7 +118,18 @@ async def capture(args):
             "<HBBhHI", data[:HEADER_LEN])
 
         payload = data[HEADER_LEN:]
-        if len(payload) < nsamples // 2:
+        # Everything here arrived over a radio and none of it is a promise.
+        # index goes straight into STEP_TABLE, so a corrupt byte was an
+        # IndexError raised inside a Bluetooth callback -- where it stops the
+        # capture without a useful message rather than costing one frame.
+        if not (0 <= index < len(STEP_TABLE)):
+            stats["malformed"] += 1
+            return
+        if nsamples <= 0 or nsamples > MAX_SAMPLES_PER_FRAME:
+            stats["malformed"] += 1
+            return
+        if len(payload) < (nsamples + 1) // 2:
+            stats["malformed"] += 1
             return
 
         from_flash = bool(flags & 0x08)
@@ -130,7 +152,8 @@ async def capture(args):
         if not from_flash:
             stats["last_seq"] = seq
 
-        frames.append(decode_block(payload, predictor, index, nsamples))
+        block = decode_block(payload, predictor, index, nsamples)
+        (replay_frames if from_flash else frames).append(block)
         stats["frames"] += 1
         stats["bytes"] += len(data)
 
@@ -199,8 +222,15 @@ async def capture(args):
         return 1
 
     rate = 16000 if args.rate16 else 8000
-    audio = np.concatenate(frames)
-    sf.write(args.out, audio, rate, subtype="PCM_16")
+    audio = np.concatenate(frames) if frames else np.zeros(0, dtype=np.int16)
+    if len(audio):
+        sf.write(args.out, audio, rate, subtype="PCM_16")
+    if replay_frames:
+        # Named for what it is rather than merged into the live file.
+        base, ext = os.path.splitext(args.out)
+        replay_path = f"{base}.recovered{ext or '.wav'}"
+        sf.write(replay_path, np.concatenate(replay_frames), rate, subtype="PCM_16")
+        print(f"wrote {replay_path} ({stats['replayed']} replayed frame(s))")
 
     kbps = stats["bytes"] * 8 / elapsed / 1000
     # Only live frames count toward the loss rate; replayed ones have their

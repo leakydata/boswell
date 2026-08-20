@@ -64,15 +64,54 @@ PACE_S = 0
 
 
 def load_package(path):
-    """Pull the image and its init packet out of the DFU zip."""
+    """Pull the image and its init packet out of the DFU zip.
+
+    Application images only. This used to fall back to the softdevice section
+    when there was no application one, while everything downstream announces
+    UPDATE_APP and writes to the application region -- so a SoftDevice
+    package would have been transferred as though it were an application and
+    written over the wrong part of flash. Refusing is the only sensible
+    answer; this tool does not know how to do the other thing.
+    """
     with zipfile.ZipFile(path) as z:
-        manifest = json.loads(z.read("manifest.json"))["manifest"]
-        section = manifest.get("application") or manifest.get("softdevice")
+        try:
+            manifest = json.loads(z.read("manifest.json"))["manifest"]
+        except KeyError:
+            raise SystemExit("package has no manifest.json")
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+            raise SystemExit(f"manifest.json is not readable JSON: {e}")
+
+        unsupported = [k for k in ("softdevice", "bootloader",
+                                   "softdevice_bootloader") if k in manifest]
+        section = manifest.get("application")
         if section is None:
-            raise SystemExit("no application image in the package")
+            raise SystemExit(
+                "no application image in the package"
+                + (f" (it contains {', '.join(unsupported)}, which this tool "
+                   "cannot install)" if unsupported else ""))
+        if unsupported:
+            raise SystemExit(
+                f"package also contains {', '.join(unsupported)}; this tool "
+                "only installs an application image and would write the wrong "
+                "region")
+
+        for field in ("bin_file", "dat_file"):
+            if not section.get(field):
+                raise SystemExit(f"manifest application section has no {field}")
+        names = set(z.namelist())
+        for field in ("bin_file", "dat_file"):
+            if section[field] not in names:
+                raise SystemExit(f"{section[field]} is missing from the package")
+
         bin_name = section["bin_file"]
         dat_name = section["dat_file"]
-        return z.read(bin_name), z.read(dat_name), bin_name
+        image = z.read(bin_name)
+        init = z.read(dat_name)
+        if not image:
+            raise SystemExit(f"{bin_name} is empty")
+        if not init:
+            raise SystemExit(f"{dat_name} is empty")
+        return image, init, bin_name
 
 
 async def find(name, timeout):
