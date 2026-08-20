@@ -4,6 +4,7 @@
 #include <zephyr/drivers/pwm.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+#include <hal/nrf_gpio.h>
 
 LOG_MODULE_REGISTER(led, LOG_LEVEL_INF);
 
@@ -76,6 +77,22 @@ void led_set_mode(uint8_t m)
     } else {
         apply(false, false, false);
     }
+}
+
+/* Reads the actual level on each LED pin.
+ *
+ * The colour a person reports and the colour the code asked for are two
+ * different observations, and reconciling them by description does not
+ * converge. These are common-anode LEDs: a pin held LOW lights its channel.
+ * So a channel that reads 0 while the code believes it is off is the whole
+ * bug, visible without anybody looking at the board.
+ */
+void led_pin_levels(uint8_t out[3])
+{
+    /* red P0.26, green P0.30, blue P0.06 */
+    out[0] = (uint8_t)nrf_gpio_pin_out_read(26);
+    out[1] = (uint8_t)nrf_gpio_pin_out_read(30);
+    out[2] = (uint8_t)nrf_gpio_pin_out_read(6);
 }
 
 void led_force(bool r, bool g, bool b)

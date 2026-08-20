@@ -121,8 +121,12 @@
 / {
 	boswell_leds {
 		compatible = "pwm-leds";
-		pwm_r: pwm_r { pwms = <&pwm0 0 PWM_MSEC(20) PWM_POLARITY_NORMAL>; };
-		pwm_g: pwm_g { pwms = <&pwm0 1 PWM_MSEC(20) PWM_POLARITY_NORMAL>; };
-		pwm_b: pwm_b { pwms = <&pwm0 2 PWM_MSEC(20) PWM_POLARITY_NORMAL>; };
+		/* Inverted, measured rather than reasoned about. With NORMAL the
+		 * pins read low at zero duty, and low lights a common-anode LED --
+		 * so "off" came out magenta and sat there, which is what the board
+		 * showed for days. Read back with "boswell led probe". */
+		pwm_r: pwm_r { pwms = <&pwm0 0 PWM_MSEC(20) PWM_POLARITY_INVERTED>; };
+		pwm_g: pwm_g { pwms = <&pwm0 1 PWM_MSEC(20) PWM_POLARITY_INVERTED>; };
+		pwm_b: pwm_b { pwms = <&pwm0 2 PWM_MSEC(20) PWM_POLARITY_INVERTED>; };
 	};
 };

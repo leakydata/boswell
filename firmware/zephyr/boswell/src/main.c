@@ -102,8 +102,13 @@ static void usb_service(void)
 
 /* blue advertising · green capturing · red connected but idle · magenta
  * draining the flash backlog. Brightness and steady-vs-pulse live in led.c. */
+static bool led_probing;
+
 static void led_state(void)
 {
+    if (led_probing) {
+        return;
+    }
     /* The wearer's first question is "is it recording?", so that decides the
      * colour: green while capturing, red while stopped. Everything else is
      * secondary and must not be able to mask it.
@@ -255,9 +260,32 @@ static int cmd_debounce(const struct shell *sh, size_t argc, char **argv)
 static int cmd_led(const struct shell *sh, size_t argc, char **argv)
 {
     if (argc < 2) {
-        shell_print(sh, "usage: boswell led <rgb>   e.g. 100 = red only, 000 = off");
+        shell_print(sh, "usage: boswell led <rgb> | probe   (100 = red, 000 = off)");
         shell_print(sh, "ready=%d level=%u mode=%u", led_ready(),
                     g_state.led_level, g_state.led_mode);
+        return 0;
+    }
+    if (argv[1][0] == 'p') {          /* 'probe': the shell eats '?' */
+        /* Sweep every state and report what the pins actually do. */
+        static const struct { bool r, g, b; const char *name; } probe[] = {
+            { false, false, false, "off   " },
+            { true,  false, false, "red   " },
+            { false, true,  false, "green " },
+            { false, false, true,  "blue  " },
+        };
+        led_probing = true;      /* keep led_state() out of the measurement */
+        for (int i = 0; i < 4; i++) {
+            led_force(probe[i].r, probe[i].g, probe[i].b);
+            k_sleep(K_MSEC(120));
+            uint8_t lv[3];
+            led_pin_levels(lv);
+            shell_print(sh, "  %s asked r=%d g=%d b=%d -> pins r=%d g=%d b=%d  (0 = lit)",
+                        probe[i].name, probe[i].r, probe[i].g, probe[i].b,
+                        lv[0], lv[1], lv[2]);
+        }
+        led_probing = false;
+        led_set_mode(g_state.led_mode);
+        led_state();
         return 0;
     }
     const char *v = argv[1];

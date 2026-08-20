@@ -31,5 +31,8 @@ void led_service(void);
  * Guessing at that from a description of the colour does not converge. */
 void led_force(bool r, bool g, bool b);
 bool led_ready(void);
+/* Actual pin levels for red, green, blue. These are common anode: 0 lights
+ * the channel. Lets the off-state be checked without anyone looking. */
+void led_pin_levels(uint8_t out[3]);
 
 #endif
