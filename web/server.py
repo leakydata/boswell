@@ -600,7 +600,7 @@ class Device:
             # so once the flag was false nothing ever armed the device again,
             # and capture stayed off with both sides agreeing it should be.
             # Default on, because that is what an always-on recorder is for.
-            await self.set_armed(bool(PREFS.get("armed", True)))
+            await self.set_armed(bool(PREFS.get("armed", True)), by_user=False)
             self.publish()
             self.event("log", text="connected to device")
 
@@ -639,6 +639,7 @@ class Device:
                         self._rearm_needed = False
                         self.event("log", text="device was not capturing; re-arming")
                         await self._ctrl(0x01, 1)
+                        self.state["armed"] = True
                     self.publish()
 
             self.client = None
@@ -693,9 +694,23 @@ class Device:
         PREFS.update(kw)
         save_prefs(PREFS)
 
-    async def set_armed(self, on: bool):
+    async def set_armed(self, on: bool, *, by_user: bool = True):
+        """Arm or disarm. Only a person's decision is remembered.
+
+        Persisting every call made this self-perpetuating: the connect path
+        asserts the remembered value, and asserting it wrote it back, so a
+        single spurious "off" -- from a test, a race, whatever -- became
+        permanent. The device then sat connected and subscribed with capture
+        off, both sides agreeing it should be, until somebody noticed nothing
+        had been recorded for hours. Twice.
+
+        Re-asserting what was already read is not a decision, so it does not
+        write. Turning it off from the interface is, so it does.
+        """
         self.state["armed"] = bool(on)
-        self.remember(armed=bool(on))
+        if by_user:
+            self.remember(armed=bool(on))
+            self.event("log", text=f"recording {'on' if on else 'off'}")
         await self._ctrl(0x01, 1 if on else 0)
         self.publish()
 

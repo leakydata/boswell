@@ -109,6 +109,7 @@
 #define INFO_CAP_OVERRUNS  0x0020   /* byte 38 is meaningful */
 #define INFO_CAP_STATE     0x0040   /* byte 5 bit 2 is the real capture state */
 #define INFO_CAP_BOOTID    0x0080   /* bytes 22-23 identify this boot */
+#define INFO_CAP_SPLITBUF  0x0100   /* CTRL_BUFFER and CTRL_REPLAY understood */
 
 /* Control opcodes, unchanged from the Arduino build. */
 enum {
@@ -120,7 +121,15 @@ enum {
     CTRL_TAP_ENABLE   = 0x06,
     CTRL_TAP_THRESH   = 0x07,
     CTRL_CLEAR_BUFFER = 0x08,
-    CTRL_BACKLOG_MODE = 0x09,
+    /* One bit conflated two separate questions: whether to buffer at all,
+     * and what order to replay in. The two firmwares answered them
+     * differently under the same name -- Zephyr read 0 as "do not buffer"
+     * and Arduino read it as "buffer, drain before live" -- so the same
+     * control produced different behaviour depending on which build was on
+     * the board, and the interface said one thing about both. */
+    CTRL_BACKLOG_MODE = 0x09,   /* legacy: see CTRL_BUFFER/CTRL_REPLAY */
+    CTRL_BUFFER       = 0x12,   /* 0 off, 1 store and forward */
+    CTRL_REPLAY       = 0x13,   /* 0 strict order, 1 live first */
     CTRL_LED_LEVEL    = 0x0A,
     CTRL_LED_MODE     = 0x0B,
     CTRL_FAST_CHARGE  = 0x0C,
@@ -133,6 +142,19 @@ enum {
     CTRL_IMU_GYRO     = 0x11,   /* the expensive half; off by default */
 };
 
+/* Settings shared across the capture, Bluetooth, IMU and shell threads.
+ *
+ * Every field is a single aligned byte or halfword, so no individual read can
+ * tear on this part. What is not free is reading several of them together and
+ * getting a set that existed at one moment: the info characteristic packs
+ * three of these into one byte while a control write from the Bluetooth
+ * thread may be changing them, so a host can be told the device is gated and
+ * not streaming when it was never both at once.
+ *
+ * The lock below covers exactly that -- assembling or changing a group. It is
+ * deliberately not taken for a single-field read on the capture path, where
+ * the cost would be paid fifty times a second to prevent nothing.
+ */
 struct boswell_state {
     bool     streaming;
     bool     use16k;
@@ -142,11 +164,15 @@ struct boswell_state {
     uint8_t  gain;
     uint8_t  led_level;
     uint8_t  led_mode;
-    uint8_t  backlog_mode;
+    uint8_t  backlog_mode;   /* replay policy: 0 strict order, 1 live first */
+    uint8_t  buffering;      /* store and forward while disconnected */
     uint8_t  mic_power_save;
     int8_t   tx_power;
 };
 
 extern struct boswell_state g_state;
+
+/* Held while reading or writing more than one field of g_state together. */
+extern struct k_mutex g_state_lock;
 
 #endif

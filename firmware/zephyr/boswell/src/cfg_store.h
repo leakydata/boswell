@@ -17,7 +17,9 @@
 #include <stdint.h>
 
 #define BOSWELL_SETTINGS_MAGIC 0xB05E
-#define BOSWELL_SETTINGS_VER   1
+/* 2: buffering split out from backlog_mode, which now means replay order
+   only. A version 1 record describes a field that meant both. */
+#define BOSWELL_SETTINGS_VER   2
 
 struct boswell_settings {
     uint16_t magic;
@@ -29,6 +31,7 @@ struct boswell_settings {
     uint8_t  led_level;
     uint8_t  led_mode;
     uint8_t  backlog_mode;
+    uint8_t  buffering;
     uint8_t  mic_power_save;
     uint8_t  tap_thresh;
     uint16_t tap_debounce_ms;

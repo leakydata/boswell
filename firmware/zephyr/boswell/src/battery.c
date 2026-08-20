@@ -30,7 +30,12 @@ static const struct gpio_dt_spec hichg = {
 static bool fast_charge;
 
 static bool     ready;
+/* Pin operations the driver refused. A charge setting that did not take is
+ * otherwise indistinguishable from one that did. */
+static uint32_t gpio_fails;
 static uint16_t cached_mv;
+
+uint32_t battery_gpio_fails(void) { return gpio_fails; }
 
 int battery_init(void)
 {
@@ -44,9 +49,23 @@ int battery_init(void)
         return err;
     }
     /* Start disconnected: the divider draws ~8 uA continuously while it is
-     * connected, which matters on a device meant to run all day. */
-    gpio_pin_configure_dt(&vbat_enable, GPIO_OUTPUT_HIGH);
-    gpio_pin_configure_dt(&chg_pin, GPIO_INPUT | GPIO_PULL_UP);
+     * connected, which matters on a device meant to run all day.
+     *
+     * These returns were discarded. A pin that failed to configure gives a
+     * reading taken through a divider that was never switched in -- a
+     * plausible-looking voltage that means nothing, reported to the interface
+     * as a battery level. Refusing to come up says "no battery reading", and
+     * an absent number is worth more than an invented one. */
+    err = gpio_pin_configure_dt(&vbat_enable, GPIO_OUTPUT_HIGH);
+    if (err) {
+        LOG_ERR("battery enable pin failed (%d)", err);
+        return err;
+    }
+    err = gpio_pin_configure_dt(&chg_pin, GPIO_INPUT | GPIO_PULL_UP);
+    if (err) {
+        LOG_ERR("charge sense pin failed (%d)", err);
+        return err;
+    }
 
     battery_set_fast_charge(false);    /* float: the safe default */
 
@@ -66,7 +85,10 @@ void battery_sample(void)
     struct adc_sequence seq = { .buffer = &buf, .buffer_size = sizeof(buf) };
     (void)adc_sequence_init_dt(&vbat_adc, &seq);
 
-    gpio_pin_set_dt(&vbat_enable, 0);      /* connect the divider */
+    if (gpio_pin_set_dt(&vbat_enable, 0) != 0) {   /* connect the divider */
+        gpio_fails++;
+        return;                        /* no divider, no honest reading */
+    }
     k_busy_wait(200);
 
     int32_t acc = 0, n = 0;
@@ -94,9 +116,13 @@ void battery_set_fast_charge(bool on)
 {
     fast_charge = on;
     if (on) {
-        gpio_pin_configure_dt(&hichg, GPIO_OUTPUT_LOW);
+        if (gpio_pin_configure_dt(&hichg, GPIO_OUTPUT_LOW) != 0) {
+            gpio_fails++;
+        }
     } else {
-        gpio_pin_configure_dt(&hichg, GPIO_INPUT);   /* float, not high */
+        if (gpio_pin_configure_dt(&hichg, GPIO_INPUT) != 0) {  /* float */
+            gpio_fails++;
+        }
     }
 }
 

@@ -32,6 +32,8 @@
 
 LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
 
+K_MUTEX_DEFINE(g_state_lock);
+
 struct boswell_state g_state = {
     .streaming    = false,
     .use16k       = false,       /* 8 kHz fits a Bluetooth 4.0 host */
@@ -44,6 +46,7 @@ struct boswell_state g_state = {
      * host, and buffering is the difference between losing that stretch of
      * conversation and paying for it in latency. */
     .backlog_mode = 1,
+    .buffering    = 1,
     .mic_power_save = 1,
     .tx_power     = 4,
 };
@@ -564,7 +567,19 @@ static void set_tx_power(int8_t dbm)
 
 /* ---------------------------------------------------------------- control */
 
+static void on_ctrl_locked(uint8_t op, uint8_t arg);
+
 static void on_ctrl(uint8_t op, uint8_t arg)
+{
+    /* One control write can change several fields, and the info
+     * characteristic packs several into one byte. Without this a host can be
+     * handed a combination that never existed. */
+    k_mutex_lock(&g_state_lock, K_FOREVER);
+    on_ctrl_locked(op, arg);
+    k_mutex_unlock(&g_state_lock);
+}
+
+static void on_ctrl_locked(uint8_t op, uint8_t arg)
 {
     switch (op) {
     case CTRL_STREAM:
@@ -575,7 +590,16 @@ static void on_ctrl(uint8_t op, uint8_t arg)
     case CTRL_GAIN:         g_state.gain = arg; mic_set_gain(arg); break;
     case CTRL_VAD:          g_state.vad_enabled = arg != 0; break;
     case CTRL_VAD_THRESH:   g_state.vad_thresh = arg * 32; break;
-    case CTRL_BACKLOG_MODE: g_state.backlog_mode = arg ? 1 : 0; break;
+    case CTRL_BACKLOG_MODE:
+        /* The old single bit, kept working for hosts that only know it.
+         * It meant "buffer, and replay live-first" when set, and on this
+         * firmware it also happened to gate buffering at all -- so honour
+         * both readings: any non-zero value buffers. */
+        g_state.backlog_mode = arg ? 1 : 0;
+        g_state.buffering    = 1;
+        break;
+    case CTRL_BUFFER:       g_state.buffering    = arg ? 1 : 0; break;
+    case CTRL_REPLAY:       g_state.backlog_mode = arg ? 1 : 0; break;
     case CTRL_TAP_ENABLE:   imu_tap_set_enabled(arg != 0); break;
     case CTRL_TAP_THRESH:   imu_tap_set_threshold(arg);    break;
     case CTRL_CLEAR_BUFFER: qspi_store_reset();            break;
@@ -660,6 +684,7 @@ static void settings_snapshot(struct boswell_settings *s)
     s->led_level       = g_state.led_level;
     s->led_mode        = g_state.led_mode;
     s->backlog_mode    = g_state.backlog_mode;
+    s->buffering       = g_state.buffering;
     s->mic_power_save  = g_state.mic_power_save;
     s->tap_thresh      = imu_tap_get_threshold();
     s->tap_debounce_ms = (uint16_t)imu_tap_get_debounce();
@@ -698,6 +723,7 @@ static void settings_apply(const struct boswell_settings *s)
     g_state.led_level      = s->led_level;          /* a byte is the range */
     g_state.led_mode       = s->led_mode ? 1 : 0;
     g_state.backlog_mode   = s->backlog_mode ? 1 : 0;
+    g_state.buffering      = s->buffering ? 1 : 0;
     g_state.mic_power_save = !!s->mic_power_save;
     g_state.tx_power       = tx_power_supported(s->tx_power) ? s->tx_power : 0;
     if (s->tap_thresh && s->tap_thresh <= 31) {     /* TAP_THS_6D is 5 bits */
@@ -897,7 +923,7 @@ static void tx_thread(void *a, void *b, void *c)
         }
         if (ble_audio_send(tf.data, tf.len) != 0) {
             notify_drops++;
-            if (g_state.backlog_mode && qspi_store_ready()) {
+            if (g_state.buffering && qspi_store_ready()) {
                 qspi_store_push(tf.data, tf.len);
             }
         }
@@ -960,7 +986,7 @@ static void route_frame(const uint8_t *wire, uint16_t len)
     if (!ble_audio_ready()) {
         /* Nobody to send to. Buffer rather than discard: the point of the
          * flash is that walking out of range costs latency, not audio. */
-        if (g_state.backlog_mode && qspi_store_ready()) {
+        if (g_state.buffering && qspi_store_ready()) {
             qspi_store_push(wire, (uint8_t)len);
         }
         return;
@@ -971,8 +997,10 @@ static void route_frame(const uint8_t *wire, uint16_t len)
      * replayed audio splices two different moments of the conversation
      * together. The writer thread replays the queue in order. Strict ordering
      * costs latency, which is the trade the flash buffer exists to make. */
-    if (qspi_store_pending() > 0 && g_state.backlog_mode &&
-        qspi_store_ready()) {
+    /* Strict order: the frame just captured goes behind the queue. With
+     * live-first the backlog trickles out alongside instead. */
+    if (qspi_store_pending() > 0 && g_state.buffering &&
+        !g_state.backlog_mode && qspi_store_ready()) {
         qspi_store_push(wire, (uint8_t)len);
         /* This branch never touches the radio, so a counter of failed sends
          * cannot see a link that has died underneath it. Say that we tried;
@@ -992,7 +1020,7 @@ static void route_frame(const uint8_t *wire, uint16_t len)
         /* The radio is behind. Spill rather than wait: blocking here is what
          * starved the microphone. */
         notify_drops++;
-        if (g_state.backlog_mode && qspi_store_ready()) {
+        if (g_state.buffering && qspi_store_ready()) {
             qspi_store_push(wire, (uint8_t)len);
         }
     }
@@ -1046,8 +1074,10 @@ static void capture_fn(void *a, void *b, void *c)
          * the time to replay it later -- 19 of 40 recovered clips in one
          * session were silence. When a host is attached the user's setting
          * stands, because then silence costs only radio. */
+        /* Gate on voice while buffering: silence written to flash costs wear
+         * and replay time. Buffering, not replay order, is the question. */
         bool gate = g_state.vad_enabled ||
-                    (g_state.backlog_mode && !ble_audio_ready());
+                    (g_state.buffering && !ble_audio_ready());
         bool voiced = true;
         if (!gate) {
             /* Nothing held back is still current once the gate is off; a

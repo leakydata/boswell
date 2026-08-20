@@ -569,9 +569,12 @@ void ble_audio_publish_info(void)
      * idea of "armed" and had no way to check it: after a reconnect it
      * believed capture was on while the device had booted with it off, and
      * nothing was being recorded at all. */
+    /* One coherent look at the group, not three separate ones. */
+    k_mutex_lock(&g_state_lock, K_FOREVER);
     info_buf[5] = (uint8_t)(g_state.vad_enabled
                             | (g_state.backlog_mode << 1)
                             | (g_state.streaming ? 4 : 0));
+    k_mutex_unlock(&g_state_lock);
     /* 1 = the internal sensor bus. The host prints four WHO_AM_I probe slots
      * because the Arduino build has two candidate buses to search; Zephyr
      * routes the sensors to i2c0 only, so the last two stay unprobed. */
@@ -599,7 +602,8 @@ void ble_audio_publish_info(void)
     info_buf[18] = INFO_VERSION;
     info_buf[19] = INFO_FW_ZEPHYR;
     uint16_t caps = INFO_CAP_STEPS | INFO_CAP_IMU_RAW | INFO_CAP_FLASH |
-                    INFO_CAP_OTA | INFO_CAP_STATE | INFO_CAP_BOOTID;
+                    INFO_CAP_OTA | INFO_CAP_STATE | INFO_CAP_BOOTID |
+                    INFO_CAP_SPLITBUF;
     info_buf[20] = (uint8_t)(caps & 0xFF);
     info_buf[21] = (uint8_t)(caps >> 8);
     /* Which boot this is.

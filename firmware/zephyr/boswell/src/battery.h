@@ -23,4 +23,7 @@ void     battery_sample(void);    /* refresh the cached reading */
 void     battery_set_fast_charge(bool on);
 bool     battery_fast_charge(void);
 
+/* Pin operations the driver refused. */
+uint32_t battery_gpio_fails(void);
+
 #endif
