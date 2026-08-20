@@ -729,11 +729,11 @@ function paint(s){
     : (s.mic_running ? "running" : "powered down");
   /* From the IMU's embedded pedometer and motion detectors, which run in the
      part itself rather than costing samples on the CPU. */
-  if (st.steps !== undefined){
+  if (s.steps !== undefined){
     const bits = [];
-    if (st.moving) bits.push("moving");
-    if (st.tilt) bits.push("tilt");
-    $("motion").textContent = `${st.steps} step${st.steps === 1 ? "" : "s"}`
+    if (s.moving) bits.push("moving");
+    if (s.tilt) bits.push("tilt");
+    $("motion").textContent = `${s.steps} step${s.steps === 1 ? "" : "s"}`
       + (bits.length ? " · " + bits.join(" · ") : "");
   }
   $("fastchg").setAttribute("aria-checked", !!s.fast_charge);
