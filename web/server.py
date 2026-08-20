@@ -230,7 +230,7 @@ class Device:
             "backlog_seconds": 0.0, "qspi_mb": 0, "imu": False,
             "peak": 0, "rms": 0.0, "level": 0.0, "error": None,
             "clip_seconds": 0.0, "source": None,
-            "recovered_seconds": 0.0, "backlog_mode": 0,
+            "recovered_seconds": 0.0, "backlog_mode": 1,
             "steps": 0, "tilt": False, "moving": False, "tap_enabled": True,
             "led_level": 255, "led_mode": 1,
             "ring_overruns": 0,
@@ -584,7 +584,21 @@ class Device:
             # remembered armed flag, which already cost a session of
             # recordings. Anything the host has an opinion about, it states.
             await self._ctrl(0x04, 1 if self.state.get("vad") else 0)
-            await self._ctrl(0x09, 1 if self.state.get("backlog_mode") else 0)
+
+            # Buffering and replay order are two questions, and the old single
+            # opcode conflated them -- 0 used to mean "do not buffer" and now
+            # means "buffer, drain strictly in order". Sending the old value
+            # against the new firmware put the device into strict order, where
+            # any residue in flash at all routes every live frame to storage
+            # instead of the radio. Two bytes of residue was enough: the link
+            # looked healthy from both ends and not one frame arrived.
+            if self.state.get("caps", 0) & 0x0100:      # INFO_CAP_SPLITBUF
+                await self._ctrl(0x12, 1)               # CTRL_BUFFER: on
+                await self._ctrl(0x13, 1 if self.state.get("backlog_mode", 1)
+                                 else 0)                # CTRL_REPLAY
+            else:
+                await self._ctrl(0x09, 1 if self.state.get("backlog_mode", 1)
+                                 else 0)
             for op, key, default in ((0x03, "gain", None),
                                      (0x0A, "led_level", None),
                                      (0x0B, "led_mode", None),
@@ -610,8 +624,33 @@ class Device:
 
             last_info = time.time()
             info_errors = 0
+            armed_since = time.time()
             while self._want and c.is_connected:
                 await asyncio.sleep(0.25)
+
+                # Connected, subscribed, armed -- and nothing arriving.
+                #
+                # The device reports the link up and its own send counter
+                # climbing, with deliveries succeeding at the controller, and
+                # not one frame reaches this process. The subscription the
+                # device believes in is not the one this link has. Reading the
+                # status characteristic keeps working throughout, so every
+                # check that exists says the session is healthy.
+                #
+                # This is the third shape this failure has taken. The device
+                # grew a guard for its side of it; this is the same guard from
+                # the other end, and it is the one that matters, because the
+                # recordings are made here.
+                if (self.state.get("armed") and self.state.get("frames") == 0
+                        and time.time() - armed_since > SILENT_LINK_S):
+                    self.event("log", text=(
+                        f"no audio in {SILENT_LINK_S:.0f}s on a link that "
+                        "looks healthy; reconnecting"))
+                    self.state["silent_reconnects"] = \
+                        self.state.get("silent_reconnects", 0) + 1
+                    break
+                if self.state.get("frames"):
+                    armed_since = time.time()      # arriving; reset the clock
                 if time.time() - last_info > 1.0:
                     last_info = time.time()
                     # A failed status read is not a failed session.
@@ -903,6 +942,11 @@ RATE_16K = os.environ.get("BOSWELL_8K", "") != "1"
 # treated as gone. At one poll a second this is a few seconds of telemetry
 # loss, against tearing down a session that is still delivering audio.
 INFO_ERROR_LIMIT = 5
+
+# How long a connected, armed link may deliver nothing before it is treated as
+# broken. Generous: the device only sends when there is something to send, and
+# the voice gate can legitimately produce a quiet minute.
+SILENT_LINK_S = 90.0
 # Loopback by default. This serves recordings of whoever happens to be in the
 # room and can start the microphone remotely, so reaching it from another
 # machine should be a decision somebody made rather than the default.
