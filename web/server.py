@@ -14,6 +14,8 @@ reimplement in a few dozen lines.
 import asyncio
 import json
 import os
+import secrets
+from urllib.parse import urlparse
 import struct
 import sys
 import time
@@ -884,6 +886,49 @@ def token_ok(supplied: str | None) -> bool:
     return hmac.compare_digest(supplied, TOKEN)
 
 
+# Short-lived, single-use tickets for the WebSocket handshake.
+#
+# The token used to travel in the WebSocket URL, where it lands in access
+# logs and proxy diagnostics and stays valid forever. A ticket is exchanged
+# for it over an ordinary authenticated request, is good once, and expires in
+# under a minute, so a URL that leaks is worth nothing by the time anyone
+# reads it.
+_TICKETS: dict[str, float] = {}
+TICKET_TTL = 30.0
+
+
+def issue_ticket() -> str:
+    now = time.time()
+    for k, exp in list(_TICKETS.items()):
+        if exp < now:
+            _TICKETS.pop(k, None)
+    t = secrets.token_urlsafe(24)
+    _TICKETS[t] = now + TICKET_TTL
+    return t
+
+
+def spend_ticket(t: str | None) -> bool:
+    if not t:
+        return False
+    exp = _TICKETS.pop(t, None)          # single use: gone once taken
+    return exp is not None and exp >= time.time()
+
+
+def ws_auth_ok(sock) -> bool:
+    """A ticket, or the token itself for non-browser clients like the relay."""
+    if not TOKEN:
+        return True
+    if spend_ticket(sock.query_params.get("ticket")):
+        return True
+    return token_ok(sock.query_params.get("token"))
+
+
+@app.post("/api/ws-ticket")
+async def api_ws_ticket():
+    """Trade the token, sent as a header, for a ticket that may go in a URL."""
+    return {"ticket": issue_ticket(), "expires_in": TICKET_TTL}
+
+
 @app.middleware("http")
 async def no_cache(request: Request, call_next):
     """The UI changes constantly during development. Without this the browser
@@ -896,6 +941,49 @@ async def no_cache(request: Request, call_next):
         resp.headers["Pragma"] = "no-cache"
         resp.headers["Expires"] = "0"
     return resp
+
+
+# Short-lived, single-use tickets for the WebSocket handshake.
+#
+# The token used to travel in the WebSocket URL, where it lands in access
+# logs and proxy diagnostics and stays valid forever. A ticket is exchanged
+# for it over an ordinary authenticated request, is good once, and expires in
+# under a minute, so a URL that leaks is worth nothing by the time anyone
+# reads it.
+_TICKETS: dict[str, float] = {}
+TICKET_TTL = 30.0
+
+
+def issue_ticket() -> str:
+    now = time.time()
+    for k, exp in list(_TICKETS.items()):
+        if exp < now:
+            _TICKETS.pop(k, None)
+    t = secrets.token_urlsafe(24)
+    _TICKETS[t] = now + TICKET_TTL
+    return t
+
+
+def spend_ticket(t: str | None) -> bool:
+    if not t:
+        return False
+    exp = _TICKETS.pop(t, None)          # single use: gone once taken
+    return exp is not None and exp >= time.time()
+
+
+def ws_auth_ok(sock) -> bool:
+    """A ticket, or the token itself for non-browser clients like the relay."""
+    if not TOKEN:
+        return True
+    if spend_ticket(sock.query_params.get("ticket")):
+        return True
+    return token_ok(sock.query_params.get("token"))
+
+
+@app.post("/api/ws-ticket")
+async def api_ws_ticket():
+    """Trade the token, sent as a header, for a ticket that may go in a URL."""
+    return {"ticket": issue_ticket(), "expires_in": TICKET_TTL}
 
 
 @app.middleware("http")
@@ -1868,6 +1956,33 @@ async def api_label(body: dict):
             "propagated": propagated}
 
 
+def origin_ok(sock):
+    """Reject a browser page that is not this interface.
+
+    Same-origin rules do not cover WebSockets: a page on any other site can
+    open one to localhost, and with no token configured it would have been
+    accepted -- able to arm the microphone, clear the buffer, and read the
+    live audio state. The browser tells the truth about where it came from in
+    the Origin header, and it cannot be forged by page script.
+
+    Only browsers send Origin. The relay is not a browser, so a request
+    without one is allowed through; that is what the token is for.
+    """
+    origin = sock.headers.get("origin")
+    if not origin:
+        return True
+    try:
+        u = urlparse(origin)
+    except Exception:
+        return False
+    if u.hostname in ("127.0.0.1", "localhost", "::1"):
+        return True
+    # Reached over the network on purpose: accept the host it was asked for.
+    allowed = {h.strip() for h in
+               os.environ.get("BOSWELL_ALLOWED_ORIGINS", "").split(",") if h.strip()}
+    return origin in allowed
+
+
 @app.websocket("/ingest")
 async def ingest(sock: WebSocket):
     """Audio in from a phone relaying the board's BLE stream, control out.
@@ -1881,14 +1996,35 @@ async def ingest(sock: WebSocket):
     {"type":"ctrl","op":..,"arg":..} for the relay to write to the board's
     control characteristic.
     """
-    if not token_ok(sock.query_params.get("token")):
+    if not origin_ok(sock) or not ws_auth_ok(sock):
         await sock.close(code=1008)
         return
     await sock.accept()
 
+    # One source of audio at a time.
+    #
+    # The local Bluetooth loop starts on its own and a relay could connect
+    # alongside it, both writing into the same PCM buffer, sequence counter
+    # and clock anchor -- two different moments of the same room interleaved
+    # into one recording, with nothing in the result to show it happened. A
+    # second relay was worse still: it replaced the first, and when the first
+    # disconnected it cleared the second's reference on the way out.
+    if device.relay is not None:
+        await sock.close(code=1013)      # try again later
+        return
+    if device.state.get("source") == "ble" and device.state.get("connected"):
+        device.event("log", text="relay refused: the local link owns this session")
+        await sock.close(code=1013)
+        return
+
     device.relay = sock
     device.state.update(connected=True, source="relay", error=None,
                         frames=0, lost=0)
+    # Reset what belongs to a session, so a relay does not inherit the
+    # previous source's clock or partial clip.
+    device._clock_host = None
+    device._clock_dev = 0
+    device._clip_tms_first = device._clip_tms_last = None
     device._last_seq = None
     device.publish()
     device.event("log", text="relay connected")
@@ -1914,7 +2050,9 @@ async def ingest(sock: WebSocket):
     except WebSocketDisconnect:
         pass
     finally:
-        device.relay = None
+        # Only if it is still ours: a later relay may have taken over.
+        if device.relay is sock:
+            device.relay = None
         if device.state.get("source") == "relay":
             device.state.update(connected=False, source=None)
         device.publish()
@@ -1923,7 +2061,7 @@ async def ingest(sock: WebSocket):
 
 @app.websocket("/ws")
 async def ws(sock: WebSocket):
-    if not token_ok(sock.query_params.get("token")):
+    if not origin_ok(sock) or not ws_auth_ok(sock):
         await sock.close(code=1008)
         return
     await sock.accept()

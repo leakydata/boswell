@@ -841,10 +841,20 @@ function paint(s){
   $("err").textContent = s.error || "";
 }
 
-function connect(){
-  const t = TK.get();
+async function connect(){
+  /* Trade the token for a one-shot ticket rather than putting the token in
+     the URL, where it would reach access logs and stay valid forever. With
+     no token configured the server issues one anyway and ignores it. */
+  let q = "";
+  try{
+    const r = await fetch("/api/ws-ticket", {method: "POST"});
+    if (r.ok){
+      const d = await r.json();
+      if (d.ticket) q = "?ticket=" + encodeURIComponent(d.ticket);
+    }
+  }catch(e){ /* fall through: the server may not require auth at all */ }
   const proto = location.protocol === "https:" ? "wss" : "ws";
-  ws = new WebSocket(`${proto}://${location.host}/ws` + (t ? `?token=${encodeURIComponent(t)}` : ""));
+  ws = new WebSocket(`${proto}://${location.host}/ws` + q);
   ws.onmessage = e => {
     const m = JSON.parse(e.data);
     if (m.type === "state") paint(m);
@@ -864,9 +874,24 @@ function connect(){
       }
     }
   };
-  ws.onclose = () => { log("server connection lost — retrying"); setTimeout(connect, 2000); };
+  ws.onclose = (e) => {
+    /* 1008 is the server refusing the credentials. Retrying forever against
+       a refusal is how the token gate never appeared: the socket closed, the
+       page reconnected, and nobody was ever asked for anything. */
+    if (e.code === 1008){
+      log("access refused — a token is required");
+      showTokenGate();
+      return;
+    }
+    log("server connection lost — retrying");
+    setTimeout(connect, 2000);
+  };
 }
-connect();
+
+/* Ask before connecting. ensureAuth existed and nothing called it. */
+(async () => {
+  if (await ensureAuth()) connect();
+})();
 
 /* ---- tabs ---- */
 let current = null;
