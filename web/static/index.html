@@ -251,6 +251,9 @@ select.filter:focus{outline:2px solid var(--accent);outline-offset:-1px}
 
 /* transcript */
 audio{display:none}
+/* The recordings view drives a hidden <audio> from its own transport, hence
+   the blanket rule above. The voice queue wants a real player. */
+audio.voiceclip{display:block;width:100%;height:34px}
 .wave{position:relative;background:var(--sunk);border:1px solid var(--rule);
   border-radius:8px;overflow:hidden;margin:6px 0 14px}
 .wave canvas{display:block;width:100%;height:96px;cursor:pointer}
@@ -574,10 +577,27 @@ html{scroll-padding-top:120px}
     <div class="card">
       <h2>Enrolled voices</h2>
       <p class="intro" style="font-size:14px;color:var(--muted);margin:0 0 14px">
-        Each label adds a sample and the reference is their average, so it sharpens
-        as you add more. Remove a sample if it was the wrong person or too short —
-        the reference is rebuilt without it.</p>
+        Every label is kept as its own voiceprint — never averaged. A voice sounds
+        different in a quiet room, outdoors, or over a bad connection, and matching
+        takes the closest single voiceprint, so each one you add covers a condition
+        the others do not. Remove one if it was the wrong person.</p>
       <div id="pplList"><div class="empty">loading…</div></div>
+    </div>
+
+    <div class="card">
+      <h2>Unidentified voices</h2>
+      <p class="intro" style="font-size:14px;color:var(--muted);margin:0 0 12px">
+        Voices that recur but nobody has named, grouped so one name settles all of
+        them at once. Listen to the voice on its own — their turns spliced together,
+        without anyone else — then name it. Every naming also teaches the matcher a
+        condition it could not recognise before.</p>
+      <div class="toolbar2" style="margin-bottom:12px">
+        <span class="count" id="voiceCount"></span>
+        <button id="bVoiceScan">Scan for new voices</button>
+        <button id="bVoiceRecheck">Recheck against named people</button>
+        <button id="bVoiceRefresh">Refresh</button>
+      </div>
+      <div id="voiceQueue"><div class="empty">loading…</div></div>
     </div>
 
     <div class="card">
@@ -769,12 +789,23 @@ function showTokenGate(){
 function paint(s){
   connected = s.connected; armed = s.armed;
   const dot = $("dot");
+  /* One predicate for "there is a backlog", used by the dot, the status line
+     and the meter below.
+
+     These used to disagree. The status line tested backlog_bytes > 0, the
+     meter tested backlog_seconds > 0.2, and the figure beside them is printed
+     to one decimal -- so anything under 225 buffered bytes read "Draining
+     buffer" next to a backlog of "0.0 s" and no progress bar, with nothing
+     actually left to drain. Deriving all three from the rounded seconds means
+     the words can never contradict the number they sit next to. */
+  const backlog = s.backlog_seconds || 0;
+  const draining = backlog > 0;
   dot.className = "dot " + (!s.connected ? (s.scanning ? "off" : "off")
                     : !s.armed ? "idle"
-                    : s.backlog_bytes > 0 ? "drain" : "live");
+                    : draining ? "drain" : "live");
   $("stxt").textContent = !s.connected ? (s.scanning ? "Searching…" : "Not connected")
                         : !s.armed ? "Connected · paused"
-                        : s.backlog_bytes > 0 ? "Draining buffer" : "Recording";
+                        : draining ? "Draining buffer" : "Recording";
   $("ssub").textContent = !s.connected ? (s.error || "press Connect to begin")
                         : `${s.rate/1000} kHz · ADPCM · ${s.frames} frames`;
   $("ver").textContent = s.connected ? "XIAO-MIC" : "disconnected";
@@ -813,8 +844,8 @@ function paint(s){
 
   // Backlog progress. The device only reports what is left, so remember the
   // high-water mark to turn that into a sense of how far along we are.
-  const left = s.backlog_seconds || 0;
-  if (left > 0.2){
+  const left = backlog;
+  if (draining){
     drainPeak = Math.max(drainPeak, left);
     $("drainWrap").hidden = false;
     const doneFrac = drainPeak > 0 ? 1 - (left / drainPeak) : 0;
@@ -907,7 +938,7 @@ function showTab(which){
     $(v).hidden = !on;
   }
   if (which === "rec") loadClips();
-  if (which === "ppl"){ loadPeople(); loadVocab(); }
+  if (which === "ppl"){ loadPeople(); loadVocab(); loadVoices(); }
   if (which === "notes"){ loadAgent(); loadItems(); loadTopics(); loadDuplicates(); }
 }
 const TABS = [["tabDev","dev"],["tabRec","rec"],["tabPpl","ppl"],["tabNotes","notes"]];
@@ -1219,6 +1250,144 @@ async function loadPeople(){
     }
   }catch(e){ el.innerHTML = '<div class="empty">could not load people</div>'; }
 }
+
+/* ---- unidentified voices ---- */
+
+function fmtMins(sec){
+  if (sec < 60) return `${Math.round(sec)}s`;
+  const m = Math.floor(sec / 60);
+  return m < 60 ? `${m} min` : `${(m/60).toFixed(1)} hr`;
+}
+
+async function loadVoices(){
+  const el = $("voiceQueue");
+  try{
+    const q = await (await fetch("/api/voices/queue?limit=40")).json();
+    $("voiceCount").textContent = q.length
+      ? `${q.length} unnamed voice${q.length === 1 ? "" : "s"}` : "";
+    if (!q.length){
+      el.innerHTML = '<div class="empty">No unidentified voices. '
+        + 'Run a scan if new recordings have come in.</div>';
+      return;
+    }
+    el.innerHTML = "";
+    for (const v of q){
+      const d = document.createElement("div");
+      d.className = "row";
+      d.style.cssText = "flex-direction:column;align-items:stretch;gap:8px";
+
+      const head = document.createElement("div");
+      head.style.cssText = "display:flex;gap:10px;align-items:baseline;flex-wrap:wrap";
+      const who = document.createElement("strong");
+      who.textContent = `Unknown voice #${v.person_id}`;
+      const stat = document.createElement("span");
+      stat.className = "count";
+      stat.textContent = `${fmtMins(v.seconds)} across ${v.clips} clip`
+                       + `${v.clips === 1 ? "" : "s"}`;
+      head.appendChild(who); head.appendChild(stat);
+      d.appendChild(head);
+
+      /* The closest named people, with their scores. A near-miss is the most
+         valuable thing on this page: confirming one is a single click and it
+         adds a reference for a condition that had none. */
+      if (v.candidates.length){
+        const c = document.createElement("div");
+        c.style.cssText = "font-family:var(--mono);font-size:12px;color:var(--muted)";
+        c.textContent = "closest: " + v.candidates
+          .map(x => `${x.name} ${x.score.toFixed(2)}`).join("  ·  ");
+        d.appendChild(c);
+      }
+
+      if (v.text){
+        const t = document.createElement("div");
+        t.style.cssText = "font-size:13px;color:var(--muted);line-height:1.5;"
+          + "max-height:60px;overflow:hidden";
+        t.textContent = v.text;
+        d.appendChild(t);
+      }
+
+      const au = document.createElement("audio");
+      au.className = "voiceclip";
+      au.controls = true; au.preload = "metadata";
+      au.src = `/api/voices/${v.person_id}/audio`;
+      d.appendChild(au);
+
+      const bar = document.createElement("div");
+      bar.style.cssText = "display:flex;gap:8px;flex-wrap:wrap";
+      const input = document.createElement("input");
+      input.placeholder = "Who is this?";
+      input.setAttribute("aria-label", `Name for unknown voice ${v.person_id}`);
+      input.style.cssText = "flex:1;min-width:140px;padding:7px 9px;border-radius:7px;"
+        + "border:1px solid var(--rule);background:var(--paper);color:var(--ink)";
+      const save = document.createElement("button");
+      save.className = "pri"; save.textContent = "Name";
+      const msg = document.createElement("span");
+      msg.style.cssText = "font-family:var(--mono);font-size:12px;color:var(--muted)";
+
+      const submit = async () => {
+        const name = input.value.trim();
+        if (!name) return;
+        save.disabled = true; msg.textContent = "naming…";
+        try{
+          const r = await fetch(`/api/voices/${v.person_id}/name`, {
+            method:"POST", headers:{"Content-Type":"application/json"},
+            body: JSON.stringify({name})});
+          const b = await r.json().catch(() => ({}));
+          if (!r.ok){ msg.textContent = b.detail || "failed"; save.disabled = false; return; }
+          log(`named ${b.voiceprints} voiceprint(s) as ${name}`
+              + (b.clips_relabelled ? `, relabelled ${b.clips_relabelled} clip(s)` : ""));
+          loadVoices(); loadPeople();
+        }catch(e){ msg.textContent = "could not reach the server"; save.disabled = false; }
+      };
+      save.onclick = submit;
+      input.onkeydown = (e) => { if (e.key === "Enter") submit(); };
+
+      /* One click for a candidate the matcher already thinks is likely. */
+      for (const cand of v.candidates.slice(0, 2)){
+        const b = document.createElement("button");
+        b.textContent = cand.name;
+        b.title = `Confirm as ${cand.name} (scored ${cand.score.toFixed(2)})`;
+        b.onclick = () => { input.value = cand.name; submit(); };
+        bar.appendChild(b);
+      }
+      bar.appendChild(input); bar.appendChild(save); bar.appendChild(msg);
+      d.appendChild(bar);
+      el.appendChild(d);
+    }
+  }catch(e){ el.innerHTML = '<div class="empty">could not load voices</div>'; }
+}
+
+on("bVoiceRefresh", "click", loadVoices);
+/* Naming somebody teaches the matcher conditions it could not recognise
+   before, and that applies backwards as much as forwards -- recordings made
+   long ago may match now. Without this the archive only improves ahead of the
+   naming, which is the wrong half of it. */
+on("bVoiceRecheck", "click", async () => {
+  const b = $("bVoiceRecheck");
+  b.disabled = true; b.textContent = "rechecking…";
+  try{
+    const r = await (await fetch("/api/voices/recheck", {method:"POST"})).json();
+    if (r.absorbed){
+      const into = Object.entries(r.into).map(([k,v]) => `${k} +${v}`).join(", ");
+      log(`recheck: ${r.absorbed} voice(s) resolved — ${into}`
+          + (r.clips_relabelled ? `, relabelled ${r.clips_relabelled} clip(s)` : ""));
+    } else {
+      log(`recheck: ${r.checked} unnamed voice(s), none confident enough yet`);
+    }
+    loadVoices(); loadPeople();
+  }catch(e){ log("recheck failed"); }
+  finally{ b.disabled = false; b.textContent = "Recheck against named people"; }
+});
+on("bVoiceScan", "click", async () => {
+  const b = $("bVoiceScan");
+  b.disabled = true; b.textContent = "scanning…";
+  try{
+    const r = await (await fetch("/api/voices/scan", {method:"POST"})).json();
+    log(`voice scan: ${r.clustered} filed, ${r.new_clusters} new, ${r.matched} already known`);
+    loadVoices();
+  }catch(e){ log("voice scan failed"); }
+  finally{ b.disabled = false; b.textContent = "Scan for new voices"; }
+});
 
 /* ---- recordings ---- */
 let clipFilter = "all", dateFilter = "all", query = "";
@@ -2301,33 +2470,26 @@ async function nameSpeaker(clip, speaker, existing, onSaved){
   openSheet("namer", "namerInput");
 }
 
-/* Naming succeeded; only the voiceprint was skipped. Say so plainly and offer
-   the override, rather than making it look like the rename failed. */
-function msgAfterNaming(name, reason, clip, speaker){
+/* Naming succeeded; only the voiceprint was skipped. Say so plainly, rather
+   than making it look like the rename failed.
+
+   There used to be an "Add to voiceprint anyway" override here, for when the
+   store refused a sample for sounding unlike the person already enrolled.
+   That check is gone -- references are kept individually now and a sample
+   that resembles nothing stored is the one worth having, because it covers a
+   condition none of the others do. What can still be refused is audio too
+   short or too degenerate to be a voiceprint at all, and forcing either of
+   those in just writes a bad reference that looks perfectly normal
+   afterwards. */
+function msgAfterNaming(name, reason){
   $("namerT").textContent = `Named ${name}`;
   $("namerErr").style.color = "var(--muted)";
   $("namerErr").textContent =
     `The name is applied. This clip was not added to ${name}'s voiceprint` +
     (reason ? ` — ${reason}.` : ".");
   $("namerQuick").innerHTML = "";
-  let over = document.getElementById("namerForce");
-  if (!over){
-    over = document.createElement("button");
-    over.id = "namerForce";
-    over.style.marginTop = "8px";
-    $("namerErr").after(over);
-  }
-  over.textContent = "Add to voiceprint anyway";
-  over.onclick = async () => {
-    const r = await fetch("/api/label", {
-      method:"POST", headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({clip, speaker, name, force:true})
-    });
-    const b = await r.json().catch(()=>({}));
-    log(b.enrolled ? `voiceprint now ${b.samples} sample(s)` : "could not add");
-    closeNamer();
-    renderTranscript(clip);
-  };
+  const stale = document.getElementById("namerForce");
+  if (stale) stale.remove();
   $("namerSave").textContent = "Done";
   $("namerSave").onclick = () => { closeNamer(); };
 }
@@ -2400,7 +2562,7 @@ async function saveName(){
         closeNamer();
       } else {
         log(`named ${namerCtx.speaker} as ${name} · voiceprint unchanged`);
-        msgAfterNaming(name, body.reason, clip, namerCtx.speaker);
+        msgAfterNaming(name, body.reason);
       }
       /* The conversation reader passes its own refresh; re-rendering a single
          clip's transcript would leave the rest of the conversation showing the

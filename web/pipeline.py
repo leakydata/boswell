@@ -22,7 +22,13 @@ DATA = os.path.abspath(os.path.join(HERE, "..", "data"))
 TRANSCRIPTS = os.path.join(DATA, "transcripts")
 SPEAKER_DB = os.path.join(DATA, "speakers.npz")
 SPEAKER_META = os.path.join(DATA, "speakers.json")
-MATCH_THRESHOLD = 0.60
+# The single match threshold that used to live here is gone. It could not do
+# the job: held out properly, the score distribution runs continuously from
+# 0.85 down through 0.74 with no break wider than 0.009 anywhere in it, so
+# there is no boundary to find and any one number is a choice about which
+# error to make. speaker_store decides with a floor, a ceiling and a margin
+# between people instead, and records what it decided so the numbers can be
+# re-derived from evidence rather than guessed again.
 
 
 def unit(v):
@@ -31,202 +37,324 @@ def unit(v):
     return v / n if n else v
 
 
+# The npz store the SQLite one was migrated from. Read once by
+# speaker_store.migrate() and then left alone; kept so the import is repeatable
+# and so nothing is destroyed by the move.
 SAMPLES_DB = os.path.join(DATA, "speaker_samples.npz")
-
-# A voiceprint from a few seconds of speech is unreliable, and averaging one in
-# permanently drags the reference away from how the person actually sounds.
-MIN_ENROLL_SECONDS = 5.0
-# Measured on this hardware: the same speaker across recordings scores
-# 0.65-0.87, two different speakers 0.38-0.48. 0.55 sits in the gap -- low
-# enough to allow genuine variation in how someone sounds, high enough to
-# catch a line that belongs to somebody else. An earlier 0.40 sat inside the
-# different-speaker range and let a wrong voice enrol without complaint.
-OUTLIER_MIN = 0.55
 
 
 def load_speakers():
-    """Reference vectors used for matching, derived from the stored samples."""
+    """Legacy centroid view, kept only so the old npz store stays readable.
+
+    Nothing in the matching path uses this any more -- see speaker_store, which
+    holds one row per voiceprint and never averages them.
+    """
     if not os.path.exists(SPEAKER_DB):
         return {}
     d = np.load(SPEAKER_DB)
     return {k: unit(d[k]) for k in d.files}
 
 
-def _load_samples():
-    if not os.path.exists(SAMPLES_DB):
-        return {}
-    d = np.load(SAMPLES_DB)
-    return {k: d[k] for k in d.files}
-
-
-def _save_samples(samples):
-    os.makedirs(DATA, exist_ok=True)
-    atomicio.write_npz(SAMPLES_DB, samples)
-
-
-def _load_meta():
-    return json.load(open(SPEAKER_META)) if os.path.exists(SPEAKER_META) else {}
-
-
-def _save_meta(meta):
-    os.makedirs(DATA, exist_ok=True)
-    atomicio.write_json(SPEAKER_META, meta, indent=2)
-
-
-def _migrate(meta, samples):
-    """Adopt any pre-existing centroid as a single weighted sample.
-
-    Earlier versions stored only the average, so the individual recordings
-    behind it are gone. Carrying the average forward with its original weight
-    preserves every match that already worked, and new labels accumulate
-    alongside it as removable samples.
-    """
-    if not os.path.exists(SPEAKER_DB):
-        return False
-    d = np.load(SPEAKER_DB)
-    changed = False
-    for name in d.files:
-        entry = meta.setdefault(name, {})
-        if entry.get("samples"):
-            continue
-        weight = int(entry.get("count", 1)) or 1
-        sid = "legacy"
-        samples[f"{name}||{sid}"] = unit(d[name])
-        entry["samples"] = [{"id": sid, "weight": weight, "legacy": True,
-                             "clip": None, "seconds": None, "score": None}]
-        changed = True
-    return changed
-
-
-def recompute_centroid(name, meta, samples):
-    """Weighted mean of a person's samples, renormalised for cosine matching."""
-    entries = meta.get(name, {}).get("samples", [])
-    acc = None
-    for e in entries:
-        v = samples.get(f"{name}||{e['id']}")
-        if v is None:
-            continue
-        w = float(e.get("weight", 1))
-        acc = unit(v) * w if acc is None else acc + unit(v) * w
-    vecs = {}
-    if os.path.exists(SPEAKER_DB):
-        d = np.load(SPEAKER_DB)
-        vecs = {k: d[k] for k in d.files}
-    if acc is None:
-        vecs.pop(name, None)
-    else:
-        vecs[name] = unit(acc)
-    atomicio.write_npz(SPEAKER_DB, vecs)
+def _sdb():
+    """The store, migrating the npz/json files across on first use."""
+    import speaker_store
+    speaker_store.migrate()
+    return speaker_store
 
 
 def list_speakers():
-    meta = _load_meta()
-    samples = _load_samples()
-    if _migrate(meta, samples):
-        _save_samples(samples)
-        _save_meta(meta)
+    """People and their individual voiceprints.
+
+    Shaped like the old centroid store's output so the web UI did not have to
+    change: `samples` is the list of references, and `count` is how many
+    conditions this person is covered for -- which is what it now means.
+    """
+    sdb = _sdb()
     out = []
-    for name, entry in sorted(meta.items()):
+    for p in sdb.people():
+        if p["name"] is None:
+            continue          # unidentified clusters have their own view
+        prints = sdb.voiceprints(p["id"])
         out.append({
-            "name": name,
-            "samples": entry.get("samples", []),
-            "count": sum(int(e.get("weight", 1)) for e in entry.get("samples", [])),
+            "name": p["name"],
+            "person_id": p["id"],
+            "samples": [{"id": str(v["id"]), "weight": 1,
+                         "clip": v["clip"], "speaker": v["speaker"],
+                         "seconds": round(v["seconds"], 1) if v["seconds"] else v["seconds"],
+                         "origin": v["origin"],
+                         "redundant": bool(v["redundant"]),
+                         "score": None} for v in prints],
+            "count": len(prints),
         })
     return out
 
 
 def save_speaker(name, vec, clip=None, speaker=None, seconds=None, force=False):
-    """Add one sample to a person, with quality checks.
+    """Add one reference for a person.
 
-    Returns a dict describing what happened. Rejections are advisory: passing
-    force=True enrols anyway, because only the person listening can settle a
-    genuinely unusual-sounding recording.
+    The old version refused any sample scoring below 0.55 against the person
+    already enrolled, on the reasoning that a dissimilar sample poisons the
+    average. There is no average any more, and that gate was rejecting exactly
+    the samples worth having: the same voice in a different room, on a
+    different day, through a different mic. A sample that resembles nothing
+    stored is the one that adds coverage.
+
+    What is still checked is whether the audio is worth learning from at all --
+    too little speech, or a degenerate vector.
     """
-    meta = _load_meta()
-    samples = _load_samples()
-    _migrate(meta, samples)
+    sdb = _sdb()
+    if not force and seconds is not None and seconds < sdb.MIN_ENROLL_SECONDS:
+        return {"ok": False, "reason": "too_short", "seconds": round(seconds, 1),
+                "minimum": sdb.MIN_ENROLL_SECONDS,
+                "detail": f"only {seconds:.1f}s of this voice in the clip; "
+                          f"{sdb.MIN_ENROLL_SECONDS:.0f}s or more makes a "
+                          f"reliable voiceprint"}
+    if not sdb.is_usable(vec):
+        return {"ok": False, "reason": "unusable",
+                "detail": "no usable voiceprint was extracted for this speaker"}
 
-    v = unit(vec)
-    entry = meta.setdefault(name, {})
-    entry.setdefault("samples", [])
-
-    if not force:
-        if seconds is not None and seconds < MIN_ENROLL_SECONDS:
-            return {"ok": False, "reason": "too_short", "seconds": round(seconds, 1),
-                    "minimum": MIN_ENROLL_SECONDS,
-                    "detail": f"only {seconds:.1f}s of this voice in the clip; "
-                              f"{MIN_ENROLL_SECONDS:.0f}s or more makes a reliable voiceprint"}
-        existing = load_speakers().get(name)
-        if existing is not None and entry["samples"]:
-            sim = float(v @ unit(existing))
-            if sim < OUTLIER_MIN:
-                return {"ok": False, "reason": "outlier", "similarity": round(sim, 3),
-                        "minimum": OUTLIER_MIN,
-                        "detail": f"this sounds unlike the {name} already enrolled "
-                                  f"({sim:.2f}); it may be a misattributed line"}
-
-    sid = f"s{int(time.time() * 1000) % 100000000}"
-    samples[f"{name}||{sid}"] = v
-    score = None
-    existing = load_speakers().get(name)
-    if existing is not None and entry["samples"]:
-        score = round(float(v @ unit(existing)), 3)
-    entry["samples"].append({"id": sid, "weight": 1, "clip": clip,
-                             "speaker": speaker,
-                             "seconds": round(seconds, 1) if seconds else None,
-                             "score": score})
-    _save_samples(samples)
-    _save_meta(meta)
-    recompute_centroid(name, meta, samples)
-    return {"ok": True, "name": name,
-            "count": sum(int(e.get("weight", 1)) for e in entry["samples"]),
-            "score": score}
+    c = sdb._conn()
+    try:
+        pid = sdb.person_id_for(name, c)
+        # What this sample scores against what is already stored, recorded for
+        # information rather than used as a gate -- a low number here means new
+        # coverage, which is the point.
+        before = sdb.match(vec, c)
+        novelty = None
+        for cand in before.get("candidates", []):
+            if cand["person_id"] == pid:
+                novelty = cand["score"]
+                break
+        r = sdb.add_voiceprint(pid, vec, seconds=seconds, clip=clip,
+                               speaker=speaker,
+                               origin="confirmed" if novelty is not None else "manual",
+                               c=c)
+        if not r.get("ok"):
+            return r
+        n = len(sdb.voiceprints(pid, c))
+        return {"ok": True, "name": name, "count": n,
+                "person_id": pid, "voiceprint_id": r["voiceprint_id"],
+                "score": novelty,
+                "detail": (f"stored; it scores {novelty:.2f} against this "
+                           f"person's existing references"
+                           if novelty is not None else
+                           "stored as the first reference for this person")}
+    finally:
+        c.close()
 
 
 def delete_sample(name, sample_id):
-    meta = _load_meta()
-    samples = _load_samples()
-    entry = meta.get(name)
-    if not entry:
+    sdb = _sdb()
+    try:
+        return sdb.delete_voiceprint(int(sample_id))
+    except (TypeError, ValueError):
         return False
-    before = len(entry.get("samples", []))
-    entry["samples"] = [e for e in entry.get("samples", []) if e["id"] != sample_id]
-    samples.pop(f"{name}||{sample_id}", None)
-    if not entry["samples"]:
-        meta.pop(name, None)
-    _save_samples(samples)
-    _save_meta(meta)
-    recompute_centroid(name, meta, samples)
-    return len(entry.get("samples", [])) != before if name in meta else True
 
 
 def delete_speaker(name):
-    meta = _load_meta()
-    samples = _load_samples()
-    if name not in meta:
-        return False
-    for e in meta[name].get("samples", []):
-        samples.pop(f"{name}||{e['id']}", None)
-    meta.pop(name, None)
-    _save_samples(samples)
-    _save_meta(meta)
-    recompute_centroid(name, meta, samples)
-    return True
+    sdb = _sdb()
+    c = sdb._conn()
+    try:
+        pid = sdb.person_id_for(name, c, create=False)
+        return sdb.delete_person(pid, c) if pid else False
+    finally:
+        c.close()
 
 
-def identify(embeddings):
-    db = load_speakers()
+def identify(embeddings, clip=None):
+    """Put names to diarized voices.
+
+    Three outcomes rather than two. A voice that nobody can vouch for is left
+    unnamed on purpose, and the near-misses are kept: `candidates` carries the
+    top three with their scores, so a voice the matcher was not confident
+    enough to name is still one click from being confirmed by someone who
+    recognises it -- and every confirmation becomes a new reference.
+    """
+    sdb = _sdb()
     out = {}
-    for spk, vec in (embeddings or {}).items():
-        v = unit(vec)
-        best, name = -1.0, None
-        for n, ref in db.items():
-            s = float(v @ ref)
-            if s > best:
-                best, name = s, n
-        out[spk] = {"name": name if best >= MATCH_THRESHOLD else None,
-                    "score": round(best, 3) if name else 0.0}
+    c = sdb._conn()
+    try:
+        for spk, vec in (embeddings or {}).items():
+            r = sdb.match(vec, c)
+            out[spk] = {"name": r.get("name"),
+                        "score": round(r["score"], 3) if r["score"] else 0.0,
+                        "decision": r["decision"],
+                        "margin": r.get("margin"),
+                        "candidates": r.get("candidates", [])}
+            if clip:
+                sdb.log_match(clip, spk, r, c)
+    finally:
+        c.close()
     return out
+
+
+def voice_seconds(segments, speaker):
+    """How much speech a diarized voice actually has in a clip."""
+    return sum(float(x["end"]) - float(x["start"]) for x in segments
+               if x.get("speaker") == speaker
+               and isinstance(x.get("start"), (int, float))
+               and isinstance(x.get("end"), (int, float)))
+
+
+def scan_voices(limit=None, min_seconds=3.0):
+    """File every diarized voice that nobody has accounted for yet.
+
+    Walks the transcripts, skips voices already stored and voices a name has
+    already been put to, and files the rest into unnamed clusters so a
+    recurring stranger becomes one entry to name rather than a hundred
+    disconnected SPEAKER_00s. Idempotent: rerunning it picks up only what is
+    new, so it is safe to call after every transcription.
+    """
+    sdb = _sdb()
+    c = sdb._conn()
+    try:
+        seen = sdb.seen_voices(c)
+        stats = {"scanned": 0, "skipped_known": 0, "skipped_short": 0,
+                 "matched": 0, "clustered": 0, "new_clusters": 0}
+        files = sorted(f for f in os.listdir(TRANSCRIPTS)
+                       if f.endswith(".json")) if os.path.isdir(TRANSCRIPTS) else []
+        for f in files:
+            try:
+                t = json.load(open(os.path.join(TRANSCRIPTS, f)))
+            except Exception:
+                continue
+            clip = t.get("clip") or (f[:-5] + ".wav")
+            segs = t.get("segments") or []
+            named = t.get("speakers") or {}
+            for spk, vec in (t.get("embeddings") or {}).items():
+                if (clip, spk) in seen:
+                    stats["skipped_known"] += 1
+                    continue
+                # A voice somebody has already named by hand is settled.
+                if (named.get(spk) or {}).get("name"):
+                    stats["skipped_known"] += 1
+                    continue
+                secs = voice_seconds(segs, spk)
+                if secs < min_seconds:
+                    stats["skipped_short"] += 1
+                    continue
+                stats["scanned"] += 1
+                r = sdb.match(vec, c)
+                if r["decision"] == "matched":
+                    stats["matched"] += 1
+                    continue
+                g = sdb.ingest_unknown(vec, clip=clip, speaker=spk,
+                                       seconds=secs, c=c)
+                if g.get("ok"):
+                    stats["clustered"] += 1
+                    stats["new_clusters"] += 1 if g.get("new_cluster") else 0
+                    seen.add((clip, spk))
+                if limit and stats["clustered"] >= limit:
+                    return stats
+        return stats
+    finally:
+        c.close()
+
+
+def recheck_unknowns():
+    """Re-test every unnamed cluster against the people who are known now.
+
+    This is the loop the whole store is built around. Naming one voice adds
+    references for conditions that had none, which raises the score of every
+    other recording made under those conditions -- so a cluster that matched
+    nobody an hour ago may match confidently once you have named someone.
+    Without this the store only ever gets better for audio recorded after the
+    naming, which is the wrong half of the archive.
+
+    Only absorbs a cluster on a full `matched` decision -- clear of the floor
+    and clear of the runner-up. Anything less stays in the queue for a person
+    to settle, because a cluster absorbed wrongly puts one name on everything
+    in it at once.
+    """
+    sdb = _sdb()
+    c = sdb._conn()
+    try:
+        stats = {"checked": 0, "absorbed": 0, "voiceprints_moved": 0,
+                 "into": {}}
+        for cl in sdb.unknown_clusters(c):
+            stats["checked"] += 1
+            rows = c.execute(
+                "SELECT id, vec, seconds FROM voiceprints WHERE person_id = ? "
+                "ORDER BY seconds DESC", (cl["id"],)).fetchall()
+            if not rows:
+                continue
+
+            # Decide on the cluster's best-evidenced voices rather than any
+            # single one: a cluster is a claim that these are all the same
+            # person, so a lone flattering vector should not carry it.
+            votes = {}
+            for r in rows[:5]:
+                m = sdb.match(sdb._unpack(r["vec"]), c)
+                if m["decision"] == "matched" and m.get("person_id"):
+                    votes[m["person_id"]] = votes.get(m["person_id"], 0) + 1
+            if not votes:
+                continue
+            pid, n = max(votes.items(), key=lambda kv: kv[1])
+            if n < max(2, min(3, len(rows[:5]))):
+                continue          # not agreed on by enough of the cluster
+
+            name = c.execute("SELECT name FROM people WHERE id = ?",
+                             (pid,)).fetchone()["name"]
+            c.execute("UPDATE voiceprints SET person_id = ? WHERE person_id = ?",
+                      (pid, cl["id"]))
+            c.execute("DELETE FROM people WHERE id = ?", (cl["id"],))
+            c.commit()
+            stats["absorbed"] += 1
+            stats["voiceprints_moved"] += len(rows)
+            stats["into"][name] = stats["into"].get(name, 0) + len(rows)
+        return stats
+    finally:
+        c.close()
+
+
+def labelling_queue(limit=50):
+    """Unnamed voices worth someone's attention, most speech first.
+
+    Each entry carries what it would take to settle it in one look: how much
+    was said, where, the words, and the closest named people with their
+    scores. A near-miss shown with its score is confirmable in one click, and
+    that confirmation is worth more than the label -- it becomes a reference
+    covering a condition that had no coverage.
+    """
+    sdb = _sdb()
+    c = sdb._conn()
+    try:
+        out = []
+        for cl in sdb.unknown_clusters(c)[:limit]:
+            locs = sdb.voice_locations(cl["id"], c)
+            row = c.execute("SELECT vec FROM voiceprints WHERE person_id = ? "
+                            "ORDER BY seconds DESC LIMIT 1", (cl["id"],)).fetchone()
+            cands = []
+            if row is not None:
+                r = sdb.match(sdb._unpack(row["vec"]), c)
+                cands = [x for x in r.get("candidates", []) if x["name"]]
+            text = []
+            for loc in locs[:6]:
+                tp = transcript_path(loc["clip"])
+                if not os.path.exists(tp):
+                    continue
+                try:
+                    t = json.load(open(tp))
+                except Exception:
+                    continue
+                said = " ".join(x["text"] for x in (t.get("segments") or [])
+                                if x.get("speaker") == loc["speaker"])
+                if said.strip():
+                    text.append(said.strip())
+            out.append({
+                "person_id": cl["id"],
+                "seconds": round(cl["seconds"], 1),
+                "voiceprints": cl["prints"],
+                "clips": cl["clips"],
+                "first_seen": cl["first_seen"],
+                "last_seen": cl["last_seen"],
+                "locations": locs,
+                "candidates": cands[:3],
+                "text": " … ".join(text)[:600],
+            })
+        return out
+    finally:
+        c.close()
 
 
 VOCAB_PATH = os.path.join(DATA, "vocabulary.json")
@@ -470,7 +598,7 @@ class Worker:
                 if arr.size and np.all(np.isfinite(arr)):
                     clean[k] = arr
             embeddings = {k: v.tolist() for k, v in clean.items()}
-            names = identify(clean)
+            names = identify(clean, clip=clip)
 
         terms = load_vocabulary()
         segs = [{"start": round(float(s["start"]), 2),

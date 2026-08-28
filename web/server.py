@@ -11,6 +11,7 @@ reimplement in a few dozen lines.
     uv run web/server.py          then open http://localhost:8000
 """
 
+import io
 import asyncio
 import json
 import os
@@ -1994,6 +1995,164 @@ async def api_models():
     except Exception:
         return {"models": [], "error": "ollama not reachable"}
     return {"models": sorted(names)}
+
+
+@app.post("/api/voices/scan")
+async def api_voices_scan():
+    """File every diarized voice nobody has accounted for into a cluster."""
+    loop = asyncio.get_running_loop()
+    stats = await loop.run_in_executor(None, pipeline.scan_voices)
+    device.event("log", text=(f"voice scan: {stats['clustered']} filed into "
+                              f"{stats['new_clusters']} new cluster(s), "
+                              f"{stats['matched']} already known"))
+    return stats
+
+
+@app.post("/api/voices/recheck")
+async def api_voices_recheck():
+    """Re-test unnamed clusters now that more people are known.
+
+    Run after naming somebody: their new references may recognise recordings
+    that nothing could match before.
+    """
+    loop = asyncio.get_running_loop()
+    stats = await loop.run_in_executor(None, pipeline.recheck_unknowns)
+    if stats["absorbed"]:
+        into = ", ".join(f"{k} (+{v})" for k, v in stats["into"].items())
+        device.event("log", text=(f"recheck: {stats['absorbed']} cluster(s) "
+                                  f"resolved -- {into}"))
+        stats["clips_relabelled"] = _rematch_clips()
+    else:
+        device.event("log", text=(f"recheck: {stats['checked']} cluster(s), "
+                                  f"none confident enough to resolve"))
+        stats["clips_relabelled"] = 0
+    return stats
+
+
+@app.get("/api/voices/queue")
+async def api_voices_queue(limit: int = 50):
+    """Unnamed voices, most speech first, with everything needed to settle one."""
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, pipeline.labelling_queue, limit)
+
+
+@app.post("/api/voices/{person_id}/name")
+async def api_voices_name(person_id: int, body: dict):
+    """Put a name to a whole cluster at once.
+
+    This is the step the design exists for. Every voiceprint gathered under
+    this cluster becomes a labelled reference in one action -- if the cluster
+    covers a quiet room and a noisy one, both conditions are now covered, and
+    that is coverage no single enrolment could have produced.
+    """
+    name = (body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(400, "need a name")
+    import speaker_store
+    c = speaker_store._conn()
+    try:
+        row = c.execute("SELECT id, name FROM people WHERE id = ?",
+                        (person_id,)).fetchone()
+        if row is None:
+            raise HTTPException(404, "no such voice")
+        n = c.execute("SELECT COUNT(*) n FROM voiceprints WHERE person_id = ?",
+                      (person_id,)).fetchone()["n"]
+        r = speaker_store.name_person(person_id, name, c)
+    finally:
+        c.close()
+    device.event("log", text=(f"named {n} voiceprint(s) as {name}"
+                              + (" (merged into an existing person)"
+                                 if r.get("merged") else "")))
+    # Names travel back through the transcripts the same way a hand label
+    # does, so the clips this voice appears in stop saying SPEAKER_00.
+    changed = _rematch_clips()
+    return {"ok": True, "name": name, "voiceprints": n,
+            "merged": r.get("merged", False), "clips_relabelled": changed}
+
+
+VOICE_CACHE = os.path.join(DATA, "voice_clips")
+
+
+@app.get("/api/voices/{person_id}/audio")
+async def api_voices_audio(person_id: int, max_seconds: float = 90.0):
+    """Just this voice, their turns spliced together.
+
+    Identifying somebody from a transcript is slow and from a whole clip
+    slower -- most of a recording is not the person you are asking about.
+    Thirty seconds of only them is usually instant recognition, and that is
+    the difference between labelling being quick and being a chore.
+
+    Written to a file and served with FileResponse rather than returned as
+    bytes: an in-memory Response answers a Range request with the whole body
+    and a 200, so the browser cannot seek and shows no duration. Starlette
+    handles Range properly for a file. The name carries the cluster's size and
+    newest member, so a cluster that grows gets a new file and a stale splice
+    is never served.
+    """
+    import speaker_store
+    locs = speaker_store.voice_locations(person_id)
+    if not locs:
+        raise HTTPException(404, "no audio for this voice")
+
+    stamp = f"{len(locs)}_{int(max(l['created'] or 0 for l in locs))}"
+    os.makedirs(VOICE_CACHE, exist_ok=True)
+    out = os.path.join(VOICE_CACHE, f"voice{person_id}_{stamp}.wav")
+    if os.path.exists(out):
+        return FileResponse(out, media_type="audio/wav")
+
+    def build():
+        chunks, rate, total = [], None, 0.0
+        for loc in locs:
+            if total >= max_seconds:
+                break
+            try:
+                safe_clip(loc["clip"])
+            except HTTPException:
+                continue
+            wav = os.path.join(DATA, loc["clip"])
+            tp = pipeline.transcript_path(loc["clip"])
+            if not (os.path.exists(wav) and os.path.exists(tp)):
+                continue
+            try:
+                t = json.load(open(tp))
+                audio, sr = sf.read(wav, dtype="float32")
+            except Exception:
+                continue
+            if rate is None:
+                rate = sr
+            if sr != rate:
+                continue        # 8 kHz-era clips cannot be spliced with 16 kHz
+            for seg in (t.get("segments") or []):
+                if seg.get("speaker") != loc["speaker"]:
+                    continue
+                a, b = float(seg["start"]), float(seg["end"])
+                if b <= a:
+                    continue
+                piece = audio[int(a * sr):int(b * sr)]
+                if not len(piece):
+                    continue
+                chunks.append(piece)
+                total += (b - a)
+                if total >= max_seconds:
+                    break
+        if not chunks:
+            return None
+        import numpy as _np
+        # A brief gap between turns, so two sentences spliced from different
+        # moments do not run together as one impossible word.
+        gap = _np.zeros(int(0.15 * rate), dtype="float32")
+        joined = _np.concatenate(
+            [x for pair in zip(chunks, [gap] * len(chunks)) for x in pair][:-1])
+        tmp = out + ".part"
+        sf.write(tmp, joined, rate, format="WAV", subtype="PCM_16")
+        os.replace(tmp, out)
+        return out
+
+    loop = asyncio.get_running_loop()
+    built = await loop.run_in_executor(None, build)
+    if not built:
+        raise HTTPException(404, "no audio for this voice")
+    return FileResponse(built, media_type="audio/wav")
 
 
 @app.get("/api/speakers")

@@ -1,0 +1,657 @@
+#!/usr/bin/env python3
+"""
+Speaker identity: one row per voiceprint, never an average.
+
+The old store kept one centroid per person -- every sample they had ever
+contributed, averaged into a single vector. That is the wrong shape for this
+problem. A voice measured in an empty room and the same voice measured
+outdoors are genuinely far apart in embedding space, and averaging them
+produces a vector that matches neither well. The little cross-condition
+coverage that existed was destroyed at write time, and a threshold picked to
+suppress false names then also rejected true ones.
+
+So: every enrolment is kept as its own row, and matching takes the best single
+reference rather than the mean of all of them. A person accumulates as many
+voiceprints as they have conditions -- room, outdoors, tired, close mic -- and
+any one of them is enough to recognise them in that condition.
+
+Two consequences worth stating, because they drove the design:
+
+  * Near-duplicate references are harmless. Matching is a max over rows, and
+    max({a, a', b}) == max({a, b}) when a and a' are nearly equal. Duplicates
+    cost storage and nothing else, so nothing needs to be merged for
+    correctness. `redundant` exists to keep the labelling UI tidy, and rows
+    flagged with it are still matched against. Nothing is ever deleted to
+    save space.
+
+  * The margin has to be between PEOPLE, not between rows. A well-covered
+    person owns the top several rows, so a raw best-minus-runner-up margin
+    collapses toward zero exactly where coverage is best -- it would reject
+    the matches it was written to protect. Group by person, take each
+    person's best row, then compare the top two people.
+
+Unidentified voices are people rows with a NULL name. That makes naming a
+stranger a single UPDATE: every voiceprint already gathered under that cluster
+becomes a labelled reference at once, with no vectors moved or recomputed.
+"""
+
+import os
+import sqlite3
+import time
+
+import numpy as np
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+DATA = os.path.abspath(os.path.join(HERE, "..", "data"))
+DB = os.path.join(DATA, "speakers.db")
+
+# Legacy files, read once by migrate() and then left alone.
+LEGACY_CENTROIDS = os.path.join(DATA, "speakers.npz")
+LEGACY_SAMPLES = os.path.join(DATA, "speaker_samples.npz")
+LEGACY_META = os.path.join(DATA, "speakers.json")
+
+# ---------------------------------------------------------------------------
+# Thresholds.
+#
+# PROVISIONAL. These are starting points, not measurements. Every threshold
+# this project has trusted so far was derived against centroids, and top-1 over
+# individual references scores systematically higher than the mean of those
+# references -- so carrying an old number forward would name a large slice of
+# what it used to reject and look like a triumph on day one.
+#
+# What is known from the archive: the same person measured against themselves
+# under matched conditions scored about 0.815, and two different people sharing
+# one recording scored about 0.650. That gap is narrow, it was measured against
+# centroids, and it rests on very few labelled pairs. Treat the band below as a
+# place to start collecting evidence, and re-derive all three on held-out data
+# once there are enough confirmed labels to hold any out.
+MATCH_HIGH = 0.80      # at or above, and clear of the runner-up: name it
+MATCH_LOW = 0.55       # below this, nobody in the store is a candidate
+MARGIN_MIN = 0.06      # best person must beat the next person by this much
+
+# A voiceprint from a couple of seconds of speech is mostly noise, and one
+# stored as a reference is a permanent liability. Unchanged from the old store.
+MIN_ENROLL_SECONDS = 5.0
+
+# Only rejects obvious garbage -- a silent or degenerate vector. It is
+# deliberately NOT a resemblance test: the old store refused any sample scoring
+# below 0.55 against the person already enrolled, which rejected precisely the
+# different-room, different-day samples this design exists to collect.
+MIN_VECTOR_NORM = 1e-6
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS people (
+    id      INTEGER PRIMARY KEY,
+    name    TEXT UNIQUE,              -- NULL = an unidentified recurring voice
+    created REAL
+);
+
+CREATE TABLE IF NOT EXISTS voiceprints (
+    id        INTEGER PRIMARY KEY,
+    person_id INTEGER NOT NULL REFERENCES people(id) ON DELETE CASCADE,
+    vec       BLOB NOT NULL,          -- float32, unit length
+    dim       INTEGER NOT NULL,
+    seconds   REAL,                   -- speech behind this voiceprint
+    clip      TEXT,
+    speaker   TEXT,                   -- diarizer label it came from
+    origin    TEXT NOT NULL,          -- manual | confirmed | auto | legacy
+    redundant INTEGER NOT NULL DEFAULT 0,
+    created   REAL
+);
+CREATE INDEX IF NOT EXISTS vp_person ON voiceprints(person_id);
+
+-- Evidence for pruning. A harmful reference looks perfectly normal in vector
+-- space, so distance cannot find it; only its record of winning matches that
+-- were later corrected can. There is no way to reconstruct this after the
+-- fact, so it is written from the start even though nothing reads it yet.
+CREATE TABLE IF NOT EXISTS matches (
+    id            INTEGER PRIMARY KEY,
+    clip          TEXT,
+    speaker       TEXT,
+    voiceprint_id INTEGER,            -- the reference that won
+    person_id     INTEGER,
+    score         REAL,
+    margin        REAL,
+    decision      TEXT,               -- matched | uncertain | none
+    corrected     INTEGER NOT NULL DEFAULT 0,
+    created       REAL
+);
+CREATE INDEX IF NOT EXISTS match_vp ON matches(voiceprint_id);
+CREATE INDEX IF NOT EXISTS match_clip ON matches(clip);
+"""
+
+
+def _conn():
+    os.makedirs(DATA, exist_ok=True)
+    c = sqlite3.connect(DB)
+    c.row_factory = sqlite3.Row
+    c.execute("PRAGMA foreign_keys = ON")
+    c.executescript(SCHEMA)
+    return c
+
+
+# ---------------------------------------------------------------- vectors
+
+def unit(v):
+    v = np.asarray(v, dtype=np.float64).ravel()
+    n = np.linalg.norm(v)
+    return v / n if n else v
+
+
+def _pack(v):
+    return unit(v).astype(np.float32).tobytes()
+
+
+def _unpack(blob):
+    return np.frombuffer(blob, dtype=np.float32).astype(np.float64)
+
+
+def is_usable(vec):
+    """Whether a vector is worth storing at all. Not a resemblance test."""
+    v = np.asarray(vec, dtype=np.float64).ravel()
+    if v.size == 0 or not np.all(np.isfinite(v)):
+        return False
+    return float(np.linalg.norm(v)) > MIN_VECTOR_NORM
+
+
+# ---------------------------------------------------------------- reading
+
+def _references(c):
+    """Every stored voiceprint as (ids, person_ids, matrix).
+
+    Redundant rows are included: flagging one is a statement about the
+    labelling UI, not about matching, and excluding them could only ever lose
+    a match.
+    """
+    # Named people only. Unnamed clusters are not candidates for a NAME --
+    # they are the question, not the answer. Ranking them here once let a
+    # voice "match" a stranger and be dropped as settled instead of joining
+    # that stranger's cluster. Clustering is _best_unknown's job.
+    rows = c.execute("""
+        SELECT v.id, v.person_id, v.vec FROM voiceprints v
+        JOIN people p ON p.id = v.person_id
+        WHERE p.name IS NOT NULL
+        ORDER BY v.id
+    """).fetchall()
+    if not rows:
+        return [], [], np.zeros((0, 0))
+    ids = [r["id"] for r in rows]
+    pids = [r["person_id"] for r in rows]
+    M = np.stack([_unpack(r["vec"]) for r in rows])
+    return ids, pids, M
+
+
+def people(c=None):
+    """Everyone in the store, named or not, with their voiceprint counts."""
+    own = c is None
+    c = c or _conn()
+    try:
+        rows = c.execute("""
+            SELECT p.id, p.name, p.created,
+                   COUNT(v.id) AS prints,
+                   COALESCE(SUM(v.seconds), 0) AS seconds
+            FROM people p LEFT JOIN voiceprints v ON v.person_id = p.id
+            GROUP BY p.id
+            ORDER BY p.name IS NULL, p.name
+        """).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        if own:
+            c.close()
+
+
+def voiceprints(person_id, c=None):
+    own = c is None
+    c = c or _conn()
+    try:
+        rows = c.execute("""
+            SELECT id, person_id, dim, seconds, clip, speaker, origin,
+                   redundant, created
+            FROM voiceprints WHERE person_id = ? ORDER BY created
+        """, (person_id,)).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        if own:
+            c.close()
+
+
+# ---------------------------------------------------------------- matching
+
+def match(vec, c=None):
+    """Score one voiceprint against every reference.
+
+    Returns the ranked candidates and a decision. Three outcomes, not two --
+    "I do not know" is a correct answer and the one that feeds the labelling
+    queue:
+
+      matched    a person clears MATCH_HIGH and beats the next person by
+                 MARGIN_MIN. Safe to apply without being asked.
+      uncertain  somebody is plausible but not clear of the field. This is
+                 where the useful manual labelling lives: a near-miss shown
+                 with its score is confirmable in one click, and every
+                 confirmation becomes a new reference covering a condition
+                 that was not covered before.
+      none       nothing in the store is close. A new voice.
+    """
+    own = c is None
+    c = c or _conn()
+    try:
+        if not is_usable(vec):
+            return {"decision": "none", "candidates": [], "score": 0.0,
+                    "margin": 0.0, "reason": "unusable vector"}
+        v = unit(vec)
+        ids, pids, M = _references(c)
+        if not ids or M.shape[1] != v.size:
+            reason = "no references stored" if not ids else "dimension mismatch"
+            return {"decision": "none", "candidates": [], "score": 0.0,
+                    "margin": 0.0, "reason": reason}
+
+        scores = M @ v
+
+        # Best row per person, remembering which row it was so the match log
+        # can name the reference that actually won.
+        best = {}
+        for pid, vid, s in zip(pids, ids, scores):
+            if pid not in best or s > best[pid][0]:
+                best[pid] = (float(s), vid)
+
+        names = {r["id"]: r["name"] for r in
+                 c.execute("SELECT id, name FROM people").fetchall()}
+        ranked = sorted(
+            ({"person_id": pid, "name": names.get(pid), "score": round(s, 4),
+              "voiceprint_id": vid} for pid, (s, vid) in best.items()),
+            key=lambda d: -d["score"])
+
+        top = ranked[0]
+        runner = ranked[1]["score"] if len(ranked) > 1 else None
+        margin = top["score"] - runner if runner is not None else None
+
+        # With one person in the store there is no runner-up, so the margin is
+        # undefined. Say so rather than letting the arithmetic decide: this is
+        # the regime where a false name is easiest to create and hardest to
+        # notice, so the absolute floor carries the decision alone and it is
+        # deliberately the strict one.
+        if margin is None:
+            decision = "matched" if top["score"] >= MATCH_HIGH else (
+                "uncertain" if top["score"] >= MATCH_LOW else "none")
+        elif top["score"] >= MATCH_HIGH and margin >= MARGIN_MIN:
+            decision = "matched"
+        elif top["score"] >= MATCH_LOW:
+            decision = "uncertain"
+        else:
+            decision = "none"
+
+        return {"decision": decision,
+                "candidates": ranked[:3],
+                "score": top["score"],
+                "margin": round(margin, 4) if margin is not None else None,
+                "person_id": top["person_id"] if decision != "none" else None,
+                "name": top["name"] if decision == "matched" else None,
+                "voiceprint_id": top["voiceprint_id"]}
+    finally:
+        if own:
+            c.close()
+
+
+def log_match(clip, speaker, result, c=None):
+    """Record what won, for the pruning pass that cannot be built yet."""
+    own = c is None
+    c = c or _conn()
+    try:
+        c.execute("""INSERT INTO matches
+                     (clip, speaker, voiceprint_id, person_id, score, margin,
+                      decision, created)
+                     VALUES (?,?,?,?,?,?,?,?)""",
+                  (clip, speaker, result.get("voiceprint_id"),
+                   result.get("person_id"), result.get("score"),
+                   result.get("margin"), result.get("decision"), time.time()))
+        c.commit()
+    finally:
+        if own:
+            c.close()
+
+
+# ---------------------------------------------------------------- writing
+
+def person_id_for(name, c=None, create=True):
+    own = c is None
+    c = c or _conn()
+    try:
+        r = c.execute("SELECT id FROM people WHERE name = ?", (name,)).fetchone()
+        if r:
+            return r["id"]
+        if not create:
+            return None
+        cur = c.execute("INSERT INTO people (name, created) VALUES (?,?)",
+                        (name, time.time()))
+        c.commit()
+        return cur.lastrowid
+    finally:
+        if own:
+            c.close()
+
+
+def add_voiceprint(person_id, vec, seconds=None, clip=None, speaker=None,
+                   origin="manual", c=None):
+    """Store one reference. No resemblance check -- that is the whole point.
+
+    A sample that scores badly against everything already stored for this
+    person is the valuable one: it covers a condition nothing else covers.
+    The only gate is whether the vector is usable at all.
+    """
+    own = c is None
+    c = c or _conn()
+    try:
+        if not is_usable(vec):
+            return {"ok": False, "reason": "unusable",
+                    "detail": "the voiceprint is empty or not finite"}
+        if seconds is not None and seconds < MIN_ENROLL_SECONDS:
+            return {"ok": False, "reason": "too_short",
+                    "seconds": round(seconds, 1),
+                    "minimum": MIN_ENROLL_SECONDS,
+                    "detail": f"only {seconds:.1f}s of this voice; "
+                              f"{MIN_ENROLL_SECONDS:.0f}s or more makes a "
+                              f"reliable voiceprint"}
+        v = unit(vec)
+        cur = c.execute("""INSERT INTO voiceprints
+                           (person_id, vec, dim, seconds, clip, speaker,
+                            origin, created)
+                           VALUES (?,?,?,?,?,?,?,?)""",
+                        (person_id, _pack(v), int(v.size), seconds, clip,
+                         speaker, origin, time.time()))
+        c.commit()
+        return {"ok": True, "voiceprint_id": cur.lastrowid,
+                "person_id": person_id}
+    finally:
+        if own:
+            c.close()
+
+
+def name_person(person_id, name, c=None):
+    """Name an unidentified cluster, or rename someone.
+
+    Every voiceprint already gathered under this person becomes a labelled
+    reference at once. Nothing moves; it is one UPDATE.
+    """
+    own = c is None
+    c = c or _conn()
+    try:
+        existing = c.execute("SELECT id FROM people WHERE name = ?",
+                             (name,)).fetchone()
+        if existing and existing["id"] != person_id:
+            # Naming a stranger as somebody already known is a merge, and it
+            # is the good case: their references join that person's set and
+            # cover conditions that were missing.
+            c.execute("UPDATE voiceprints SET person_id = ? WHERE person_id = ?",
+                      (existing["id"], person_id))
+            c.execute("DELETE FROM people WHERE id = ?", (person_id,))
+            c.commit()
+            return {"ok": True, "person_id": existing["id"], "merged": True}
+        c.execute("UPDATE people SET name = ? WHERE id = ?", (name, person_id))
+        c.commit()
+        return {"ok": True, "person_id": person_id, "merged": False}
+    finally:
+        if own:
+            c.close()
+
+
+def new_person(name=None, c=None):
+    own = c is None
+    c = c or _conn()
+    try:
+        cur = c.execute("INSERT INTO people (name, created) VALUES (?,?)",
+                        (name, time.time()))
+        c.commit()
+        return cur.lastrowid
+    finally:
+        if own:
+            c.close()
+
+
+def delete_voiceprint(vp_id, c=None):
+    own = c is None
+    c = c or _conn()
+    try:
+        cur = c.execute("DELETE FROM voiceprints WHERE id = ?", (vp_id,))
+        c.commit()
+        return cur.rowcount > 0
+    finally:
+        if own:
+            c.close()
+
+
+def delete_person(person_id, c=None):
+    own = c is None
+    c = c or _conn()
+    try:
+        cur = c.execute("DELETE FROM people WHERE id = ?", (person_id,))
+        c.commit()
+        return cur.rowcount > 0
+    finally:
+        if own:
+            c.close()
+
+
+def set_redundant(vp_id, flag=True, c=None):
+    """Hide a near-duplicate from the labelling UI without dropping it.
+
+    Deliberately not a delete: matching still uses the row, and a merge you
+    later decide was wrong cannot be undone if the vector is gone.
+    """
+    own = c is None
+    c = c or _conn()
+    try:
+        c.execute("UPDATE voiceprints SET redundant = ? WHERE id = ?",
+                  (1 if flag else 0, vp_id))
+        c.commit()
+    finally:
+        if own:
+            c.close()
+
+
+# ------------------------------------------------------- unidentified voices
+
+# How close two unknown voices must be to be filed as the same stranger.
+#
+# Deliberately stricter than MATCH_HIGH. Naming a cluster names every voice in
+# it at once, so a cluster that has quietly merged two people puts one name on
+# both -- and unlike a bad single match, that error arrives pre-multiplied.
+#
+# Know what this does and does not do. On this archive, voiceprints taken
+# minutes apart score far higher than the same voice taken days apart, so
+# clustering at any usable radius groups a voice WITHIN a recording session and
+# largely fails to link it across sessions. A stranger who turns up on Tuesday
+# and again on Friday will most likely appear as two clusters, not one. That is
+# a real limit, not a tuning problem, and it is why naming is worth doing even
+# though it is manual: a name, once given, is matched against directly and does
+# not decay the way clustering does.
+CLUSTER_MIN = 0.75
+
+
+def unknown_clusters(c=None):
+    """Recurring voices nobody has named, biggest first."""
+    own = c is None
+    c = c or _conn()
+    try:
+        rows = c.execute("""
+            SELECT p.id, COUNT(v.id) AS prints,
+                   COALESCE(SUM(v.seconds), 0) AS seconds,
+                   COUNT(DISTINCT v.clip) AS clips,
+                   MIN(v.created) AS first_seen, MAX(v.created) AS last_seen
+            FROM people p JOIN voiceprints v ON v.person_id = p.id
+            WHERE p.name IS NULL
+            GROUP BY p.id
+            ORDER BY seconds DESC, prints DESC
+        """).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        if own:
+            c.close()
+
+
+def _best_unknown(v, c):
+    """The unnamed cluster this voice most resembles, if any clears CLUSTER_MIN."""
+    rows = c.execute("""
+        SELECT v.person_id, v.vec FROM voiceprints v
+        JOIN people p ON p.id = v.person_id
+        WHERE p.name IS NULL
+    """).fetchall()
+    if not rows:
+        return None, 0.0
+    M = np.stack([_unpack(r["vec"]) for r in rows])
+    if M.shape[1] != v.size:
+        return None, 0.0
+    scores = M @ v
+    best = {}
+    for r, s in zip(rows, scores):
+        pid = r["person_id"]
+        if pid not in best or s > best[pid]:
+            best[pid] = float(s)
+    pid, score = max(best.items(), key=lambda kv: kv[1])
+    return (pid, score) if score >= CLUSTER_MIN else (None, score)
+
+
+def ingest_unknown(vec, clip=None, speaker=None, seconds=None, c=None):
+    """File one unidentified voice, joining a cluster or starting one.
+
+    Stored with origin 'auto' -- but note these are attached to NOBODY. An
+    automatic reference under a named person would be an error-amplifying
+    loop: it is stored precisely because it matched nothing, which is equally
+    the signature of a new condition and of a wrong label, and once stored it
+    wins future matches and seeds more of itself. An automatic cluster carries
+    no name, so there is no claim to be wrong about, and it becomes evidence
+    only when a person confirms it.
+    """
+    own = c is None
+    c = c or _conn()
+    try:
+        if not is_usable(vec):
+            return {"ok": False, "reason": "unusable"}
+        v = unit(vec)
+        pid, score = _best_unknown(v, c)
+        created = pid is None
+        if created:
+            pid = new_person(None, c)
+        r = add_voiceprint(pid, v, seconds=seconds, clip=clip, speaker=speaker,
+                           origin="auto", c=c)
+        if not r.get("ok"):
+            return r
+        return {"ok": True, "person_id": pid, "voiceprint_id": r["voiceprint_id"],
+                "new_cluster": created, "score": round(score, 4)}
+    finally:
+        if own:
+            c.close()
+
+
+def seen_voices(c=None):
+    """(clip, speaker) pairs already stored, so a rescan is idempotent."""
+    own = c is None
+    c = c or _conn()
+    try:
+        return {(r["clip"], r["speaker"]) for r in c.execute(
+            "SELECT clip, speaker FROM voiceprints "
+            "WHERE clip IS NOT NULL AND speaker IS NOT NULL").fetchall()}
+    finally:
+        if own:
+            c.close()
+
+
+def voice_locations(person_id, c=None):
+    """Where this person's voice was heard: (clip, speaker) with seconds."""
+    own = c is None
+    c = c or _conn()
+    try:
+        rows = c.execute("""
+            SELECT id, clip, speaker, seconds, created FROM voiceprints
+            WHERE person_id = ? AND clip IS NOT NULL
+            ORDER BY created
+        """, (person_id,)).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        if own:
+            c.close()
+
+
+# ---------------------------------------------------------------- migration
+
+def migrate(c=None):
+    """Import the npz/json store, once. Returns what was brought across.
+
+    The old per-sample vectors survive and become individual references, which
+    is exactly the shape this store wants. The centroids do not: a centroid is
+    an average of samples that no longer exist separately, so it comes across
+    as one legacy reference rather than being unpacked into the samples it was
+    built from. That is lossy and cannot be helped -- the individual recordings
+    behind those averages were discarded by an earlier design.
+    """
+    import json
+
+    own = c is None
+    c = c or _conn()
+    try:
+        if c.execute("SELECT COUNT(*) n FROM voiceprints").fetchone()["n"]:
+            return {"migrated": False, "reason": "store is not empty"}
+
+        meta = {}
+        if os.path.exists(LEGACY_META):
+            try:
+                meta = json.load(open(LEGACY_META))
+            except Exception:
+                meta = {}
+
+        samples = {}
+        if os.path.exists(LEGACY_SAMPLES):
+            d = np.load(LEGACY_SAMPLES)
+            samples = {k: d[k] for k in d.files}
+
+        centroids = {}
+        if os.path.exists(LEGACY_CENTROIDS):
+            d = np.load(LEGACY_CENTROIDS)
+            centroids = {k: d[k] for k in d.files}
+
+        n_people = n_prints = 0
+        for name in sorted(set(meta) | set(centroids)):
+            pid = person_id_for(name, c)
+            n_people += 1
+            entries = (meta.get(name) or {}).get("samples", [])
+            stored_any = False
+            for e in entries:
+                v = samples.get(f"{name}||{e['id']}")
+                if v is None or not is_usable(v):
+                    continue
+                origin = "legacy" if e.get("legacy") else "manual"
+                c.execute("""INSERT INTO voiceprints
+                             (person_id, vec, dim, seconds, clip, speaker,
+                              origin, created)
+                             VALUES (?,?,?,?,?,?,?,?)""",
+                          (pid, _pack(v), int(unit(v).size), e.get("seconds"),
+                           e.get("clip"), e.get("speaker"), origin,
+                           time.time()))
+                n_prints += 1
+                stored_any = True
+            # Only fall back to the centroid when no individual sample
+            # survived, so a person with real samples does not also carry
+            # their own average as a competing reference.
+            if not stored_any and name in centroids and is_usable(centroids[name]):
+                c.execute("""INSERT INTO voiceprints
+                             (person_id, vec, dim, origin, created)
+                             VALUES (?,?,?,?,?)""",
+                          (pid, _pack(centroids[name]),
+                           int(unit(centroids[name]).size), "legacy",
+                           time.time()))
+                n_prints += 1
+        c.commit()
+        return {"migrated": True, "people": n_people, "voiceprints": n_prints}
+    finally:
+        if own:
+            c.close()
+
+
+if __name__ == "__main__":
+    import json as _json
+    r = migrate()
+    print(_json.dumps(r, indent=2))
+    for p in people():
+        label = p["name"] or f"(unidentified #{p['id']})"
+        print(f"  {label}: {p['prints']} voiceprint(s), "
+              f"{p['seconds']:.0f}s")
