@@ -83,6 +83,7 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS people (
     id      INTEGER PRIMARY KEY,
     name    TEXT UNIQUE,              -- NULL = an unidentified recurring voice
+    kind    TEXT,                     -- person | media | NULL (not yet decided)
     created REAL
 );
 
@@ -127,6 +128,10 @@ def _conn():
     c.row_factory = sqlite3.Row
     c.execute("PRAGMA foreign_keys = ON")
     c.executescript(SCHEMA)
+    cols = {r["name"] for r in c.execute("PRAGMA table_info(people)")}
+    if "kind" not in cols:
+        c.execute("ALTER TABLE people ADD COLUMN kind TEXT")
+        c.commit()
     return c
 
 
@@ -187,7 +192,7 @@ def people(c=None):
     c = c or _conn()
     try:
         rows = c.execute("""
-            SELECT p.id, p.name, p.created,
+            SELECT p.id, p.name, p.kind, p.created,
                    COUNT(v.id) AS prints,
                    COALESCE(SUM(v.seconds), 0) AS seconds
             FROM people p LEFT JOIN voiceprints v ON v.person_id = p.id
@@ -255,10 +260,12 @@ def match(vec, c=None):
             if pid not in best or s > best[pid][0]:
                 best[pid] = (float(s), vid)
 
-        names = {r["id"]: r["name"] for r in
-                 c.execute("SELECT id, name FROM people").fetchall()}
+        rows = c.execute("SELECT id, name, kind FROM people").fetchall()
+        names = {r["id"]: r["name"] for r in rows}
+        kinds = {r["id"]: r["kind"] for r in rows}
         ranked = sorted(
-            ({"person_id": pid, "name": names.get(pid), "score": round(s, 4),
+            ({"person_id": pid, "name": names.get(pid),
+              "kind": kinds.get(pid), "score": round(s, 4),
               "voiceprint_id": vid} for pid, (s, vid) in best.items()),
             key=lambda d: -d["score"])
 
@@ -281,12 +288,26 @@ def match(vec, c=None):
         else:
             decision = "none"
 
+        # Media never names anything by itself.
+        #
+        # Dropping media out of the reference set entirely was the first
+        # attempt and it was worse: the queue stopped saying "this is probably
+        # another Network Chuck video", which is the single most useful thing
+        # it can say about a voice off a screen. The problem was never that
+        # media makes a bad candidate -- it makes an excellent one. It is that
+        # nothing should acquire a name automatically from a voice that came
+        # out of a speaker. So it stays visible, stays one click from being
+        # confirmed, and is capped at "uncertain".
+        if decision == "matched" and top.get("kind") == KIND_MEDIA:
+            decision = "uncertain"
+
         return {"decision": decision,
                 "candidates": ranked[:3],
                 "score": top["score"],
                 "margin": round(margin, 4) if margin is not None else None,
                 "person_id": top["person_id"] if decision != "none" else None,
                 "name": top["name"] if decision == "matched" else None,
+                "kind": top.get("kind"),
                 "voiceprint_id": top["voiceprint_id"]}
     finally:
         if own:
@@ -467,23 +488,71 @@ def set_redundant(vp_id, flag=True, c=None):
 # not decay the way clustering does.
 CLUSTER_MIN = 0.75
 
+# A voice that came out of a speaker rather than a person in the room.
+#
+# These are most of the archive by volume and almost none of it by value, but
+# deleting them would be wrong twice over. Their transcripts are worth keeping
+# -- half the reason to have a recording of your day is finding the thing you
+# watched and half remember. And they are the only cross-condition ground truth
+# there is: one creator across dozens of videos is the same voice through the
+# same microphone on different days in different rooms, which is exactly the
+# data every threshold in this file is currently guessing without.
+#
+# What they must not do is compete for identity. A YouTube narrator on sapphire
+# and 355 nm lasers sat under a real person's name here for weeks. Tagging is
+# how that stops: a media voice keeps everything except its claim to be
+# somebody.
+KIND_PERSON = "person"
+KIND_MEDIA = "media"
 
-def unknown_clusters(c=None):
-    """Recurring voices nobody has named, biggest first."""
+
+def unknown_clusters(c=None, include_media=False):
+    """Recurring voices nobody has named, biggest first.
+
+    Media is excluded by default. Knowing a voice came off a screen is a
+    complete answer about it -- there is nothing further to decide, and leaving
+    them in the queue would bury the handful of real people in a day's worth of
+    videos.
+    """
     own = c is None
     c = c or _conn()
     try:
-        rows = c.execute("""
-            SELECT p.id, COUNT(v.id) AS prints,
+        where = "p.name IS NULL" if include_media else \
+                f"p.name IS NULL AND (p.kind IS NULL OR p.kind != '{KIND_MEDIA}')"
+        rows = c.execute(f"""
+            SELECT p.id, p.kind, COUNT(v.id) AS prints,
                    COALESCE(SUM(v.seconds), 0) AS seconds,
                    COUNT(DISTINCT v.clip) AS clips,
                    MIN(v.created) AS first_seen, MAX(v.created) AS last_seen
             FROM people p JOIN voiceprints v ON v.person_id = p.id
-            WHERE p.name IS NULL
+            WHERE {where}
             GROUP BY p.id
             ORDER BY seconds DESC, prints DESC
         """).fetchall()
         return [dict(r) for r in rows]
+    finally:
+        if own:
+            c.close()
+
+
+def set_kind(person_id, kind, c=None):
+    """Say what sort of voice this is. A name is not required.
+
+    This is the whole point of separating kind from name: you can recognise
+    that something came out of a speaker without having any idea who was
+    talking, and that is a complete and useful answer. Tagging it media retires
+    it from the queue, stops it competing for identity, and keeps its words
+    searchable.
+    """
+    if kind not in (KIND_PERSON, KIND_MEDIA, None):
+        raise ValueError(f"kind must be person, media or None -- got {kind!r}")
+    own = c is None
+    c = c or _conn()
+    try:
+        cur = c.execute("UPDATE people SET kind = ? WHERE id = ?",
+                        (kind, person_id))
+        c.commit()
+        return cur.rowcount > 0
     finally:
         if own:
             c.close()
@@ -494,8 +563,8 @@ def _best_unknown(v, c):
     rows = c.execute("""
         SELECT v.person_id, v.vec FROM voiceprints v
         JOIN people p ON p.id = v.person_id
-        WHERE p.name IS NULL
-    """).fetchall()
+        WHERE p.name IS NULL AND (p.kind IS NULL OR p.kind != ?)
+    """, (KIND_MEDIA,)).fetchall()
     if not rows:
         return None, 0.0
     M = np.stack([_unpack(r["vec"]) for r in rows])

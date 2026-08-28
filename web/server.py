@@ -2062,10 +2062,11 @@ async def api_voices_recheck():
 
 
 @app.get("/api/voices/queue")
-async def api_voices_queue(limit: int = 50):
+async def api_voices_queue(limit: int = 50, include_media: bool = False):
     """Unnamed voices, most speech first, with everything needed to settle one."""
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, pipeline.labelling_queue, limit)
+    return await loop.run_in_executor(
+        None, pipeline.labelling_queue, limit, include_media)
 
 
 @app.post("/api/voices/{person_id}/name")
@@ -2103,6 +2104,26 @@ async def api_voices_name(person_id: int, body: dict):
 
 
 VOICE_CACHE = os.path.join(DATA, "voice_clips")
+
+
+@app.post("/api/voices/{person_id}/kind")
+async def api_voices_kind(person_id: int, body: dict):
+    """Say whether a voice is a person or something off a screen.
+
+    Deliberately separate from naming. You can know a voice came out of a
+    speaker without having the faintest idea who was talking, and that is a
+    complete answer -- it retires the voice from the queue and stops it
+    competing for identity, without asking you to identify a stranger in a
+    video you half-watched.
+    """
+    import speaker_store
+    kind = body.get("kind")
+    if kind not in (speaker_store.KIND_PERSON, speaker_store.KIND_MEDIA, None):
+        raise HTTPException(400, "kind must be 'person', 'media' or null")
+    if not speaker_store.set_kind(person_id, kind):
+        raise HTTPException(404, "no such voice")
+    device.event("log", text=f"voice {person_id} tagged {kind or 'undecided'}")
+    return {"ok": True, "person_id": person_id, "kind": kind}
 
 
 @app.get("/api/voices/{person_id}/audio")

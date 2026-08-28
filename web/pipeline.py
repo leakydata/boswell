@@ -78,6 +78,7 @@ def list_speakers():
         out.append({
             "name": p["name"],
             "person_id": p["id"],
+            "kind": p.get("kind"),
             "samples": [{"id": str(v["id"]), "weight": 1,
                          "clip": v["clip"], "speaker": v["speaker"],
                          "seconds": round(v["seconds"], 1) if v["seconds"] else v["seconds"],
@@ -307,7 +308,7 @@ def recheck_unknowns():
         c.close()
 
 
-def labelling_queue(limit=50):
+def labelling_queue(limit=50, include_media=False):
     """Unnamed voices worth someone's attention, most speech first.
 
     Each entry carries what it would take to settle it in one look: how much
@@ -320,7 +321,7 @@ def labelling_queue(limit=50):
     c = sdb._conn()
     try:
         out = []
-        for cl in sdb.unknown_clusters(c)[:limit]:
+        for cl in sdb.unknown_clusters(c, include_media)[:limit]:
             locs = sdb.voice_locations(cl["id"], c)
             row = c.execute("SELECT vec FROM voiceprints WHERE person_id = ? "
                             "ORDER BY seconds DESC LIMIT 1", (cl["id"],)).fetchone()
@@ -343,6 +344,7 @@ def labelling_queue(limit=50):
                     text.append(said.strip())
             out.append({
                 "person_id": cl["id"],
+                "kind": cl.get("kind"),
                 "seconds": round(cl["seconds"], 1),
                 "voiceprints": cl["prints"],
                 "clips": cl["clips"],
