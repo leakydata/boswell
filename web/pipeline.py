@@ -666,3 +666,169 @@ class Worker:
             self.on_transcript(clip, segs, names)
         except Exception as e:
             self.notify("log", text=f"agent intake failed: {str(e)[:100]}")
+
+    # ---------------------------------------------------------- consolidation
+
+    # How much audio goes to the diarizer at once. The point of this pass is to
+    # give it minutes instead of thirty seconds, but a sitting can run to five
+    # hours and that should not be one call -- clustering cost is not linear in
+    # the number of turns, and the whole window sits in GPU memory.
+    WINDOW_SECONDS = 1200.0
+    # Two windows of the same sitting are diarized independently, so SPEAKER_00
+    # in one is unrelated to SPEAKER_00 in the next. They are linked afterwards
+    # by comparing the pooled voiceprints, which is the same top-1 comparison
+    # the store uses and is reliable at this range -- the windows are minutes
+    # apart, not days.
+    LINK_MIN = 0.75
+
+    def consolidate(self, clips):
+        """Re-diarize a finished conversation as one stretch of audio.
+
+        Transcription runs per clip, because a clip arrives every thirty
+        seconds and waiting for silence to transcribe would make the whole
+        interface lag behind the room. Diarization has no such excuse and
+        every reason not to: a thirty-second window gives the diarizer thirty
+        seconds to tell two voices apart, produces a voiceprint pooled over
+        whatever fragment of that a person spoke, and labels them SPEAKER_00
+        with no relation to the SPEAKER_00 in the clip before. Twenty minutes
+        of the same conversation gives it the whole exchange, one voiceprint
+        per person pooled over every second they spoke, and labels that hold
+        across all of it.
+
+        So the per-clip labels stay as a provisional answer that arrives
+        immediately, and this overwrites them with a better one once the
+        conversation is over. Transcripts stay one JSON per clip -- the index,
+        search and the whole UI are built on that and there is no reason to
+        move it.
+        """
+        import whisperx
+        self._load()
+        if self._diar is None:
+            return {"ok": False, "error": "diarization is not available"}
+
+        # Load once, in order, remembering where each clip lands on the
+        # sitting's clock so turns can be handed back to the right clip.
+        loaded, offset = [], 0.0
+        for clip in clips:
+            path = os.path.join(DATA, clip)
+            if not os.path.exists(path) or not os.path.exists(transcript_path(clip)):
+                continue
+            try:
+                audio = whisperx.load_audio(path)
+            except Exception:
+                continue
+            dur = len(audio) / 16000.0
+            loaded.append({"clip": clip, "audio": audio,
+                           "start": offset, "end": offset + dur})
+            offset += dur
+        if not loaded:
+            return {"ok": False, "error": "no readable audio in this conversation"}
+
+        windows, cur = [], []
+        for item in loaded:
+            if cur and item["end"] - cur[0]["start"] > self.WINDOW_SECONDS:
+                windows.append(cur)
+                cur = []
+            cur.append(item)
+        if cur:
+            windows.append(cur)
+
+        # Diarize each window; collect its slots with their pooled voiceprints.
+        slots, turns = [], []
+        for wi, win in enumerate(windows):
+            audio = np.concatenate([x["audio"] for x in win])
+            base = win[0]["start"]
+            self.notify("log", text=(
+                f"diarizing {len(win)} clip(s), "
+                f"{(win[-1]['end'] - base) / 60:.0f} min, as one pass"))
+            df, emb = self._diar(audio, return_embeddings=True)
+            local = {}
+            for k, v in (emb or {}).items():
+                arr = np.asarray(v, dtype=np.float64).ravel()
+                # Same NaN guard as the per-clip path: pyannote returns a
+                # non-finite embedding for a cluster with too little audio,
+                # and one stored makes the transcript unencodable.
+                if arr.size and np.all(np.isfinite(arr)):
+                    local[k] = arr
+            for row in df.itertuples():
+                spk = getattr(row, "speaker", None)
+                if spk is None:
+                    continue
+                turns.append({"start": base + float(row.start),
+                              "end": base + float(row.end), "local": (wi, spk)})
+            for spk, vec in local.items():
+                slots.append({"key": (wi, spk), "vec": unit(vec), "final": None})
+
+        if not slots:
+            return {"ok": False, "error": "no voices found"}
+
+        # Link slots across windows. Same person, same conversation, minutes
+        # apart -- the regime the embedder is strongest in.
+        next_label = 0
+        for s in slots:
+            # Link to the closest already-labelled slot that clears the bar,
+            # not merely the first one found -- with several speakers in a
+            # conversation, first-past-the-post attaches a voice to whichever
+            # slot happened to be earlier in the list.
+            best_other, best_score = None, self.LINK_MIN
+            for other in slots:
+                if other is s or other["final"] is None:
+                    continue
+                sc = float(s["vec"] @ other["vec"])
+                if sc >= best_score:
+                    best_other, best_score = other, sc
+            if best_other is not None:
+                s["final"] = best_other["final"]
+            else:
+                s["final"] = f"SPEAKER_{next_label:02d}"
+                next_label += 1
+        by_key = {s["key"]: s["final"] for s in slots}
+
+        # One pooled voiceprint per final speaker: the longest-observed slot
+        # standing for it, rather than a mean of the slots, for the same
+        # reason the store keeps references individually.
+        seconds = {}
+        for t in turns:
+            f = by_key.get(t["local"])
+            if f:
+                seconds[f] = seconds.get(f, 0.0) + (t["end"] - t["start"])
+        best = {}
+        for s in slots:
+            f = s["final"]
+            if f not in best:
+                best[f] = s["vec"]
+        embeddings = {f: v.tolist() for f, v in best.items()}
+
+        # Hand the turns back to the clips they came from, by overlap.
+        changed = 0
+        for item in loaded:
+            tp = transcript_path(item["clip"])
+            try:
+                t = json.load(open(tp))
+            except Exception:
+                continue
+            if t.get("edited"):
+                continue          # a name set by hand outranks any guess
+            for seg in (t.get("segments") or []):
+                try:
+                    a = item["start"] + float(seg["start"])
+                    b = item["start"] + float(seg["end"])
+                except (TypeError, ValueError, KeyError):
+                    continue
+                best_spk, best_ov = None, 0.0
+                for turn in turns:
+                    ov = min(b, turn["end"]) - max(a, turn["start"])
+                    if ov > best_ov:
+                        best_ov, best_spk = ov, by_key.get(turn["local"])
+                if best_spk:
+                    seg["speaker"] = best_spk
+            t["embeddings"] = embeddings
+            t["speakers"] = identify({k: np.asarray(v) for k, v in embeddings.items()},
+                                     clip=item["clip"])
+            t["consolidated"] = time.time()
+            atomicio.write_json(tp, t, indent=2, allow_nan=False)
+            changed += 1
+
+        return {"ok": True, "clips": changed, "windows": len(windows),
+                "voices": len(embeddings),
+                "seconds": {k: round(v, 1) for k, v in seconds.items()}}

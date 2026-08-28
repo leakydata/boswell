@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "boswell": {
+      "command": "uv",
+      "args": ["run", "--directory", ".", "host/boswell_mcp.py"]
+    }
+  }
+}

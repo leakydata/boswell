@@ -534,6 +534,7 @@ html{scroll-padding-top:120px}
         <button class="pri" id="cvExport">Export</button>
         <button id="cvTranscribe">Transcribe missing</button>
         <button id="cvReview">Review with agent</button>
+        <button id="cvConsolidate">Re-detect speakers</button>
         <button class="dang" id="cvDelete">Delete conversation</button>
       </div>
       <div id="cvMsg" style="font-family:var(--mono);font-size:12px;color:var(--muted);
@@ -2163,6 +2164,33 @@ $("cvExport").onclick = async () => {
 /* Point the agent at a conversation you can see, instead of waiting for the
    scheduler to notice a gap in speech. The scheduled path is right for
    capturing the day as it happens and useless for anything already recorded. */
+/* Diarize the whole conversation at once instead of clip by clip.
+
+   Transcription has to run per clip -- a clip lands every thirty seconds and
+   waiting for silence would put the whole interface behind the room. The
+   diarizer has no such excuse: thirty seconds gives it thirty seconds to tell
+   two voices apart, a voiceprint pooled over whatever fragment of that someone
+   spoke, and a SPEAKER_00 unrelated to the SPEAKER_00 in the clip before.
+   Handed the whole conversation it gets one voiceprint per person pooled over
+   every second they spoke, and labels that hold across all of it. */
+$("cvConsolidate").onclick = async () => {
+  if (!cvCurrent) return;
+  $("cvMsg").textContent = "re-detecting speakers across the whole conversation…";
+  $("cvConsolidate").disabled = true;
+  try{
+    const r = await fetch("/api/conversation/consolidate", {method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({names: cvCurrent.clips})});
+    const b = await r.json().catch(() => ({}));
+    if (!r.ok){ $("cvMsg").textContent = b.detail || "could not re-detect"; return; }
+    $("cvMsg").textContent = `${b.voices} voice${b.voices === 1 ? "" : "s"} across `
+      + `${b.clips} clip${b.clips === 1 ? "" : "s"}`;
+    log(`consolidated ${b.clips} clip(s) into ${b.voices} voice(s)`);
+    openConversation(cvCurrent);
+  }catch(e){ $("cvMsg").textContent = "could not reach the server"; }
+  finally{ $("cvConsolidate").disabled = false; }
+};
+
 $("cvReview").onclick = async () => {
   if (!cvCurrent) return;
   $("cvMsg").textContent = "reviewing… this takes a minute on a long conversation";

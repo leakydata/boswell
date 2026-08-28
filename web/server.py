@@ -1997,6 +1997,38 @@ async def api_models():
     return {"models": sorted(names)}
 
 
+@app.post("/api/conversation/consolidate")
+async def api_consolidate(body: dict):
+    """Re-diarize a whole conversation at once instead of clip by clip.
+
+    Thirty seconds is a BLE transport unit, not a unit of speech. Giving the
+    diarizer the whole conversation gets one voiceprint per person pooled over
+    every second they spoke, and speaker labels that hold across all of it
+    rather than restarting at SPEAKER_00 in every clip.
+    """
+    names = body.get("names") or []
+    if not isinstance(names, list) or not names:
+        raise HTTPException(400, "need a list of clip names")
+    for n in names:
+        safe_clip(n)
+    if worker.busy:
+        raise HTTPException(409, "a transcription is running; try again shortly")
+
+    loop = asyncio.get_running_loop()
+    r = await loop.run_in_executor(None, worker.consolidate, names)
+    if not r.get("ok"):
+        raise HTTPException(400, r.get("error", "consolidation failed"))
+    device.event("log", text=(f"consolidated {r['clips']} clip(s) into "
+                              f"{r['voices']} voice(s) over {r['windows']} window(s)"))
+    for n in names:
+        try:
+            import index_db
+            index_db.upsert_clip(n)
+        except Exception:
+            pass
+    return r
+
+
 @app.post("/api/voices/scan")
 async def api_voices_scan():
     """File every diarized voice nobody has accounted for into a cluster."""
