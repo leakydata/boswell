@@ -55,10 +55,20 @@ def load_speakers():
     return {k: unit(d[k]) for k in d.files}
 
 
+_migrated = False
+
+
 def _sdb():
-    """The store, migrating the npz/json files across on first use."""
+    """The store, migrating the npz/json files across on first use.
+
+    Once per process, not once per call. This ran inside every identify(), so
+    rematching the archive re-checked the migration sixteen thousand times.
+    """
+    global _migrated
     import speaker_store
-    speaker_store.migrate()
+    if not _migrated:
+        speaker_store.migrate()
+        _migrated = True
     return speaker_store
 
 

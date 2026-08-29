@@ -2719,6 +2719,10 @@ async function saveName(){
   const name = $("namerInput").value.trim();
   if (!name){ $("namerErr").textContent = "Enter a name first"; return; }
   $("namerSave").disabled = true;
+  const savedLabel = $("namerSave").textContent;
+  $("namerSave").textContent = "Saving…";
+  $("namerErr").style.color = "var(--muted)";
+  $("namerErr").textContent = "applying the name everywhere this voice appears…";
   try{
     const r = await fetch("/api/label", {
       method:"POST", headers:{"Content-Type":"application/json"},
@@ -2729,18 +2733,26 @@ async function saveName(){
     if (r.ok){
       // The name always applies. Whether the voiceprint learned from this
       // clip is separate, and worth saying out loud either way.
+      /* Take what is needed off namerCtx BEFORE closing: closeNamer() sets it
+         to null, so the refresh below was reading a null context and silently
+         taking the else branch -- re-rendering the single clip instead of
+         calling the conversation reader's own refresh. From the outside that
+         looked like the conversation view closing with none of the names
+         changed, because the view it re-rendered was not the one on screen. */
       const clip = namerCtx.clip;
+      const onSaved = namerCtx.onSaved;
+      const speaker = namerCtx.speaker;
       if (body.enrolled){
-        log(`named ${namerCtx.speaker} as ${name} · voiceprint now ${body.samples} sample(s)`);
+        log(`named ${speaker} as ${name} · voiceprint now ${body.samples} sample(s)`);
         closeNamer();
       } else {
-        log(`named ${namerCtx.speaker} as ${name} · voiceprint unchanged`);
+        log(`named ${speaker} as ${name} · voiceprint unchanged`);
         msgAfterNaming(name, body.reason);
       }
       /* The conversation reader passes its own refresh; re-rendering a single
          clip's transcript would leave the rest of the conversation showing the
          old name. */
-      if (namerCtx && namerCtx.onSaved){ await namerCtx.onSaved(); }
+      if (onSaved){ await onSaved(); }
       else { await renderTranscript(clip); }
       if (body.enrolled) return;
     } else {
@@ -2750,6 +2762,9 @@ async function saveName(){
     $("namerErr").textContent = "Network error — is the server still running?";
   }finally{
     $("namerSave").disabled = false;
+    if ($("namerSave").textContent === "Saving…"){
+      $("namerSave").textContent = savedLabel;
+    }
   }
 }
 

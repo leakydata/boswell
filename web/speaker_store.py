@@ -189,6 +189,37 @@ def is_usable(vec):
 
 # ---------------------------------------------------------------- reading
 
+# The reference matrix, cached.
+#
+# _rematch_clips scores every speaker in every transcript -- roughly sixteen
+# thousand calls on this archive -- and each one was reloading every voiceprint
+# out of SQLite and restacking it into a matrix. Naming somebody took ten
+# seconds of that, during which the interface simply sat there.
+#
+# Invalidated by a counter the writes bump, not by a timer, so a stale matrix
+# cannot outlive the change that made it stale.
+_cache = {"version": None, "ids": None, "pids": None, "M": None}
+_version = 0
+
+
+def _invalidates(fn):
+    """Any write makes the cached matrix wrong; say so once, at the door."""
+    import functools
+
+    @functools.wraps(fn)
+    def wrap(*a, **kw):
+        try:
+            return fn(*a, **kw)
+        finally:
+            _bump()
+    return wrap
+
+
+def _bump():
+    global _version
+    _version += 1
+
+
 def _references(c):
     """Every stored voiceprint as (ids, person_ids, matrix).
 
@@ -200,6 +231,8 @@ def _references(c):
     # they are the question, not the answer. Ranking them here once let a
     # voice "match" a stranger and be dropped as settled instead of joining
     # that stranger's cluster. Clustering is _best_unknown's job.
+    if _cache["version"] == _version:
+        return _cache["ids"], _cache["pids"], _cache["M"]
     rows = c.execute("""
         SELECT v.id, v.person_id, v.vec FROM voiceprints v
         JOIN people p ON p.id = v.person_id
@@ -207,11 +240,12 @@ def _references(c):
         ORDER BY v.id
     """).fetchall()
     if not rows:
-        return [], [], np.zeros((0, 0))
-    ids = [r["id"] for r in rows]
-    pids = [r["person_id"] for r in rows]
-    M = np.stack([_unpack(r["vec"]) for r in rows])
-    return ids, pids, M
+        out = ([], [], np.zeros((0, 0)))
+    else:
+        out = ([r["id"] for r in rows], [r["person_id"] for r in rows],
+               np.stack([_unpack(r["vec"]) for r in rows]))
+    _cache.update(version=_version, ids=out[0], pids=out[1], M=out[2])
+    return out
 
 
 def people(c=None):
@@ -380,6 +414,7 @@ def person_id_for(name, c=None, create=True):
             c.close()
 
 
+@_invalidates
 def add_voiceprint(person_id, vec, seconds=None, clip=None, speaker=None,
                    origin="manual", impure=False, c=None):
     """Store one reference. No resemblance check -- that is the whole point.
@@ -425,6 +460,7 @@ def add_voiceprint(person_id, vec, seconds=None, clip=None, speaker=None,
             c.close()
 
 
+@_invalidates
 def name_person(person_id, name, c=None):
     """Name an unidentified cluster, or rename someone.
 
@@ -457,6 +493,7 @@ def name_person(person_id, name, c=None):
             c.close()
 
 
+@_invalidates
 def new_person(name=None, c=None):
     own = c is None
     c = c or _conn()
@@ -470,6 +507,7 @@ def new_person(name=None, c=None):
             c.close()
 
 
+@_invalidates
 def delete_voiceprint(vp_id, c=None):
     own = c is None
     c = c or _conn()
@@ -482,6 +520,7 @@ def delete_voiceprint(vp_id, c=None):
             c.close()
 
 
+@_invalidates
 def delete_person(person_id, c=None):
     own = c is None
     c = c or _conn()
@@ -494,6 +533,7 @@ def delete_person(person_id, c=None):
             c.close()
 
 
+@_invalidates
 def set_redundant(vp_id, flag=True, c=None):
     """Hide a near-duplicate from the labelling UI without dropping it.
 
@@ -564,6 +604,7 @@ def voiceprint_groups(person_id, c=None, detail_limit=12):
             c.close()
 
 
+@_invalidates
 def unname_group(person_id, source_cluster, c=None):
     """Undo a cluster naming: put those references back where they came from.
 
@@ -676,6 +717,7 @@ def unknown_clusters(c=None, include_media=False):
             c.close()
 
 
+@_invalidates
 def set_kind(person_id, kind, c=None):
     """Say what sort of voice this is. A name is not required.
 
@@ -721,6 +763,7 @@ def _best_unknown(v, c):
     return (pid, score) if score >= CLUSTER_MIN else (None, score)
 
 
+@_invalidates
 def ingest_unknown(vec, clip=None, speaker=None, seconds=None, c=None):
     """File one unidentified voice, joining a cluster or starting one.
 

@@ -1566,9 +1566,24 @@ def _rematch_clips(names=None):
             cur = t.setdefault("speakers", {}).setdefault(sid, {})
             if cur.get("manual"):
                 continue                      # a hand-set name always wins
-            if rec.get("name") != cur.get("name") or rec.get("score") != cur.get("score"):
-                cur["name"] = rec.get("name")
-                cur["score"] = rec.get("score")
+            # Replace the whole record, not just name and score.
+            #
+            # identify() also returns the decision, the margin and the ranked
+            # candidates, and patching two fields left the other three behind
+            # from an earlier run. The archive had entries reading name
+            # "Nathan", score 0.965, decision "uncertain", and a candidate list
+            # whose best Nathan was 0.723 -- three different moments in one
+            # record, and the interface believing all of them at once.
+            if any(rec.get(f) != cur.get(f)
+                   for f in ("name", "score", "decision", "margin")):
+                impure = cur.get("impure")
+                cur.clear()
+                cur.update(rec)
+                if impure:
+                    # A slot the diarizer could not keep straight stays flagged
+                    # and stays unnamed, whatever the score says.
+                    cur["impure"] = True
+                    cur["name"] = None
                 dirty = True
         if dirty:
             atomicio.write_json(tp, t)
@@ -2396,8 +2411,13 @@ async def api_label(body: dict):
     # Re-resolve everyone else, leaving names set by hand alone.
     emb = {k: np.asarray(v) for k, v in (t.get("embeddings") or {}).items()}
     for k, v in pipeline.identify(emb).items():
-        if not (t["speakers"].get(k) or {}).get("manual"):
-            t["speakers"][k] = v
+        prev = t["speakers"].get(k) or {}
+        if prev.get("manual"):
+            continue
+        t["speakers"][k] = v
+        if prev.get("impure"):
+            t["speakers"][k]["impure"] = True
+            t["speakers"][k]["name"] = None
     atomicio.write_json(tp, t, indent=2, allow_nan=False)
     index_db.upsert_clip(clip)
 
