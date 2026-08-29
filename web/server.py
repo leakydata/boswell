@@ -2325,11 +2325,19 @@ async def api_ungroup(person_id: int, source_cluster: int):
 
 
 @app.get("/api/voices/queue")
-async def api_voices_queue(limit: int = 50, include_media: bool = False):
-    """Unnamed voices, most speech first, with everything needed to settle one."""
+async def api_voices_queue(limit: int = 50, include_media: bool = False,
+                           days: float = 0):
+    """Unnamed voices, most speech first, with everything needed to settle one.
+
+    `days` narrows it to voices heard recently. Because identity does not carry
+    across days on this hardware, yesterday's naming does not recognise today's
+    recording, and the work that actually keeps the archive labelled is a short
+    daily pass rather than an occasional assault on the whole backlog.
+    """
+    since = (time.time() - days * 86400) if days else None
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(
-        None, pipeline.labelling_queue, limit, include_media)
+        None, pipeline.labelling_queue, limit, include_media, since)
 
 
 @app.post("/api/voices/{person_id}/name")

@@ -594,6 +594,7 @@ html{scroll-padding-top:120px}
         condition it could not recognise before.</p>
       <div class="toolbar2" style="margin-bottom:12px">
         <span class="count" id="voiceCount"></span>
+        <button id="bVoiceRecent">Since yesterday</button>
         <button id="bVoiceScan">Scan for new voices</button>
         <button id="bConsolidateAll">Re-detect speakers everywhere</button>
         <button id="bVoiceRecheck">Recheck against named people</button>
@@ -1322,19 +1323,27 @@ async function loadPeople(){
    answer about it, and a day's videos would otherwise bury the handful of real
    people worth naming. */
 let showMedia = false;
+/* A voice does not carry from one day to the next on this hardware -- measured,
+   0.82 within the hour against 0.52 a day later -- so naming somebody once does
+   not settle them. What keeps the archive labelled is a couple of minutes a day
+   on whoever turned up, which only works if the queue shows that and not the
+   whole backlog. */
+let recentOnly = false;
 
 async function loadVoices(){
   const el = $("voiceQueue");
   try{
     const q = await (await fetch(
-      `/api/voices/queue?limit=40&include_media=${showMedia}`)).json();
+      `/api/voices/queue?limit=40&include_media=${showMedia}`
+      + `&days=${recentOnly ? 2 : 0}`)).json();
     $("voiceCount").textContent = q.length
       ? `${q.length} unnamed voice${q.length === 1 ? "" : "s"}` : "";
     if (!q.length){
       el.innerHTML = '<div class="empty">'
         + (showMedia ? 'Nothing tagged as media yet.'
-                     : 'No unidentified voices. Run a scan if new recordings '
-                       + 'have come in.') + '</div>';
+           : recentOnly ? 'Nobody new in the last two days. Nothing to do.'
+           : 'No unidentified voices. Run a scan if new recordings have come in.')
+        + '</div>';
       return;
     }
     el.innerHTML = "";
@@ -1498,6 +1507,11 @@ on("bConsolidateAll", "click", async () => {
   pollBulk();
 });
 
+on("bVoiceRecent", "click", () => {
+  recentOnly = !recentOnly;
+  $("bVoiceRecent").textContent = recentOnly ? "Show everything" : "Since yesterday";
+  loadVoices();
+});
 on("bVoiceMedia", "click", () => {
   showMedia = !showMedia;
   $("bVoiceMedia").textContent = showMedia ? "Show unidentified people"

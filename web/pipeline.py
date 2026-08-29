@@ -10,6 +10,7 @@ and kept resident -- reloading them per clip would cost ~15 s every time.
 import json
 import math
 import os
+import re
 import atomicio
 import queue
 import threading
@@ -331,7 +332,19 @@ def recheck_unknowns():
         c.close()
 
 
-def labelling_queue(limit=50, include_media=False):
+def clip_recorded_at(name):
+    """When a clip was actually recorded, from its filename.
+
+    Not the voiceprint row's created time, which is when the scan happened --
+    scanning the archive today stamps every cluster with today, so filtering a
+    queue on it returns everything. The epoch in the filename is the only
+    per-clip recording time that survives a copy or a backup.
+    """
+    m = re.search(r"(\d{9,})", name or "")
+    return int(m.group(1)) if m else None
+
+
+def labelling_queue(limit=50, include_media=False, since=None):
     """Unnamed voices worth someone's attention, most speech first.
 
     Each entry carries what it would take to settle it in one look: how much
@@ -344,7 +357,23 @@ def labelling_queue(limit=50, include_media=False):
     c = sdb._conn()
     try:
         out = []
-        for cl in sdb.unknown_clusters(c, include_media)[:limit]:
+        clusters = sdb.unknown_clusters(c, include_media)
+        # Recent-first when a window is given. Identity has to be re-earned
+        # every day -- a voice that matched yesterday will not match today --
+        # so the useful unit of work is "who turned up since I last looked",
+        # not the whole archive. A queue of three is a habit; a queue of two
+        # hundred is a chore that gets abandoned.
+        if since is not None:
+            recent = []
+            for x in clusters:
+                heard = [clip_recorded_at(l["clip"])
+                         for l in sdb.voice_locations(x["id"], c)]
+                heard = [h for h in heard if h]
+                if heard and max(heard) >= since:
+                    x["heard_last"] = max(heard)
+                    recent.append(x)
+            clusters = recent
+        for cl in clusters[:limit]:
             locs = sdb.voice_locations(cl["id"], c)
             row = c.execute("SELECT vec FROM voiceprints WHERE person_id = ? "
                             "ORDER BY seconds DESC LIMIT 1", (cl["id"],)).fetchone()
