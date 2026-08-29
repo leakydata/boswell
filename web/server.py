@@ -915,6 +915,136 @@ async def rotator():
             pass
 
 
+# How long a conversation must be quiet before it is treated as finished. The
+# same 90 s the agent uses to decide a conversation has ended, plus a margin,
+# because consolidating a conversation that is still going would have to be
+# redone when it resumes.
+SETTLE_SECONDS = 150.0
+AUTO_CONSOLIDATE_EVERY = 120.0
+
+
+BACKUP_DIR = os.path.join(DATA, "backups")
+BACKUP_KEEP = 10
+
+
+def backup_speakers():
+    """Copy the speaker store somewhere safe, using sqlite's own backup API.
+
+    This database is the only thing here that cannot be regenerated. Audio can
+    be re-transcribed, transcripts re-diarized, voiceprints recomputed -- but
+    the labelling is hours of somebody listening and deciding, and nothing
+    reconstructs that. It had no backup at all.
+
+    sqlite's backup API rather than a file copy, because the store is open and
+    being written while this runs; copying the file could catch it mid-write.
+    """
+    import sqlite3
+    import speaker_store
+    src = speaker_store.DB
+    if not os.path.exists(src):
+        return None
+    os.makedirs(BACKUP_DIR, exist_ok=True)
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    out = os.path.join(BACKUP_DIR, f"speakers-{stamp}.db")
+    a = sqlite3.connect(src)
+    b = sqlite3.connect(out)
+    try:
+        a.backup(b)
+    finally:
+        b.close()
+        a.close()
+    # Keep a rolling window. A backup nobody prunes fills the disk, and a full
+    # disk stops the recording, which is a worse failure than the one this is
+    # protecting against.
+    olds = sorted(f for f in os.listdir(BACKUP_DIR)
+                  if f.startswith("speakers-") and f.endswith(".db"))
+    for f in olds[:-BACKUP_KEEP]:
+        try:
+            os.remove(os.path.join(BACKUP_DIR, f))
+        except OSError:
+            pass
+    return out
+
+
+async def backer_upper():
+    """Back up the labelling on startup and then daily."""
+    while True:
+        try:
+            p = await asyncio.get_running_loop().run_in_executor(
+                None, backup_speakers)
+            if p:
+                device.event("log", text=f"speaker store backed up: "
+                                         f"{os.path.basename(p)}")
+        except Exception as e:
+            device.event("log", text=f"speaker backup failed: {str(e)[:90]}")
+        await asyncio.sleep(24 * 3600)
+
+
+async def auto_consolidator():
+    """Re-diarize finished conversations as they finish, without being asked.
+
+    Consolidation is what makes a voiceprint worth having -- pooled over
+    minutes of one conversation instead of thirty seconds of one clip -- and
+    until now it only happened when somebody pressed a button. Recording does
+    not stop, so every conversation captured between button presses kept the
+    per-clip labels and the thirty-second voiceprints this whole design exists
+    to get away from. The archive would have been quietly sliding back to where
+    it started.
+
+    Idempotent and self-healing: it looks for conversations that have gone
+    quiet and are not yet consolidated, so anything missed while the service
+    was down is picked up on the next pass rather than lost.
+    """
+    await asyncio.sleep(30)          # let the models finish loading first
+    while True:
+        try:
+            if PREFS.get("auto_consolidate", True) and not _bulk["running"]:
+                await _consolidate_settled()
+        except Exception as e:
+            device.event("log", text=f"auto-consolidate: {str(e)[:100]}")
+        await asyncio.sleep(AUTO_CONSOLIDATE_EVERY)
+
+
+async def _consolidate_settled():
+    now = time.time()
+    convs = index_db.conversations(300, 400)
+    for cv in convs:
+        clips = cv.get("clips") or []
+        if len(clips) < 2 or (now - (cv.get("end") or 0)) < SETTLE_SECONDS:
+            continue
+        # Already done? Every clip of a consolidated conversation carries the
+        # stamp, so one unstamped transcribed clip means there is work here.
+        pending = False
+        for n in clips:
+            tp = pipeline.transcript_path(n)
+            if not os.path.exists(tp):
+                return          # still transcribing; come back later
+            try:
+                t = json.load(open(tp))
+            except Exception:
+                continue
+            if not t.get("consolidated") and (t.get("segments") or []):
+                pending = True
+        if not pending:
+            continue
+        # Never race the live transcriber for the card.
+        if worker.busy:
+            return
+        loop = asyncio.get_running_loop()
+        r = await loop.run_in_executor(None, worker.consolidate, clips)
+        if r.get("ok"):
+            device.event("log", text=(
+                f"auto-consolidated {r['clips']} clip(s) into {r['voices']} "
+                f"voice(s)" + (f", {len(r['suspect_slots'])} flagged"
+                               if r.get("suspect_slots") else "")))
+            for n in clips:
+                try:
+                    index_db.upsert_clip(n)
+                except Exception:
+                    pass
+        return                  # one conversation per pass, to stay responsive
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     try:
@@ -923,7 +1053,9 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"index sync failed: {e}", flush=True)
     device.want(True)          # start looking for the board immediately
-    tasks = [asyncio.create_task(device.run()), asyncio.create_task(rotator())]
+    tasks = [asyncio.create_task(device.run()), asyncio.create_task(rotator()),
+             asyncio.create_task(auto_consolidator()),
+             asyncio.create_task(backer_upper())]
     yield
     for t in tasks:
         t.cancel()
@@ -2090,6 +2222,21 @@ def _bulk_consolidate(groups):
             f"consolidation finished: {_bulk['done']} conversation(s), "
             f"{_bulk['voices']} voice(s), {_bulk['suspect']} flagged as "
             f"possibly two people"))
+
+
+@app.get("/api/conversation/auto")
+async def api_auto_get():
+    return {"enabled": bool(PREFS.get("auto_consolidate", True)),
+            "settle_seconds": SETTLE_SECONDS}
+
+
+@app.post("/api/conversation/auto")
+async def api_auto_set(body: dict):
+    PREFS["auto_consolidate"] = bool(body.get("enabled"))
+    save_prefs(PREFS)
+    device.event("log", text=("auto-consolidation on" if PREFS["auto_consolidate"]
+                              else "auto-consolidation off"))
+    return {"enabled": PREFS["auto_consolidate"]}
 
 
 @app.post("/api/conversation/consolidate_all")
