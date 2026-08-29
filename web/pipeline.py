@@ -899,6 +899,102 @@ class Worker:
                 out.append(None)
         return out
 
+    # Splitting parameters, derived from what the archive actually measured
+    # rather than picked: same-person turns under held conditions sit at a
+    # median of 0.88 with a 10th percentile of 0.786, and different people at a
+    # median of 0.099 with a 90th percentile of 0.277. So a genuine two-person
+    # split should show each group holding together near 0.8 and the two groups
+    # sitting apart down near 0.1. The bars below are slack against those
+    # numbers on purpose -- a split that only just clears them is one this
+    # cannot tell from noise, and refusing it is the safe answer.
+    SPLIT_MIN_TURNS = 6
+    SPLIT_TURNS_TESTED = 20
+    SPLIT_WITHIN_MIN = 0.70
+    SPLIT_BETWEEN_MAX = 0.45
+
+    def _split_slot(self, vecs):
+        """Try to separate a slot's turns into two voices.
+
+        Flagging an impure slot protects the store but throws the speech away.
+        Most flagged slots are not noise, they are two people the diarizer ran
+        together -- and two people can be separated, which recovers the audio
+        instead of discarding it.
+
+        It is also a diagnostic, though a narrower one than it first looked.
+        A slot that falls into two tight groups was two people. A slot that
+        refuses is NOT thereby shown to be bad audio -- measured on this
+        archive, the slots that refuse have groups that sit far apart
+        (between ~0.06, where different people sit) while neither group holds
+        together (within ~0.3, against 0.79 for genuine same-person turns), and
+        no number of clusters from two to six fixes that. Their turns are
+        mutually unlike at every granularity, which two speakers would not
+        produce and three would not either.
+
+        What those slots have in common is content, not level: television and
+        video with several characters, music and effects under the speech. A
+        single-narrator video scores 0.96 on this same test. So a refusal means
+        "this slot is not two voices" and nothing more; what it actually is
+        remains open, and the honest response is to keep it out of the store
+        rather than to explain it.
+
+        Medoids, not centroids: the representative of a group is an actual turn
+        from it, for the same reason the store keeps references individually.
+        Averaging two voices is what created this problem one level up.
+
+        Always returns a dict. `split` says whether it worked, and the rest is
+        the evidence either way -- a refused split is a finding, not a failure,
+        so its numbers are reported rather than dropped.
+        """
+        n = len(vecs)
+        if n < self.SPLIT_MIN_TURNS:
+            return {"split": False, "reason": "too few usable turns",
+                    "turns": n}
+        M = np.stack(vecs)
+        S = M @ M.T
+
+        # Seed on the two least-alike turns: if the slot holds two people, the
+        # furthest-apart pair is one from each.
+        iu = np.triu_indices(n, k=1)
+        flat = S[iu]
+        a, b = iu[0][int(np.argmin(flat))], iu[1][int(np.argmin(flat))]
+
+        labels = np.zeros(n, dtype=int)
+        for _ in range(10):
+            labels = (S[a] < S[b]).astype(int)
+            labels[a], labels[b] = 0, 1
+            groups = [np.where(labels == 0)[0], np.where(labels == 1)[0]]
+            if min(len(g) for g in groups) < 2:
+                return {"split": False, "reason": "one side collapsed"}
+            # New medoid per group: the member most like the rest of its group.
+            new = []
+            for g in groups:
+                new.append(int(g[np.argmax(S[np.ix_(g, g)].sum(axis=1))]))
+            if [a, b] == new:
+                break
+            a, b = new
+
+        groups = [np.where(labels == 0)[0], np.where(labels == 1)[0]]
+        if min(len(g) for g in groups) < 2:
+            return {"split": False, "reason": "one side collapsed"}
+        within = []
+        for g in groups:
+            sub = S[np.ix_(g, g)]
+            iu2 = np.triu_indices(len(g), k=1)
+            within.append(float(sub[iu2].mean()) if len(g) > 1 else 1.0)
+        between = float(S[np.ix_(groups[0], groups[1])].mean())
+
+        quality = {"within": [round(w, 3) for w in within],
+                   "between": round(between, 3),
+                   "sizes": [int(len(g)) for g in groups]}
+        if min(within) < self.SPLIT_WITHIN_MIN or between > self.SPLIT_BETWEEN_MAX:
+            # Not two voices. On this archive that most likely means the audio
+            # is too poor to voiceprint a turn at a time -- which is worth
+            # knowing, and is not something a better diarizer would fix.
+            quality.update(split=False, reason="no clean separation")
+            return quality
+        quality.update(split=True, labels=labels.tolist(), medoids=[int(a), int(b)])
+        return quality
+
     def _slot_purity(self, audio, slot_turns):
         """Does a slot's own speech agree with itself?
 
@@ -921,12 +1017,18 @@ class Worker:
         which is the matched-condition comparison every threshold in
         speaker_store is currently guessing without.
         """
-        report, vectors = {}, {}
+        report, vectors, tested = {}, {}, {}
         for slot, turns in slot_turns.items():
             longest = sorted(turns, key=lambda t: t[1] - t[0],
-                             reverse=True)[:self.PURITY_TURNS]
-            vecs = [v for v in (self._embed_spans(audio, longest) or []) if v is not None]
+                             reverse=True)[:self.SPLIT_TURNS_TESTED]
+            got = self._embed_spans(audio, longest) or []
+            vecs, spans = [], []
+            for span, v in zip(longest, got):
+                if v is not None:
+                    vecs.append(v)
+                    spans.append(span)
             vectors[slot] = vecs
+            tested[slot] = spans
             if len(vecs) < 3:
                 report[slot] = {"turns_tested": len(vecs), "coherence": None,
                                 "worst_pair": None, "suspect": False}
@@ -946,7 +1048,7 @@ class Worker:
                 "p10": round(float(np.percentile(pairs, 10)), 3),
                 "suspect": bool(np.percentile(pairs, 10) < 0.55),
             }
-        return report, vectors
+        return report, vectors, tested
 
     def consolidate(self, clips):
         """Re-diarize a finished conversation as one stretch of audio.
@@ -1003,6 +1105,11 @@ class Worker:
         # Diarize each window; collect its slots with their pooled voiceprints.
         slots, turns = [], []
         slot_quality, calibration = {}, {"same": [], "different": []}
+        # Voiceprints for slots this pass separated. pyannote pooled one vector
+        # for the merged slot, and that vector is a blend of two people -- so
+        # each side gets its medoid turn instead, an actual recording of that
+        # voice rather than an average of two.
+        split_vecs = {}
         for wi, win in enumerate(windows):
             audio = np.concatenate([x["audio"] for x in win])
             base = win[0]["start"]
@@ -1023,14 +1130,58 @@ class Worker:
                 spk = getattr(row, "speaker", None)
                 if spk is None:
                     continue
-                turns.append({"start": base + float(row.start),
-                              "end": base + float(row.end), "local": (wi, spk)})
                 local_turns.setdefault(spk, []).append(
                     (float(row.start), float(row.end)))
 
             # Ask the diarizer whether it still believes its own boundaries,
             # while this window's audio is still in hand.
-            purity, turn_vecs = self._slot_purity(audio, local_turns)
+            purity, turn_vecs, tested_spans = self._slot_purity(audio, local_turns)
+
+            # A flagged slot is usually two people, not noise. Try to separate
+            # them before writing anything off: a clean split recovers the
+            # speech instead of discarding it, and a refusal is itself the
+            # answer to why the slot was flagged.
+            for spk, r in list(purity.items()):
+                if not r.get("suspect"):
+                    continue
+                sq = self._split_slot(turn_vecs.get(spk) or [])
+                r["split_attempt"] = {k: v for k, v in sq.items()
+                                      if k not in ("labels", "medoids")}
+                if not sq.get("split"):
+                    continue
+                labels = sq["labels"]
+                spans = tested_spans.get(spk) or []
+                # Hand every turn in the slot to a side. Turns long enough to
+                # embed go by their own vector; the short ones -- which cannot
+                # be voiceprinted and are what made this hard -- go with the
+                # embedded turn they sit closest to in time.
+                anchors = [(0.5 * (a + b), labels[i])
+                           for i, (a, b) in enumerate(spans) if i < len(labels)]
+                sides = {0: [], 1: []}
+                for a, b in local_turns[spk]:
+                    mid = 0.5 * (a + b)
+                    side = min(anchors, key=lambda x: abs(x[0] - mid))[1]
+                    sides[side].append((a, b))
+                if not (sides[0] and sides[1]):
+                    continue
+                originals = turn_vecs[spk]
+                del local_turns[spk]
+                del purity[spk]
+                del turn_vecs[spk]
+                for side, spans_out in sides.items():
+                    sub = f"{spk}#{'ab'[side]}"
+                    idx = [i for i, l in enumerate(labels) if l == side]
+                    local_turns[sub] = spans_out
+                    turn_vecs[sub] = [originals[i] for i in idx]
+                    split_vecs[(wi, sub)] = originals[sq["medoids"][side]]
+                    purity[sub] = {"turns_tested": len(idx),
+                                   "coherence": sq["within"][side],
+                                   "worst_pair": None,
+                                   "p10": sq["within"][side],
+                                   "suspect": False, "from_split": spk}
+                self.notify("log", text=(
+                    f"slot {spk} separated into two voices "
+                    f"(within {sq['within']}, between {sq['between']})"))
             for spk, r in purity.items():
                 slot_quality[(wi, spk)] = r
                 if r.get("suspect"):
@@ -1045,8 +1196,22 @@ class Worker:
             _collect_calibration(
                 calibration, turn_vecs,
                 trusted={k for k, v in purity.items() if not v.get("suspect")})
-            for spk, vec in local.items():
-                slots.append({"key": (wi, spk), "vec": unit(vec), "final": None})
+            # Turns and slots are both built from local_turns rather than
+            # from the diarizer's frame, because splitting rewrites it. A slot
+            # that was separated uses its medoid; one left alone keeps
+            # pyannote's pooled vector, which for a coherent slot is pooled
+            # over every second that voice spoke and is the better reference.
+            for spk, spans_out in local_turns.items():
+                for a, b in spans_out:
+                    turns.append({"start": base + a, "end": base + b,
+                                  "local": (wi, spk)})
+                vec = split_vecs.get((wi, spk))
+                if vec is None:
+                    vec = local.get(spk)
+                if vec is None or not np.all(np.isfinite(np.asarray(vec))):
+                    continue
+                slots.append({"key": (wi, spk), "vec": unit(vec),
+                              "final": None})
 
         if not slots:
             return {"ok": False, "error": "no voices found"}
