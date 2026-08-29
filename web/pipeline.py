@@ -74,18 +74,23 @@ def list_speakers():
     for p in sdb.people():
         if p["name"] is None:
             continue          # unidentified clusters have their own view
-        prints = sdb.voiceprints(p["id"])
+        g = sdb.voiceprint_groups(p["id"])
         out.append({
             "name": p["name"],
             "person_id": p["id"],
             "kind": p.get("kind"),
+            # References that arrived together are described together. A name
+            # applied to a cluster can attach hundreds at once, and listing
+            # those individually buries the handful made by hand.
+            "groups": g["groups"],
             "samples": [{"id": str(v["id"]), "weight": 1,
                          "clip": v["clip"], "speaker": v["speaker"],
                          "seconds": round(v["seconds"], 1) if v["seconds"] else v["seconds"],
                          "origin": v["origin"],
                          "redundant": bool(v["redundant"]),
-                         "score": None} for v in prints],
-            "count": len(prints),
+                         "score": None} for v in g["singles"]],
+            "singles_total": g["singles_total"],
+            "count": g["total"],
         })
     return out
 
@@ -350,9 +355,32 @@ def labelling_queue(limit=50, include_media=False):
                                 if x.get("speaker") == loc["speaker"])
                 if said.strip():
                     text.append(said.strip())
+            # How well the diarizer's own slots held together where this
+            # voice came from. A cluster built from slots that disagreed with
+            # themselves is a poor thing to put a name on, and the interface
+            # should say so before the click rather than after.
+            cohs = []
+            for loc in locs[:12]:
+                tp2 = transcript_path(loc["clip"])
+                if not os.path.exists(tp2):
+                    continue
+                try:
+                    q = (json.load(open(tp2)).get("slot_quality") or {})
+                except Exception:
+                    continue
+                v = q.get(loc["speaker"])
+                if v and v.get("coherence") is not None:
+                    cohs.append(v["coherence"])
+            coherence = round(sum(cohs) / len(cohs), 3) if cohs else None
+
             out.append({
                 "person_id": cl["id"],
                 "kind": cl.get("kind"),
+                "coherence": coherence,
+                # 0.715 is the measured 10th percentile for genuine
+                # same-person turns; below it the slot is not holding one
+                # voice steadily and a name put on it may land on two.
+                "shaky": bool(coherence is not None and coherence < 0.715),
                 "seconds": round(cl["seconds"], 1),
                 "voiceprints": cl["prints"],
                 "clips": cl["clips"],

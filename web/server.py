@@ -2143,6 +2143,25 @@ async def api_voices_recheck():
     return stats
 
 
+@app.post("/api/speaker/{person_id}/ungroup/{source_cluster}")
+async def api_ungroup(person_id: int, source_cluster: int):
+    """Undo one cluster naming, putting those references back as unnamed.
+
+    Naming is a single click that can be wrong about several hundred
+    voiceprints, so getting back needs to be a single click too. Nothing is
+    deleted: the references return to being an unidentified voice, exactly as
+    they were, and can be named as somebody else.
+    """
+    import speaker_store
+    r = speaker_store.unname_group(person_id, source_cluster)
+    if not r.get("ok"):
+        raise HTTPException(404, r.get("reason", "nothing to undo"))
+    device.event("log", text=(f"put {r['moved']} voiceprint(s) back as "
+                              f"unidentified voice #{r['cluster']}"))
+    r["clips_relabelled"] = _rematch_clips()
+    return r
+
+
 @app.get("/api/voices/queue")
 async def api_voices_queue(limit: int = 50, include_media: bool = False):
     """Unnamed voices, most speech first, with everything needed to settle one."""

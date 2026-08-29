@@ -1189,6 +1189,12 @@ $("bVocabSave").onclick = async () => {
   }
 };
 
+function fmtMins(sec){
+  if (sec < 60) return `${Math.round(sec)}s`;
+  const m = Math.floor(sec / 60);
+  return m < 60 ? `${m} min` : `${(m/60).toFixed(1)} hr`;
+}
+
 async function loadPeople(){
   const el = $("pplList");
   try{
@@ -1234,6 +1240,40 @@ async function loadPeople(){
         loadPeople();
       };
       d.appendChild(kind);
+      /* References that arrived as one named cluster, described as a group
+         with a way back. Naming is one click that can attach hundreds of
+         voiceprints; undoing it should not mean deleting them one at a time. */
+      for (const g of (p.groups || [])){
+        const row = document.createElement("div");
+        row.className = "samp";
+        const s1 = document.createElement("span");
+        s1.textContent = `${g.count} voiceprint${g.count === 1 ? "" : "s"} `
+          + (g.untracked ? "acquired by naming a voice"
+                         : `from unidentified voice #${g.source_cluster}`)
+          + (g.seconds ? ` · ${fmtMins(g.seconds)} across ${g.clips} clip`
+                       + `${g.clips === 1 ? "" : "s"}` : "");
+        const undo = document.createElement("button");
+        undo.textContent = "Not them";
+        undo.title = "Put these back as an unidentified voice. Nothing is deleted.";
+        undo.onclick = async () => {
+          undo.disabled = true;
+          const r = await fetch(`/api/speaker/${p.person_id}/ungroup/${g.source_cluster}`,
+                                {method:"POST"});
+          const b = await r.json().catch(() => ({}));
+          if (r.ok) log(`put ${b.moved} voiceprint(s) back as voice #${b.cluster}`);
+          loadPeople(); loadVoices();
+        };
+        row.appendChild(s1); row.appendChild(undo);
+        d.appendChild(row);
+      }
+      if (p.singles_total > p.samples.length){
+        const note = document.createElement("div");
+        note.className = "samp";
+        note.style.color = "var(--muted)";
+        note.textContent = `showing the ${p.samples.length} most recent of `
+                         + `${p.singles_total} individually added`;
+        d.appendChild(note);
+      }
       for (const e of p.samples){
         const row = document.createElement("div");
         row.className = "samp";
@@ -1277,12 +1317,6 @@ async function loadPeople(){
 }
 
 /* ---- unidentified voices ---- */
-
-function fmtMins(sec){
-  if (sec < 60) return `${Math.round(sec)}s`;
-  const m = Math.floor(sec / 60);
-  return m < 60 ? `${m} min` : `${(m/60).toFixed(1)} hr`;
-}
 
 /* Media is hidden by default. Knowing a voice came off a screen is a complete
    answer about it, and a day's videos would otherwise bury the handful of real
@@ -1330,6 +1364,18 @@ async function loadVoices(){
           .map(x => `${x.name}${x.kind === "media" ? " (media)" : ""} `
                   + x.score.toFixed(2)).join("  ·  ");
         d.appendChild(c);
+      }
+
+      /* Say before the click, not after, when the audio this voice was built
+         from would not hold still. Naming it is still allowed -- someone
+         listening can hear what the model cannot -- but it should be a
+         deliberate choice. */
+      if (v.shaky){
+        const w = document.createElement("div");
+        w.style.cssText = "font-family:var(--mono);font-size:12px;color:var(--warn,#d08a3e)";
+        w.textContent = `⚠ this voice does not hold together (${v.coherence}) — `
+          + "it may be more than one person, or audio too poor to voiceprint";
+        d.appendChild(w);
       }
 
       if (v.text){

@@ -156,6 +156,10 @@ def _conn():
     if "kind" not in cols:
         c.execute("ALTER TABLE people ADD COLUMN kind TEXT")
         c.commit()
+    vcols = {r["name"] for r in c.execute("PRAGMA table_info(voiceprints)")}
+    if "source_cluster" not in vcols:
+        c.execute("ALTER TABLE voiceprints ADD COLUMN source_cluster INTEGER")
+        c.commit()
     return c
 
 
@@ -436,12 +440,16 @@ def name_person(person_id, name, c=None):
             # Naming a stranger as somebody already known is a merge, and it
             # is the good case: their references join that person's set and
             # cover conditions that were missing.
-            c.execute("UPDATE voiceprints SET person_id = ? WHERE person_id = ?",
-                      (existing["id"], person_id))
+            c.execute("UPDATE voiceprints SET person_id = ?, "
+                      "source_cluster = COALESCE(source_cluster, ?) "
+                      "WHERE person_id = ?",
+                      (existing["id"], person_id, person_id))
             c.execute("DELETE FROM people WHERE id = ?", (person_id,))
             c.commit()
             return {"ok": True, "person_id": existing["id"], "merged": True}
         c.execute("UPDATE people SET name = ? WHERE id = ?", (name, person_id))
+        c.execute("UPDATE voiceprints SET source_cluster = COALESCE(source_cluster, ?) "
+                  "WHERE person_id = ?", (person_id, person_id))
         c.commit()
         return {"ok": True, "person_id": person_id, "merged": False}
     finally:
@@ -498,6 +506,106 @@ def set_redundant(vp_id, flag=True, c=None):
         c.execute("UPDATE voiceprints SET redundant = ? WHERE id = ?",
                   (1 if flag else 0, vp_id))
         c.commit()
+    finally:
+        if own:
+            c.close()
+
+
+def voiceprint_groups(person_id, c=None, detail_limit=12):
+    """A person's references, described in groups rather than listed flat.
+
+    Naming one cluster can attach several hundred voiceprints at once. Listing
+    those individually is useless -- nobody audits three hundred rows, and the
+    handful of hand-made labels that actually warrant attention get lost among
+    them. So references that arrived together are described together, and only
+    the ones a person made by hand are itemised.
+    """
+    own = c is None
+    c = c or _conn()
+    try:
+        rows = c.execute("""
+            SELECT id, seconds, clip, speaker, origin, redundant,
+                   source_cluster, created
+            FROM voiceprints WHERE person_id = ? ORDER BY created
+        """, (person_id,)).fetchall()
+        singles, groups = [], {}
+        for r in rows:
+            src = r["source_cluster"]
+            # References acquired automatically arrived by naming a cluster,
+            # whether or not the cluster id was recorded at the time. Grouping
+            # them by origin as well as by id means the ones named before this
+            # was tracked are still describable and still undoable, rather than
+            # three hundred anonymous rows nobody will ever audit.
+            if src is None and r["origin"] == "auto":
+                src = 0
+            if src is None:
+                singles.append(dict(r))
+                continue
+            g = groups.setdefault(src, {"source_cluster": src, "count": 0,
+                                        "seconds": 0.0, "clips": set(),
+                                        "untracked": src == 0,
+                                        "first": r["created"]})
+            g["count"] += 1
+            g["seconds"] += r["seconds"] or 0
+            if r["clip"]:
+                g["clips"].add(r["clip"])
+        out = []
+        for g in groups.values():
+            g["clips"] = len(g["clips"])
+            g["seconds"] = round(g["seconds"], 1)
+            out.append(g)
+        out.sort(key=lambda g: -g["count"])
+        return {"groups": out,
+                "singles": singles[-detail_limit:],
+                "singles_total": len(singles),
+                "total": len(rows)}
+    finally:
+        if own:
+            c.close()
+
+
+def unname_group(person_id, source_cluster, c=None):
+    """Undo a cluster naming: put those references back where they came from.
+
+    Naming is one click and can be wrong about several hundred voiceprints at
+    once, so it needs an equally cheap way back. The references are not deleted
+    -- they return to being an unnamed cluster, exactly as they were, and can
+    be named again as somebody else.
+    """
+    own = c is None
+    c = c or _conn()
+    try:
+        if source_cluster == 0:
+            where, args = ("person_id = ? AND source_cluster IS NULL "
+                           "AND origin = 'auto'"), (person_id,)
+        else:
+            where, args = "person_id = ? AND source_cluster = ?", \
+                          (person_id, source_cluster)
+        n = c.execute(f"SELECT COUNT(*) n FROM voiceprints WHERE {where}",
+                      args).fetchone()["n"]
+        if not n:
+            return {"ok": False, "reason": "no such group"}
+        # Reuse the original cluster id where it is still free, so undoing
+        # lands the voices back under the number the user saw them under.
+        exists = source_cluster == 0 or c.execute(
+            "SELECT id FROM people WHERE id = ?", (source_cluster,)).fetchone()
+        if exists:
+            target = c.execute("INSERT INTO people (name, created) VALUES (NULL, ?)",
+                               (time.time(),)).lastrowid
+        else:
+            c.execute("INSERT INTO people (id, name, created) VALUES (?, NULL, ?)",
+                      (source_cluster, time.time()))
+            target = source_cluster
+        c.execute(f"UPDATE voiceprints SET person_id = ?, source_cluster = NULL "
+                  f"WHERE {where}", (target,) + args)
+        # A person with nothing left is not a person any more.
+        left = c.execute("SELECT COUNT(*) n FROM voiceprints WHERE person_id = ?",
+                         (person_id,)).fetchone()["n"]
+        if not left:
+            c.execute("DELETE FROM people WHERE id = ?", (person_id,))
+        c.commit()
+        return {"ok": True, "moved": n, "cluster": target,
+                "person_removed": not left}
     finally:
         if own:
             c.close()
