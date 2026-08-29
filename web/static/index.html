@@ -535,6 +535,7 @@ html{scroll-padding-top:120px}
         <button id="cvTranscribe">Transcribe missing</button>
         <button id="cvReview">Review with agent</button>
         <button id="cvConsolidate">Re-detect speakers</button>
+        <button id="cvRetranscribe">Fix sentence breaks</button>
         <button class="dang" id="cvDelete">Delete conversation</button>
       </div>
       <div id="cvMsg" style="font-family:var(--mono);font-size:12px;color:var(--muted);
@@ -2332,6 +2333,29 @@ $("cvExport").onclick = async () => {
    spoke, and a SPEAKER_00 unrelated to the SPEAKER_00 in the clip before.
    Handed the whole conversation it gets one voiceprint per person pooled over
    every second they spoke, and labels that hold across all of it. */
+/* Clips are cut every thirty seconds by the clock and Whisper cuts on voice
+   activity, so given the whole conversation it puts its boundaries in the
+   silences instead. 18% of the lines in this archive touch a clip edge. The
+   audio is untouched and anything edited by hand is left alone. */
+$("cvRetranscribe").onclick = async () => {
+  if (!cvCurrent) return;
+  $("cvMsg").textContent = "re-transcribing the whole conversation…";
+  $("cvRetranscribe").disabled = true;
+  try{
+    const r = await fetch("/api/conversation/retranscribe", {method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({names: cvCurrent.clips})});
+    const b = await r.json().catch(() => ({}));
+    if (!r.ok){ $("cvMsg").textContent = b.detail || "could not re-transcribe"; return; }
+    $("cvMsg").textContent = `${b.lines} line(s) across ${b.clips} clip(s)`
+      + (b.skipped_edited && b.skipped_edited.length
+         ? ` · ${b.skipped_edited.length} edited clip(s) left alone` : "");
+    log(`re-transcribed ${b.clips} clip(s) into ${b.lines} line(s)`);
+    openConversation(cvCurrent);
+  }catch(e){ $("cvMsg").textContent = "could not reach the server"; }
+  finally{ $("cvRetranscribe").disabled = false; }
+};
+
 $("cvConsolidate").onclick = async () => {
   if (!cvCurrent) return;
   $("cvMsg").textContent = "re-detecting speakers across the whole conversation…";

@@ -2273,6 +2273,48 @@ async def api_calibration():
     return await loop.run_in_executor(None, pipeline.calibration_report)
 
 
+@app.post("/api/conversation/retranscribe")
+async def api_retranscribe(body: dict):
+    """Transcribe a conversation as one stretch, for the sentence boundaries.
+
+    Clips are cut every thirty seconds by the clock; Whisper cuts on voice
+    activity. Given the whole conversation it puts its boundaries in the
+    silences instead, so lines stop ending mid-word. The audio files are
+    untouched -- only the transcript changes -- and any clip whose text has
+    been edited by hand is left exactly as it is.
+    """
+    names = body.get("names") or []
+    if not isinstance(names, list) or not names:
+        raise HTTPException(400, "need a list of clip names")
+    for n in names:
+        safe_clip(n)
+    if worker.busy:
+        raise HTTPException(409, "a transcription is running; try again shortly")
+
+    loop = asyncio.get_running_loop()
+    r = await loop.run_in_executor(None, worker.retranscribe_conversation, names)
+    if not r.get("ok"):
+        raise HTTPException(400, r.get("error", "could not re-transcribe"))
+    for n in names:
+        try:
+            index_db.upsert_clip(n)
+        except Exception:
+            pass
+        try:
+            import semantic
+            tp = pipeline.transcript_path(n)
+            if os.path.exists(tp):
+                semantic.index_clip(n, json.load(open(tp)).get("segments") or [],
+                                    replace=True)
+        except Exception:
+            pass
+    device.event("log", text=(f"re-transcribed {r['clips']} clip(s) into "
+                              f"{r['lines']} line(s)"
+                              + (f", {len(r['skipped_edited'])} left alone"
+                                 if r.get("skipped_edited") else "")))
+    return r
+
+
 @app.post("/api/voices/scan")
 async def api_voices_scan():
     """File every diarized voice nobody has accounted for into a cluster."""

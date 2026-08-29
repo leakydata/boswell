@@ -1117,6 +1117,115 @@ class Worker:
             }
         return report, vectors, tested
 
+    def retranscribe_conversation(self, clips):
+        """Transcribe a whole conversation at once, then hand the lines back.
+
+        A clip boundary falls every thirty seconds regardless of whether anyone
+        has finished a sentence, and 18% of the lines in this archive touch one.
+        Whisper decides where to cut using voice activity, so given the whole
+        conversation it puts its boundaries in the silences instead of on the
+        clock -- the clips stay thirty seconds, only the transcript changes.
+
+        Clips whose text somebody has edited are left exactly as they are. A
+        better sentence boundary is not worth overwriting a correction, and a
+        correction is the one thing here that cannot be recomputed.
+        """
+        import whisperx
+        self._load()
+
+        loaded, offset = [], 0.0
+        skipped = []
+        for clip in clips:
+            path = os.path.join(DATA, clip)
+            tp = transcript_path(clip)
+            if not (os.path.exists(path) and os.path.exists(tp)):
+                continue
+            try:
+                t = json.load(open(tp))
+                audio = whisperx.load_audio(path)
+            except Exception:
+                continue
+            dur = len(audio) / 16000.0
+            edited = bool(t.get("edited"))
+            if edited:
+                skipped.append(clip)
+            loaded.append({"clip": clip, "audio": audio, "start": offset,
+                           "end": offset + dur, "edited": edited, "t": t})
+            offset += dur
+        if not loaded:
+            return {"ok": False, "error": "no readable audio"}
+        if all(x["edited"] for x in loaded):
+            return {"ok": False, "error": "every clip here has been edited by "
+                                          "hand; nothing to redo"}
+
+        audio = np.concatenate([x["audio"] for x in loaded])
+        self.notify("log", text=(f"re-transcribing {len(loaded)} clip(s), "
+                                 f"{len(audio) / 16000 / 60:.0f} min, in one pass"))
+        res = self._asr.transcribe(audio, batch_size=16)
+        model_a, meta = self._align
+        res = whisperx.align(res["segments"], model_a, meta, audio, "cuda")
+
+        terms = load_vocabulary()
+        lines = []
+        for sg in res["segments"]:
+            txt = apply_vocabulary((sg.get("text") or "").strip(), terms)
+            try:
+                a, b = float(sg["start"]), float(sg["end"])
+            except (TypeError, ValueError, KeyError):
+                continue
+            if txt and math.isfinite(a) and math.isfinite(b):
+                lines.append({"start": a, "end": b, "text": txt})
+
+        # Hand each line to the clip it starts in, and re-base its timings.
+        # A line that runs past the end of its clip keeps its full text there
+        # rather than being split again -- undoing the split is the point.
+        changed = 0
+        for item in loaded:
+            if item["edited"]:
+                continue
+            t = item["t"]
+            mine = [ln for ln in lines
+                    if item["start"] <= ln["start"] < item["end"]]
+            segs = []
+            for ln in mine:
+                segs.append({"start": round(ln["start"] - item["start"], 2),
+                             "end": round(ln["end"] - item["start"], 2),
+                             "speaker": None, "text": ln["text"]})
+            # Speakers are carried over by overlap where an old line covers
+            # the same moment, which is only a stopgap: new lines land in
+            # speech the old segmentation missed and inherit nothing. Measured
+            # on the first conversation this ran on, that cost 27 of 75 lines
+            # their speaker. Consolidation is what actually assigns them --
+            # from diarized turns, which owe nothing to transcript boundaries
+            # -- so it runs immediately after, and this only has to avoid
+            # losing ground in the meantime.
+            for sg in segs:
+                best, cover = None, 0.0
+                for old in (t.get("segments") or []):
+                    try:
+                        ov = min(sg["end"], float(old["end"])) - \
+                             max(sg["start"], float(old["start"]))
+                    except (TypeError, ValueError):
+                        continue
+                    if ov > cover and old.get("speaker"):
+                        cover, best = ov, old["speaker"]
+                sg["speaker"] = best
+            t["segments"] = segs
+            t["retranscribed"] = time.time()
+            atomicio.write_json(transcript_path(item["clip"]), t,
+                                indent=2, allow_nan=False)
+            changed += 1
+
+        # Re-diarize on the way out. Transcription decides where lines break
+        # and diarization decides who is speaking; doing them in that order
+        # means the speaker labels are assigned against the new lines rather
+        # than salvaged from the old ones.
+        con = self.consolidate(clips)
+        return {"ok": True, "clips": changed, "lines": len(lines),
+                "skipped_edited": skipped,
+                "voices": con.get("voices") if con.get("ok") else None,
+                "reconsolidated": bool(con.get("ok"))}
+
     def consolidate(self, clips):
         """Re-diarize a finished conversation as one stretch of audio.
 
