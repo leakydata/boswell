@@ -53,24 +53,48 @@ LEGACY_META = os.path.join(DATA, "speakers.json")
 # ---------------------------------------------------------------------------
 # Thresholds.
 #
-# PROVISIONAL. These are starting points, not measurements. Every threshold
-# this project has trusted so far was derived against centroids, and top-1 over
-# individual references scores systematically higher than the mean of those
-# references -- so carrying an old number forward would name a large slice of
-# what it used to reject and look like a triumph on day one.
+# DERIVED, at last, rather than guessed. Everything here used to rest on one
+# comparison -- five enrolment samples six minutes apart, scored against a
+# centroid built from those same samples, which is circular -- and a
+# different-speaker figure of 0.650 that came from three pairs.
 #
-# What is known from the archive: the same person measured against themselves
-# under matched conditions scored about 0.815, and two different people sharing
-# one recording scored about 0.650. That gap is narrow, it was measured against
-# centroids, and it rests on very few labelled pairs. Treat the band below as a
-# place to start collecting evidence, and re-derive all three on held-out data
-# once there are enough confirmed labels to hold any out.
-MATCH_HIGH = 0.80      # at or above, and clear of the runner-up: name it
-MATCH_LOW = 0.55       # below this, nobody in the store is a candidate
-MARGIN_MIN = 0.06      # best person must beat the next person by this much
+# Diarizing the archive produced the real thing. Turns inside one slot are the
+# same person under identical conditions; turns in two slots of one window are
+# different people under identical conditions. From 1642 and 2141 pairs:
+#
+#     same person       p10 0.715   median 0.863   p90 0.937
+#     different people              median 0.107   p90 0.288   p99 0.572
+#
+# The gap is 0.76, not the 0.16 this codebase was built around. The embedder
+# separates people far better than anything here believed.
+#
+# Both figures read better than reality and the report says so: conditions are
+# held constant, and the same-person side is drawn only from slots that passed
+# the purity check, which a slot passes by having turns that agree. So these
+# are treated as an optimistic bound, and the settings below sit well inside
+# them rather than at the edge.
+MATCH_HIGH = 0.75
+# 0.80 named nothing. Not "little" -- zero of 196 clusters in the archive,
+# because it sits above where genuine cross-condition matches actually land:
+# the two clusters that are almost certainly the wearer score 0.778 and 0.790.
+# 0.75 clears the different-speaker 99th percentile of 0.572 by 0.18 and
+# captures 96 of the 98 minutes available to be named. Below 0.70 the extra
+# clusters bring almost no additional speech and a good deal more risk.
 
-# A voiceprint from a couple of seconds of speech is mostly noise, and one
-# stored as a reference is a permanent liability. Unchanged from the old store.
+MATCH_LOW = 0.55
+# Anything above this is worth a person's glance. It sits just under the
+# different-speaker p99, so roughly one different-speaker pair in a hundred
+# reaches the queue -- which is the right way round for something a human
+# reviews rather than something that acts on its own.
+
+MARGIN_MIN = 0.15
+# Raised from 0.06 now that the distributions are known. Different people sit
+# at 0.107, so a genuine match wins by a mile and an ambiguous one barely wins
+# at all -- measured on this archive, the confident clusters have margins of
+# 0.51, 0.39 and 0.35 while the doubtful ones have 0.014 and 0.045. A bar of
+# 0.15 falls in the empty space between those two groups and does the work the
+# absolute score cannot.
+
 MIN_ENROLL_SECONDS = 5.0
 
 # Only rejects obvious garbage -- a silent or degenerate vector. It is
