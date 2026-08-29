@@ -595,6 +595,7 @@ html{scroll-padding-top:120px}
       <div class="toolbar2" style="margin-bottom:12px">
         <span class="count" id="voiceCount"></span>
         <button id="bVoiceScan">Scan for new voices</button>
+        <button id="bConsolidateAll">Re-detect speakers everywhere</button>
         <button id="bVoiceRecheck">Recheck against named people</button>
         <button id="bVoiceMedia">Show tagged media</button>
         <button id="bVoiceRefresh">Refresh</button>
@@ -940,7 +941,7 @@ function showTab(which){
     $(v).hidden = !on;
   }
   if (which === "rec") loadClips();
-  if (which === "ppl"){ loadPeople(); loadVocab(); loadVoices(); }
+  if (which === "ppl"){ loadPeople(); loadVocab(); loadVoices(); pollBulk(); }
   if (which === "notes"){ loadAgent(); loadItems(); loadTopics(); loadDuplicates(); }
 }
 const TABS = [["tabDev","dev"],["tabRec","rec"],["tabPpl","ppl"],["tabNotes","notes"]];
@@ -1414,6 +1415,43 @@ async function loadVoices(){
 }
 
 on("bVoiceRefresh", "click", loadVoices);
+/* Every voiceprint in the store was pooled over at most thirty seconds of
+   speech. The same voice pooled over minutes is a far better reference, so
+   this is worth running once across the archive -- and it is where the
+   matched-condition measurements come from that the thresholds currently
+   lack. Tens of minutes of GPU work, so it runs in the background and yields
+   to live transcription. */
+let bulkPoll = null;
+async function pollBulk(){
+  try{
+    const b = await (await fetch("/api/conversation/consolidate_all")).json();
+    const btn = $("bConsolidateAll");
+    if (b.running){
+      btn.disabled = true;
+      btn.textContent = `re-detecting ${b.done}/${b.total}…`;
+    } else {
+      btn.disabled = false;
+      btn.textContent = "Re-detect speakers everywhere";
+      if (bulkPoll){
+        clearInterval(bulkPoll); bulkPoll = null;
+        if (b.total){
+          log(`consolidated ${b.done} conversation(s), ${b.voices} voice(s)`
+              + (b.suspect ? `, ${b.suspect} flagged as possibly two people` : ""));
+        }
+        loadVoices(); loadPeople();
+      }
+    }
+  }catch(e){}
+}
+on("bConsolidateAll", "click", async () => {
+  const r = await fetch("/api/conversation/consolidate_all", {method:"POST"});
+  if (!r.ok){ log("could not start"); return; }
+  const b = await r.json();
+  log(`re-detecting speakers across ${b.conversations} conversation(s)`);
+  if (!bulkPoll) bulkPoll = setInterval(pollBulk, 3000);
+  pollBulk();
+});
+
 on("bVoiceMedia", "click", () => {
   showMedia = !showMedia;
   $("bVoiceMedia").textContent = showMedia ? "Show unidentified people"

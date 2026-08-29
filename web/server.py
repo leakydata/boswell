@@ -19,6 +19,7 @@ import secrets
 from urllib.parse import urlparse
 import struct
 import sys
+import threading
 import time
 from contextlib import asynccontextmanager
 
@@ -2027,6 +2028,87 @@ async def api_consolidate(body: dict):
         except Exception:
             pass
     return r
+
+
+# Consolidating the whole archive is tens of minutes of GPU work, so it runs
+# in the background and reports progress rather than holding a request open.
+_bulk = {"running": False, "done": 0, "total": 0, "voices": 0,
+         "suspect": 0, "skipped": 0, "current": None, "error": None,
+         "started": None, "finished": None}
+
+
+def _bulk_consolidate(groups):
+    _bulk.update(running=True, done=0, total=len(groups), voices=0, suspect=0,
+                 skipped=0, error=None, started=time.time(), finished=None)
+    try:
+        for names in groups:
+            # Never race the live transcriber for the card. Recording is the
+            # one job here that cannot be repeated later.
+            waited = 0.0
+            while worker.busy and waited < 300:
+                time.sleep(5)
+                waited += 5
+            _bulk["current"] = names[0] if names else None
+            try:
+                r = worker.consolidate(names)
+            except Exception as e:
+                _bulk["skipped"] += 1
+                device.event("log", text=f"consolidate failed: {str(e)[:90]}")
+                continue
+            if r.get("ok"):
+                _bulk["voices"] += r.get("voices", 0)
+                _bulk["suspect"] += len(r.get("suspect_slots") or [])
+                for n in names:
+                    try:
+                        import index_db
+                        index_db.upsert_clip(n)
+                    except Exception:
+                        pass
+            else:
+                _bulk["skipped"] += 1
+            _bulk["done"] += 1
+    except Exception as e:
+        _bulk["error"] = str(e)[:200]
+    finally:
+        _bulk.update(running=False, current=None, finished=time.time())
+        device.event("log", text=(
+            f"consolidation finished: {_bulk['done']} conversation(s), "
+            f"{_bulk['voices']} voice(s), {_bulk['suspect']} flagged as "
+            f"possibly two people"))
+
+
+@app.post("/api/conversation/consolidate_all")
+async def api_consolidate_all(min_clips: int = 3):
+    """Re-diarize every conversation in the archive, one at a time.
+
+    Worth doing once: every voiceprint in the store was pooled over at most
+    thirty seconds of speech, and the same voice pooled over minutes is a
+    better reference by a wide margin. It also fills in the matched-condition
+    measurements that every threshold here is currently guessing without.
+    """
+    if _bulk["running"]:
+        raise HTTPException(409, "already running")
+    import index_db
+    groups = [cv["clips"] for cv in index_db.conversations(300, 400)
+              if len(cv.get("clips") or []) >= min_clips]
+    if not groups:
+        raise HTTPException(400, "no conversations big enough to be worth it")
+    threading.Thread(target=_bulk_consolidate, args=(groups,),
+                     daemon=True).start()
+    device.event("log", text=f"consolidating {len(groups)} conversation(s)")
+    return {"ok": True, "conversations": len(groups)}
+
+
+@app.get("/api/conversation/consolidate_all")
+async def api_consolidate_all_status():
+    return dict(_bulk)
+
+
+@app.get("/api/calibration")
+async def api_calibration():
+    """What the archive has measured about same-voice vs different-voice."""
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, pipeline.calibration_report)
 
 
 @app.post("/api/voices/scan")

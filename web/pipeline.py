@@ -211,7 +211,8 @@ def scan_voices(limit=None, min_seconds=3.0):
     try:
         seen = sdb.seen_voices(c)
         stats = {"scanned": 0, "skipped_known": 0, "skipped_short": 0,
-                 "matched": 0, "clustered": 0, "new_clusters": 0}
+                 "skipped_impure": 0, "matched": 0, "clustered": 0,
+                 "new_clusters": 0}
         files = sorted(f for f in os.listdir(TRANSCRIPTS)
                        if f.endswith(".json")) if os.path.isdir(TRANSCRIPTS) else []
         for f in files:
@@ -229,6 +230,13 @@ def scan_voices(limit=None, min_seconds=3.0):
                 # A voice somebody has already named by hand is settled.
                 if (named.get(spk) or {}).get("name"):
                     stats["skipped_known"] += 1
+                    continue
+                # A slot the diarizer could not keep straight is a blend of
+                # two voices. Clustering it would spread that blend across
+                # everything it lands near, and nothing downstream could ever
+                # tell -- so it waits for a person to listen instead.
+                if (named.get(spk) or {}).get("impure"):
+                    stats["skipped_impure"] += 1
                     continue
                 secs = voice_seconds(segs, spk)
                 if secs < min_seconds:
@@ -479,6 +487,128 @@ def transcript_path(clip):
 HALLUCINATION_CHARS = 40
 
 
+def _collect_calibration(acc, turn_vecs, trusted=None, max_pairs=400):
+    """Harvest matched-condition pairs from a window that was just diarized.
+
+    This is the measurement the whole store has been missing. Every threshold
+    in speaker_store is a guess, and the reason it is a guess is that nobody
+    has ever had a clean set of "same person" and "different person" scores off
+    this hardware -- the one comparison on record was five enrolment samples
+    six minutes apart against a centroid built from them, which is circular.
+
+    Diarizing a conversation produces both, non-circularly and for free:
+
+      same       two turns inside one slot. Same person by the diarizer's own
+                 reckoning, same room, same microphone, same minute.
+      different  two turns in different slots of the same window. Different
+                 people, and every other condition held identical.
+
+    The gap between those two distributions is the only honest basis for
+    setting MATCH_HIGH and MARGIN_MIN. It is an upper bound on what is
+    achievable -- conditions are held constant here and are not in real
+    matching -- so a threshold derived from it should be treated as optimistic
+    and checked against held-out labels once there are any.
+
+    It also inherits the diarizer's mistakes: a slot holding two people files
+    their scores under "same". That is what the purity check is for, and why
+    the two are computed together.
+    """
+    ok = turn_vecs.keys() if trusted is None else trusted
+    slots = [v for k, v in turn_vecs.items() if k in ok and len(v) >= 2]
+    for vecs in slots:
+        M = np.stack(vecs)
+        sims = M @ M.T
+        iu = np.triu_indices(len(vecs), k=1)
+        acc["same"].extend(float(x) for x in sims[iu])
+    keys = [k for k, v in turn_vecs.items() if len(v) >= 1]
+    for i, a in enumerate(keys):
+        for b in keys[i + 1:]:
+            A, B = np.stack(turn_vecs[a]), np.stack(turn_vecs[b])
+            acc["different"].extend(float(x) for x in (A @ B.T).ravel())
+    for k in ("same", "different"):
+        if len(acc[k]) > max_pairs:
+            step = len(acc[k]) / max_pairs
+            acc[k] = [acc[k][int(i * step)] for i in range(max_pairs)]
+
+
+def _save_calibration(acc):
+    """Keep the pairs. They cannot be recomputed once the audio is rotated."""
+    if not acc["same"] and not acc["different"]:
+        return
+    sdb = _sdb()
+    c = sdb._conn()
+    try:
+        c.execute("""CREATE TABLE IF NOT EXISTS condition_pairs (
+                         id INTEGER PRIMARY KEY,
+                         kind TEXT NOT NULL,      -- same | different
+                         score REAL NOT NULL,
+                         created REAL)""")
+        now = time.time()
+        c.executemany("INSERT INTO condition_pairs (kind, score, created) "
+                      "VALUES (?,?,?)",
+                      [(k, v, now) for k in ("same", "different")
+                       for v in acc[k]])
+        c.commit()
+    finally:
+        c.close()
+
+
+def calibration_report():
+    """What the archive now knows about same-voice versus different-voice.
+
+    Reports the two distributions and where they cross, so a threshold can be
+    argued for rather than picked. Says nothing if there is not enough data --
+    a number derived from forty pairs would be worse than admitting ignorance,
+    because it would look like evidence.
+    """
+    sdb = _sdb()
+    c = sdb._conn()
+    try:
+        try:
+            rows = c.execute("SELECT kind, score FROM condition_pairs").fetchall()
+        except Exception:
+            return {"ready": False, "reason": "no measurements yet -- "
+                                              "consolidate some conversations"}
+        same = np.array([r["score"] for r in rows if r["kind"] == "same"])
+        diff = np.array([r["score"] for r in rows if r["kind"] == "different"])
+        if len(same) < 200 or len(diff) < 200:
+            return {"ready": False, "same_pairs": len(same),
+                    "different_pairs": len(diff),
+                    "reason": "not enough measurements to be worth trusting; "
+                              "consolidate more conversations"}
+
+        def pct(a, q):
+            return round(float(np.percentile(a, q)), 3)
+
+        # Where a threshold would sit if you wanted to name almost nobody
+        # wrongly: above nearly all different-speaker pairs.
+        floor = pct(diff, 99)
+        # And what that costs -- the share of genuine same-speaker pairs it
+        # throws away.
+        lost = float((same < floor).mean())
+        return {
+            "ready": True,
+            "same_pairs": len(same), "different_pairs": len(diff),
+            "same": {"p10": pct(same, 10), "median": pct(same, 50),
+                     "p90": pct(same, 90)},
+            "different": {"median": pct(diff, 50), "p90": pct(diff, 90),
+                          "p99": pct(diff, 99)},
+            "separation": round(pct(same, 50) - pct(diff, 50), 3),
+            "suggested_floor": floor,
+            "same_speech_rejected_at_that_floor": round(lost, 3),
+            "current": {"MATCH_HIGH": sdb.MATCH_HIGH,
+                        "MATCH_LOW": sdb.MATCH_LOW,
+                        "MARGIN_MIN": sdb.MARGIN_MIN},
+            "caveat": ("Measured with conditions held constant -- one room, "
+                       "one microphone, one moment. Real matching crosses "
+                       "rooms and days, so treat this as an optimistic bound "
+                       "and re-derive against held-out labels when there are "
+                       "enough."),
+        }
+    finally:
+        c.close()
+
+
 class Worker:
     def __init__(self, notify=None, on_transcript=None):
         self.q: queue.Queue = queue.Queue()
@@ -683,6 +813,92 @@ class Worker:
     # apart, not days.
     LINK_MIN = 0.75
 
+    # A turn shorter than this makes an unreliable voiceprint, so it cannot
+    # say anything useful about whether a slot holds one person or two.
+    MIN_TURN_SECONDS = 1.5
+    # Turns per slot to test. Purity is a spread measurement; a dozen samples
+    # describe the spread as well as fifty and cost a quarter as much.
+    PURITY_TURNS = 12
+
+    def _embed_spans(self, audio, spans, sr=16000):
+        """Embed individual stretches of audio with the diarizer's own model.
+
+        Reaches into the pyannote pipeline for the embedding model it already
+        has loaded rather than loading a second one -- a different embedder
+        would answer a different question, and the question here is precisely
+        "does the model that drew this boundary still think it was right".
+        """
+        import torch
+        model = getattr(getattr(self._diar, "model", None), "_embedding", None)
+        if model is None:
+            return None
+        out = []
+        for a, b in spans:
+            piece = audio[int(a * sr):int(b * sr)]
+            if len(piece) < int(self.MIN_TURN_SECONDS * sr):
+                out.append(None)
+                continue
+            try:
+                w = torch.from_numpy(np.asarray(piece, dtype=np.float32))
+                w = w.reshape(1, 1, -1)
+                dev = getattr(model, "device", None)
+                if dev is not None:
+                    w = w.to(dev)
+                v = np.asarray(model(w)).ravel()
+                out.append(unit(v) if np.all(np.isfinite(v)) and v.size else None)
+            except Exception:
+                out.append(None)
+        return out
+
+    def _slot_purity(self, audio, slot_turns):
+        """Does a slot's own speech agree with itself?
+
+        A slot is a claim that everything in it is one person. When the
+        diarizer is wrong about that, nothing downstream can tell: one name
+        goes onto two people's speech, and the reference stored from it is a
+        blend of two voices that looks perfectly ordinary in vector space --
+        indistinguishable from a real voiceprint, and quietly wrong forever.
+        Distance cannot find it later, so it has to be caught here.
+
+        The test is the slot against itself. Embed its turns separately and
+        look at the spread: one person's turns agree closely, two people's
+        turns fall into two groups and drag the low end down. Reported, not
+        enforced -- a low score is a reason for a human to listen, not for the
+        machine to discard somebody's speech.
+
+        Returns the pairwise scores too. Turns inside one slot are the same
+        person under identical conditions, and turns in two different slots of
+        the same window are different people under identical conditions --
+        which is the matched-condition comparison every threshold in
+        speaker_store is currently guessing without.
+        """
+        report, vectors = {}, {}
+        for slot, turns in slot_turns.items():
+            longest = sorted(turns, key=lambda t: t[1] - t[0],
+                             reverse=True)[:self.PURITY_TURNS]
+            vecs = [v for v in (self._embed_spans(audio, longest) or []) if v is not None]
+            vectors[slot] = vecs
+            if len(vecs) < 3:
+                report[slot] = {"turns_tested": len(vecs), "coherence": None,
+                                "worst_pair": None, "suspect": False}
+                continue
+            M = np.stack(vecs)
+            sims = M @ M.T
+            iu = np.triu_indices(len(vecs), k=1)
+            pairs = sims[iu]
+            coherence = float(np.mean(pairs))
+            worst = float(np.min(pairs))
+            report[slot] = {
+                "turns_tested": len(vecs),
+                "coherence": round(coherence, 3),
+                "worst_pair": round(worst, 3),
+                # Two people merged shows up as a group of pairs that disagree,
+                # not one odd turn -- so the bottom decile, not the minimum.
+                "p10": round(float(np.percentile(pairs, 10)), 3),
+                "suspect": bool(np.percentile(pairs, 10) < 0.55),
+            }
+        return report, vectors
+
     def consolidate(self, clips):
         """Re-diarize a finished conversation as one stretch of audio.
 
@@ -737,6 +953,7 @@ class Worker:
 
         # Diarize each window; collect its slots with their pooled voiceprints.
         slots, turns = [], []
+        slot_quality, calibration = {}, {"same": [], "different": []}
         for wi, win in enumerate(windows):
             audio = np.concatenate([x["audio"] for x in win])
             base = win[0]["start"]
@@ -752,12 +969,33 @@ class Worker:
                 # and one stored makes the transcript unencodable.
                 if arr.size and np.all(np.isfinite(arr)):
                     local[k] = arr
+            local_turns = {}
             for row in df.itertuples():
                 spk = getattr(row, "speaker", None)
                 if spk is None:
                     continue
                 turns.append({"start": base + float(row.start),
                               "end": base + float(row.end), "local": (wi, spk)})
+                local_turns.setdefault(spk, []).append(
+                    (float(row.start), float(row.end)))
+
+            # Ask the diarizer whether it still believes its own boundaries,
+            # while this window's audio is still in hand.
+            purity, turn_vecs = self._slot_purity(audio, local_turns)
+            for spk, r in purity.items():
+                slot_quality[(wi, spk)] = r
+                if r.get("suspect"):
+                    self.notify("log", text=(
+                        f"slot {spk} in window {wi + 1} disagrees with itself "
+                        f"(p10 {r['p10']}); it may be two people"))
+            # A slot that disagrees with itself cannot supply same-person
+            # pairs -- that is exactly how a merged slot would teach the
+            # calibration that two different people score alike, and poison
+            # the measurement it exists to provide. Its turns still serve as
+            # different-person evidence against other slots.
+            _collect_calibration(
+                calibration, turn_vecs,
+                trusted={k for k, v in purity.items() if not v.get("suspect")})
             for spk, vec in local.items():
                 slots.append({"key": (wi, spk), "vec": unit(vec), "final": None})
 
@@ -801,6 +1039,19 @@ class Worker:
                 best[f] = s["vec"]
         embeddings = {f: v.tolist() for f, v in best.items()}
 
+        # Purity was measured per window slot; report it against the final
+        # speaker each one was linked to, keeping the least flattering result
+        # so a merged slot is not hidden by a clean one it was joined with.
+        final_quality = {}
+        for key, r in slot_quality.items():
+            f = by_key.get(key)
+            if not f:
+                continue
+            cur = final_quality.get(f)
+            if cur is None or (r.get("p10") is not None and
+                               (cur.get("p10") is None or r["p10"] < cur["p10"])):
+                final_quality[f] = r
+
         # Hand the turns back to the clips they came from, by overlap.
         changed = 0
         for item in loaded:
@@ -827,10 +1078,25 @@ class Worker:
             t["embeddings"] = embeddings
             t["speakers"] = identify({k: np.asarray(v) for k, v in embeddings.items()},
                                      clip=item["clip"])
+            t["slot_quality"] = final_quality
+            # A voice the diarizer cannot keep straight must not become
+            # somebody's stored reference: a blend of two people looks
+            # perfectly ordinary in vector space and nothing downstream can
+            # ever tell. Naming it by hand is still allowed -- a person
+            # listening can hear what the model cannot -- but it is refused
+            # for automatic enrolment and flagged in the interface.
+            for spk, q in final_quality.items():
+                if q.get("suspect") and spk in (t.get("speakers") or {}):
+                    t["speakers"][spk]["impure"] = True
+                    t["speakers"][spk]["name"] = None
             t["consolidated"] = time.time()
             atomicio.write_json(tp, t, indent=2, allow_nan=False)
             changed += 1
 
+        _save_calibration(calibration)
         return {"ok": True, "clips": changed, "windows": len(windows),
                 "voices": len(embeddings),
-                "seconds": {k: round(v, 1) for k, v in seconds.items()}}
+                "seconds": {k: round(v, 1) for k, v in seconds.items()},
+                "slot_quality": final_quality,
+                "suspect_slots": [k for k, v in final_quality.items()
+                                  if v.get("suspect")]}

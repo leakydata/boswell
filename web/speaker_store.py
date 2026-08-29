@@ -353,7 +353,7 @@ def person_id_for(name, c=None, create=True):
 
 
 def add_voiceprint(person_id, vec, seconds=None, clip=None, speaker=None,
-                   origin="manual", c=None):
+                   origin="manual", impure=False, c=None):
     """Store one reference. No resemblance check -- that is the whole point.
 
     A sample that scores badly against everything already stored for this
@@ -366,6 +366,15 @@ def add_voiceprint(person_id, vec, seconds=None, clip=None, speaker=None,
         if not is_usable(vec):
             return {"ok": False, "reason": "unusable",
                     "detail": "the voiceprint is empty or not finite"}
+        # A voiceprint pooled over a slot that disagreed with itself is a blend
+        # of two voices. It is indistinguishable from a real one afterwards --
+        # normal length, normal neighbours, and wrong -- so it is refused here
+        # rather than left for a pruning pass that cannot detect it either.
+        if impure and origin == "auto":
+            return {"ok": False, "reason": "impure",
+                    "detail": "this voice could not be told apart from another "
+                              "in the same recording; naming it by hand still "
+                              "works, but it will not be learned automatically"}
         if seconds is not None and seconds < MIN_ENROLL_SECONDS:
             return {"ok": False, "reason": "too_short",
                     "seconds": round(seconds, 1),
