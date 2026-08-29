@@ -553,6 +553,42 @@ def _save_calibration(acc):
         c.close()
 
 
+def _impure_rate():
+    """How often the diarizer cannot keep a slot to one person.
+
+    Reported alongside the thresholds because it bounds what any threshold can
+    achieve: a reference pooled from a slot holding two voices is wrong before
+    matching begins, and no cutoff recovers from that.
+    """
+    if not os.path.isdir(TRANSCRIPTS):
+        return None
+    # Every clip in a consolidated conversation carries the same slot_quality,
+    # so counting per file counts one slot once per clip -- and because impure
+    # slots turn up in the longer conversations, that weights the rate upward.
+    # Key on the consolidation stamp to count each distinct slot once.
+    seen = {}
+    for f in os.listdir(TRANSCRIPTS):
+        if not f.endswith(".json"):
+            continue
+        try:
+            t = json.load(open(os.path.join(TRANSCRIPTS, f)))
+        except Exception:
+            continue
+        for spk, v in (t.get("slot_quality") or {}).items():
+            if v.get("coherence") is None:
+                continue
+            # Clips diarized together carry byte-identical quality for a slot,
+            # so the measurement itself identifies the slot. This works on
+            # transcripts written before consolidation used a shared stamp.
+            seen[(spk, v.get("coherence"), v.get("worst_pair"),
+                  v.get("turns_tested"))] = bool(v.get("suspect"))
+    total = len(seen)
+    suspect = sum(1 for v in seen.values() if v)
+    return {"slots_measured": total, "impure": suspect,
+            "rate": round(suspect / total, 3) if total else None,
+            "note": "distinct slots, counted once per consolidated conversation"}
+
+
 def calibration_report():
     """What the archive now knows about same-voice versus different-voice.
 
@@ -599,11 +635,24 @@ def calibration_report():
             "current": {"MATCH_HIGH": sdb.MATCH_HIGH,
                         "MATCH_LOW": sdb.MATCH_LOW,
                         "MARGIN_MIN": sdb.MARGIN_MIN},
-            "caveat": ("Measured with conditions held constant -- one room, "
-                       "one microphone, one moment. Real matching crosses "
-                       "rooms and days, so treat this as an optimistic bound "
-                       "and re-derive against held-out labels when there are "
-                       "enough."),
+            "caveats": [
+                # Two separate reasons this reads better than reality.
+                "Conditions are held constant -- one room, one microphone, "
+                "one moment. Real matching crosses rooms and days, which is "
+                "the hard case and is not measured here.",
+                # And a selection effect in the same-person side specifically.
+                "The same-person pairs come only from slots that passed the "
+                "purity check, and a slot passes precisely by having turns "
+                "that agree. So the same-person distribution is selected for "
+                "agreement and its lower tail is optimistic. The "
+                "different-person side has no such filter and if anything "
+                "runs the other way: an impure slot contributes some "
+                "same-person pairs to it, which can only push it up.",
+                "Treat the floor as an upper bound on what a threshold can "
+                "safely be, not as a value to adopt. Re-derive against "
+                "held-out human labels once there are enough.",
+            ],
+            "impure_slot_rate": _impure_rate(),
         }
     finally:
         c.close()
@@ -1053,6 +1102,10 @@ class Worker:
                 final_quality[f] = r
 
         # Hand the turns back to the clips they came from, by overlap.
+        # One stamp for the whole pass: it is what marks these clips as having
+        # been diarized together, and time.time() per clip made every clip look
+        # like a separate conversation.
+        stamp = time.time()
         changed = 0
         for item in loaded:
             tp = transcript_path(item["clip"])
@@ -1089,7 +1142,7 @@ class Worker:
                 if q.get("suspect") and spk in (t.get("speakers") or {}):
                     t["speakers"][spk]["impure"] = True
                     t["speakers"][spk]["name"] = None
-            t["consolidated"] = time.time()
+            t["consolidated"] = stamp
             atomicio.write_json(tp, t, indent=2, allow_nan=False)
             changed += 1
 
