@@ -17,10 +17,13 @@ Two rules keep it honest, and both cost accuracy:
   cluster were grouped by similarity in the first place, so recovering one
   proves the clustering was self-consistent and nothing more.
 
-  Every reference from the same CLIP as the held-out one is removed too. A
-  voiceprint and its neighbour from the same recording are near-duplicates;
-  leaving them in measures whether the system can find a copy of a thing, which
-  it always can, rather than whether it can recognise a person.
+  Every reference from the same CLIP as the held-out one is removed, and so is
+  any reference near-identical to it wherever it came from. The clip rule alone
+  was not enough and the gap was large: consolidation writes one pooled
+  voiceprint into every clip of a conversation, so a copy of the held-out
+  reference survives in the next clip along. Measured before this was fixed,
+  78% of held-out cases had a twin above 0.98 -- the result was mostly showing
+  that the store can find a copy of a vector, which it always can.
 
 It refuses to report below a floor of held-out cases. A precision figure from
 fifteen labels would look like evidence without being any, which is the exact
@@ -43,6 +46,9 @@ sys.path.insert(0, os.path.join(ROOT, "web"))
 import speaker_store as store         # noqa: E402
 
 HAND = ("manual", "confirmed")
+# Above this two references are the same recording, not two sightings of a
+# person, and one cannot be used to recover the other.
+NEAR_DUPLICATE = 0.98
 
 
 def load():
@@ -68,7 +74,8 @@ def evaluate(refs):
             continue
         pool = [r for r in refs
                 if r["id"] != held["id"]
-                and not (held["clip"] and r["clip"] == held["clip"])]
+                and not (held["clip"] and r["clip"] == held["clip"])
+                and float(held["vec"] @ r["vec"]) < NEAR_DUPLICATE]
         if not pool:
             continue
         best = {}
@@ -80,10 +87,10 @@ def evaluate(refs):
         top, score = ranked[0]
         margin = score - ranked[1][1] if len(ranked) > 1 else None
 
-        if margin is None:
-            decided = score >= store.MATCH_HIGH
-        else:
-            decided = score >= store.MATCH_HIGH and margin >= store.MARGIN_MIN
+        # The store's own rule, not a copy of it. This had a duplicate and it
+        # went stale the moment the rule changed, so the evaluation reported
+        # the old behaviour of code that was no longer running.
+        decided = store.decide(score, margin) == "matched"
         cases.append({"truth": held["person"], "guess": top if decided else None,
                       "score": score, "margin": margin,
                       "would_be_right": top == held["person"]})

@@ -2372,6 +2372,29 @@ async def api_ungroup(person_id: int, source_cluster: int):
     return r
 
 
+@app.post("/api/speakers/compact")
+async def api_compact(body: dict | None = None):
+    """Collapse references that are copies of each other, keeping the best.
+
+    Consolidation pools one voiceprint per voice per conversation and writes it
+    into every clip, so a scan turns a 42-clip conversation into 42 identical
+    references. Nothing is deleted: the losers are flagged, which takes them out
+    of matching and out of the interface, and `restore` puts them all back.
+    """
+    import speaker_store
+    body = body or {}
+    if body.get("restore"):
+        r = speaker_store.uncompact()
+        device.event("log", text=f"restored {r['restored']} voiceprint(s)")
+        return r
+    radius = float(body.get("radius") or speaker_store.COMPACT_RADIUS)
+    loop = asyncio.get_running_loop()
+    r = await loop.run_in_executor(None, speaker_store.compact_all, radius)
+    device.event("log", text=(f"compacted: {r['flagged']} duplicate "
+                              f"voiceprint(s) set aside, {r['kept']} kept"))
+    return r
+
+
 @app.get("/api/voices/queue")
 async def api_voices_queue(limit: int = 50, include_media: bool = False,
                            days: float = 0):

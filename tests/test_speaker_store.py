@@ -228,3 +228,53 @@ def test_too_short_is_refused_with_a_reason(db):
     r = db.add_voiceprint(pid, vec(40), seconds=1.0)
     assert not r["ok"] and r["reason"] == "too_short"
     assert db.add_voiceprint(pid, vec(40), seconds=30.0)["ok"]
+
+
+def test_a_clear_winner_counts_below_the_absolute_bar(db):
+    """The thresholds, not the embedder, were the binding constraint.
+
+    Held-out over 82 hand-labelled references: the right person was top-ranked
+    83% of the time and the store would say so 22% of the time. The refusals
+    clustered at score 0.744 against a bar of 0.75, with margins of 0.26-0.46
+    against a bar of 0.15 -- the absolute score doing all the rejecting while
+    the margin was nowhere near binding. Recall went 22% to 44% with precision
+    unchanged at 100%.
+    """
+    # Below MATCH_HIGH, but nothing else is close.
+    assert db.decide(0.70, 0.40) == "matched"
+    # Below MATCH_HIGH and the field is close: still nobody's name.
+    assert db.decide(0.70, 0.05) == "uncertain"
+    # Clear of the field but below the floor: not a candidate at all.
+    assert db.decide(0.40, 0.40) == "none"
+    # The ordinary path is unchanged.
+    assert db.decide(0.90, 0.30) == "matched"
+    assert db.decide(0.90, 0.02) == "uncertain"
+
+
+def test_a_lone_person_cannot_use_the_margin_path(db):
+    """With no runner-up there is no margin, so the floor has to carry it --
+    and it is the strict one, because this is where a false name is easiest to
+    create and hardest to notice."""
+    assert db.decide(0.90, None) == "matched"
+    assert db.decide(0.70, None) == "uncertain"
+    assert db.decide(0.40, None) == "none"
+
+
+def test_compaction_collapses_copies_and_is_reversible(db):
+    """Duplicates arrive systematically: consolidation writes one voiceprint
+    into every clip of a conversation. One creator here had 42 references with
+    all 861 pairs above 0.99."""
+    pid = db.person_id_for("Alice")
+    base = vec(60)
+    for i in range(5):
+        db.add_voiceprint(pid, near(base, 0.995, seed=i), seconds=10 + i)
+    db.add_voiceprint(pid, vec(61), seconds=30)      # a genuinely different one
+
+    r = db.compact_person(pid)
+    assert r["flagged"] == 4, "the copies collapse to one"
+    assert r["kept"] == 2, "the different condition survives"
+
+    # Nothing is deleted, and the judgement is reversible.
+    assert len(db.voiceprints(pid)) == 6
+    assert db.uncompact(pid)["restored"] == 4
+    assert db.compact_person(pid)["flagged"] == 4

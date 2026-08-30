@@ -17,12 +17,24 @@ any one of them is enough to recognise them in that condition.
 
 Two consequences worth stating, because they drove the design:
 
-  * Near-duplicate references are harmless. Matching is a max over rows, and
-    max({a, a', b}) == max({a, b}) when a and a' are nearly equal. Duplicates
-    cost storage and nothing else, so nothing needs to be merged for
-    correctness. `redundant` exists to keep the labelling UI tidy, and rows
-    flagged with it are still matched against. Nothing is ever deleted to
-    save space.
+  * Near-duplicate references do not corrupt matching -- it is a max over
+    rows, and max({a, a', b}) == max({a, b}) when a and a' are nearly equal.
+    That was taken to mean they could be left alone, which was wrong, because
+    they do not arrive occasionally: consolidation pools one voiceprint per
+    voice per conversation and writes it into every clip, so a 42-clip
+    conversation becomes 42 identical references. One creator here had exactly
+    that, all 861 pairs above 0.99.
+
+    What that distorts is measurement, not matching. Held-out evaluation drops
+    references sharing a clip with the one being tested, and identical copies
+    from other clips of the same conversation survived it -- 78% of held-out
+    cases had a twin above 0.98, so the result was largely measuring whether
+    the store could find a copy of a vector rather than recognise a person.
+
+    So compact_person() collapses them at a radius well above genuine variation
+    and flagged rows leave the reference set. Nothing is deleted, and
+    uncompact() puts them all back: the radius is a judgement, and a judgement
+    should be reversible.
 
   * The margin has to be between PEOPLE, not between rows. A well-covered
     person owns the top several rows, so a raw best-minus-runner-up margin
@@ -88,6 +100,30 @@ MATCH_LOW = 0.55
 # reviews rather than something that acts on its own.
 
 MARGIN_MIN = 0.15
+MARGIN_STRONG = 0.25
+# A second way in, for a match the absolute bar refuses and the evidence does
+# not.
+#
+# Held-out evaluation over 79 hand-labelled references says the thresholds were
+# the binding constraint and not the embedder: the right person is top-ranked in
+# 68 of 79 cases and the store was willing to say so in 18. Forty-seven were
+# refused despite being correct, and they cluster: score 0.744 against a bar of
+# 0.75, with margins between 0.26 and 0.46 against a bar of 0.15. The absolute
+# score was doing all the rejecting while the margin was nowhere near binding.
+#
+# So a clear winner is accepted on the strength of being clear, even below
+# MATCH_HIGH. Simulated across the same 79 cases before adopting it -- every
+# variant tried held 100% precision, and this one admits 18 further names, all
+# correct, in the score range 0.647-0.744 with margins 0.259-0.461.
+#
+#     rule                                  named  right  precision  recall
+#     score>=0.75 and margin>=0.15             18     18       100%     23%
+#     score>=0.70 and margin>=0.15             31     31       100%     39%
+#     the above, OR margin>=0.25               36     36       100%     46%
+#
+# Lowering MATCH_HIGH would have bought less and bought it indiscriminately.
+# 0.25 rather than 0.20, which scored marginally better, because one extra name
+# is not worth a weaker bar on a sample this size.
 # Raised from 0.06 now that the distributions are known. Different people sit
 # at 0.107, so a genuine match wins by a mile and an ambiguous one barely wins
 # at all -- measured on this archive, the confident clusters have margins of
@@ -244,7 +280,7 @@ def _references(c):
     rows = c.execute("""
         SELECT v.id, v.person_id, v.vec FROM voiceprints v
         JOIN people p ON p.id = v.person_id
-        WHERE p.name IS NOT NULL
+        WHERE p.name IS NOT NULL AND v.redundant = 0
         ORDER BY v.id
     """).fetchall()
     if not rows:
@@ -291,6 +327,28 @@ def voiceprints(person_id, c=None):
 
 
 # ---------------------------------------------------------------- matching
+
+def decide(score, margin):
+    """matched | uncertain | none, from a score and a between-people margin.
+
+    One implementation, because there were two. heldout.py had its own copy of
+    this and so the evaluation went on reporting the old rule after the rule
+    changed -- an evaluation measuring something other than what runs is worse
+    than none, because it is believed.
+    """
+    if margin is None:
+        # Nobody to be a runner-up. The floor carries it alone, and is the
+        # strict one: this is where a false name is easiest to create.
+        return "matched" if score >= MATCH_HIGH else (
+            "uncertain" if score >= MATCH_LOW else "none")
+    if score >= MATCH_HIGH and margin >= MARGIN_MIN:
+        return "matched"
+    if score >= MATCH_LOW and margin >= MARGIN_STRONG:
+        return "matched"          # clear of the field; see MARGIN_STRONG
+    if score >= MATCH_LOW:
+        return "uncertain"
+    return "none"
+
 
 def match(vec, c=None):
     """Score one voiceprint against every reference.
@@ -348,15 +406,7 @@ def match(vec, c=None):
         # the regime where a false name is easiest to create and hardest to
         # notice, so the absolute floor carries the decision alone and it is
         # deliberately the strict one.
-        if margin is None:
-            decision = "matched" if top["score"] >= MATCH_HIGH else (
-                "uncertain" if top["score"] >= MATCH_LOW else "none")
-        elif top["score"] >= MATCH_HIGH and margin >= MARGIN_MIN:
-            decision = "matched"
-        elif top["score"] >= MATCH_LOW:
-            decision = "uncertain"
-        else:
-            decision = "none"
+        decision = decide(top["score"], margin)
 
         # Media never names anything by itself.
         #
@@ -666,6 +716,110 @@ def unname_group(person_id, source_cluster, c=None):
         c.commit()
         return {"ok": True, "moved": n, "cluster": target,
                 "person_removed": not left}
+    finally:
+        if own:
+            c.close()
+
+
+# How alike two references must be before one of them is redundant.
+#
+# Well above genuine variation. Measured on this archive, the same person under
+# matched conditions has a 90th percentile of 0.937, so anything at 0.98 is not
+# a different condition -- it is the same recording counted twice. Below that
+# figure two references earn their places by covering different conditions,
+# which is the entire premise of the store.
+COMPACT_RADIUS = 0.98
+
+
+def compact_person(person_id, radius=COMPACT_RADIUS, c=None):
+    """Collapse references that say the same thing, keeping the best one.
+
+    Duplicates arrive systematically rather than by accident. Consolidation
+    pools one voiceprint per voice per conversation and writes it into every
+    clip of that conversation, so a scan that stores each clip's copy turns a
+    42-clip conversation into 42 identical references. One creator here had 42,
+    with all 861 pairs above 0.99.
+
+    Nothing is deleted. The loser is flagged redundant, which takes it out of
+    matching and out of the interface but leaves the vector on disk, so a radius
+    that turns out to have been too aggressive can be undone. Deleting would
+    make that irreversible for no gain -- these are small and storage is not the
+    problem being solved.
+
+    Never across people. Two references being alike is not evidence they are the
+    same person, and collapsing across a name boundary would silently rewrite
+    who somebody is.
+    """
+    own = c is None
+    c = c or _conn()
+    try:
+        rows = c.execute("""
+            SELECT id, vec, seconds, origin FROM voiceprints
+            WHERE person_id = ? AND redundant = 0
+        """, (person_id,)).fetchall()
+        if len(rows) < 2:
+            return {"kept": len(rows), "flagged": 0}
+
+        # Keep the best-evidenced of a duplicate set: most speech first, and a
+        # hand-made reference ahead of an automatic one at equal length, since
+        # somebody listened to that one.
+        order = sorted(rows, key=lambda r: (r["origin"] in ("manual", "confirmed"),
+                                            r["seconds"] or 0), reverse=True)
+        vecs = {r["id"]: unit(_unpack(r["vec"])) for r in rows}
+        kept, flagged = [], []
+        for r in order:
+            v = vecs[r["id"]]
+            if any(float(v @ vecs[k]) >= radius for k in kept):
+                flagged.append(r["id"])
+            else:
+                kept.append(r["id"])
+        if flagged:
+            c.executemany("UPDATE voiceprints SET redundant = 1 WHERE id = ?",
+                          [(i,) for i in flagged])
+            c.commit()
+            _bump()
+        return {"kept": len(kept), "flagged": len(flagged)}
+    finally:
+        if own:
+            c.close()
+
+
+def compact_all(radius=COMPACT_RADIUS, c=None):
+    own = c is None
+    c = c or _conn()
+    try:
+        out = {"people": 0, "kept": 0, "flagged": 0, "detail": {}}
+        for p in people(c):
+            if not p["name"]:
+                continue
+            r = compact_person(p["id"], radius, c)
+            out["people"] += 1
+            out["kept"] += r["kept"]
+            out["flagged"] += r["flagged"]
+            if r["flagged"]:
+                out["detail"][p["name"]] = r
+        return out
+    finally:
+        if own:
+            c.close()
+
+
+def uncompact(person_id=None, c=None):
+    """Put every flagged reference back. Compaction is a judgement about a
+    radius, and a judgement should be reversible."""
+    own = c is None
+    c = c or _conn()
+    try:
+        if person_id is None:
+            n = c.execute("UPDATE voiceprints SET redundant = 0 "
+                          "WHERE redundant = 1").rowcount
+        else:
+            n = c.execute("UPDATE voiceprints SET redundant = 0 "
+                          "WHERE redundant = 1 AND person_id = ?",
+                          (person_id,)).rowcount
+        c.commit()
+        _bump()
+        return {"restored": n}
     finally:
         if own:
             c.close()

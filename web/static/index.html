@@ -605,6 +605,7 @@ html{scroll-padding-top:120px}
         <button id="bVoiceScan">Scan for new voices</button>
         <button id="bConsolidateAll">Re-detect speakers everywhere</button>
         <button id="bVoiceRecheck">Recheck against named people</button>
+        <button id="bCompact">Compact voiceprints</button>
         <button id="bVoiceMedia">Show tagged media</button>
         <button id="bVoiceRefresh">Refresh</button>
       </div>
@@ -1519,6 +1520,28 @@ on("bVoiceRecent", "click", () => {
   $("bVoiceRecent").textContent = recentOnly ? "Show everything" : "Since yesterday";
   loadVoices();
 });
+/* Consolidation gives every clip in a conversation the same voiceprint, so a
+   42-clip conversation leaves 42 identical references behind. They do not hurt
+   matching -- it is a max, and a copy cannot beat its own original -- but they
+   bury the real ones in the interface and they broke the held-out evaluation,
+   which was recovering copies rather than recognising people. Nothing is
+   deleted; the duplicates are set aside. */
+on("bCompact", "click", async () => {
+  const b = $("bCompact");
+  b.disabled = true; b.textContent = "compacting…";
+  try{
+    const r = await (await fetch("/api/speakers/compact", {method:"POST",
+      headers:{"Content-Type":"application/json"}, body:"{}"})).json();
+    const detail = Object.entries(r.detail || {})
+      .map(([k,v]) => `${k} ${v.flagged + v.kept}→${v.kept}`).join(", ");
+    log(r.flagged
+        ? `compacted: ${r.flagged} duplicate(s) set aside${detail ? " — " + detail : ""}`
+        : "nothing to compact — no duplicate voiceprints");
+    loadPeople();
+  }catch(e){ log("compaction failed"); }
+  finally{ b.disabled = false; b.textContent = "Compact voiceprints"; }
+});
+
 on("bVoiceMedia", "click", () => {
   showMedia = !showMedia;
   $("bVoiceMedia").textContent = showMedia ? "Show unidentified people"
