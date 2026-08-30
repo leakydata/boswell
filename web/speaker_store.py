@@ -487,10 +487,20 @@ def add_voiceprint(person_id, vec, seconds=None, clip=None, speaker=None,
         if not is_usable(vec):
             return {"ok": False, "reason": "unusable",
                     "detail": "the voiceprint is empty or not finite"}
-        # A voiceprint pooled over a slot that disagreed with itself is a blend
-        # of two voices, indistinguishable from a real one afterwards -- normal
-        # length, normal neighbours, and wrong. So it is refused as a reference
-        # for somebody with a NAME, which is where the damage would be done.
+        # A voiceprint pooled over a slot whose own turns disagreed is refused
+        # as a reference for somebody with a NAME.
+        #
+        # The original reason was that such a slot is two people blended, and
+        # that reason is wrong: splitting was built to test it and refused on
+        # all eleven slots it was given, at every cluster count from two to six.
+        # What survives is weaker and still sufficient -- a vector pooled over
+        # turns that do not agree with each other is not a reliable description
+        # of anything, and a reference is permanent.
+        #
+        # Audited: this currently fires on 1 of 383 references under named
+        # people, and held-out evaluation is identical with and without them.
+        # It is insurance rather than active protection, kept because the cost
+        # is nil and a bad reference cannot be detected after the fact.
         #
         # It is allowed under an unnamed cluster, because a cluster asserts
         # nothing about who anybody is. Refusing it there was a mistake with a
@@ -918,12 +928,18 @@ def _best_unknown(v, c, impure=False):
     """The unnamed cluster this voice most resembles, if any clears CLUSTER_MIN.
 
     Impure voices are matched only against other impure ones, and clean against
-    clean. Mixing them was the harm the purity check exists to prevent -- a
-    blend of two people chained into a clean cluster spreads across everything
-    it lands near. Isolating each impure voice completely was the first attempt
-    at that and traded one problem for another: one person across thirty clips
-    became thirty one-clip entries, which is the wall of SPEAKER_00 the queue
-    was built to replace.
+    clean. Isolating each impure voice completely was the first attempt at that
+    and traded one problem for another: one person across thirty clips became
+    thirty one-clip entries, which is the wall of SPEAKER_00 the queue was
+    built to replace.
+
+    Not because an impure slot is two people -- splitting disproved that -- but
+    because its vector is pooled over turns that disagree, so chaining it into a
+    clean cluster risks dragging that cluster somewhere unreliable, and naming a
+    cluster names everything in it at once.
+
+    Audited: this blocks 143 of 1785 mergeable pairs, about 8%. Small enough to
+    be worth the caution, and measured rather than assumed.
     """
     rows = c.execute("""
         SELECT v.person_id, v.vec FROM voiceprints v

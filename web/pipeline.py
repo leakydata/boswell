@@ -1088,12 +1088,21 @@ class Worker:
     def _slot_purity(self, audio, slot_turns):
         """Does a slot's own speech agree with itself?
 
-        A slot is a claim that everything in it is one person. When the
-        diarizer is wrong about that, nothing downstream can tell: one name
-        goes onto two people's speech, and the reference stored from it is a
-        blend of two voices that looks perfectly ordinary in vector space --
-        indistinguishable from a real voiceprint, and quietly wrong forever.
-        Distance cannot find it later, so it has to be caught here.
+        A slot is a claim that everything in it is one person, and this tests
+        that claim against the slot's own speech.
+
+        What a failure means is narrower than it first appeared and worth
+        stating plainly, because the restrictions it drives were justified by
+        the wrong thing for several commits. A flagged slot is NOT two people:
+        splitting refused on all eleven it was given, at every cluster count
+        from two to six. Nor is it short turns -- audited across the archive,
+        suspect and clean slots have the same median turn length, 1.84s against
+        1.85s. It is a real property of the slot that separates it reliably
+        from clean ones, and nobody yet knows what it is.
+
+        So it is reported, and it gates what a permanent reference is made
+        from. It does not gate what a name may be shown for: that cost 3285
+        lines their attribution for a reason that had already been disproven.
 
         The test is the slot against itself. Embed its turns separately and
         look at the spread: one person's turns agree closely, two people's
