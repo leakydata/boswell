@@ -14,6 +14,7 @@ reimplement in a few dozen lines.
 import io
 import asyncio
 import json
+import re
 import os
 import secrets
 from urllib.parse import urlparse
@@ -2008,9 +2009,28 @@ async def api_split(name: str):
 
     t = json.load(open(tp))
     segs = [x for x in t.get("segments", []) if x.get("speaker")]
-    speakers = sorted({x["speaker"] for x in segs})
+
+    # Split on the label actually shown, not the diarizer's id.
+    #
+    # The diarizer routinely runs two voices into one slot -- 26 seconds of the
+    # wearer followed by four seconds of a video playing behind them is one
+    # SPEAKER_00 as far as it is concerned. Keyed on its ids, this refused with
+    # "only one speaker in this clip" precisely when splitting was most wanted,
+    # and offered no way to say otherwise.
+    #
+    # A name pinned to a line already exists and already shows in the reader.
+    # Honouring it here means a person who can hear the difference can mark the
+    # last few lines and then split, which is the whole point of the button.
+    def label_of(x):
+        return x.get("speaker_name") or x["speaker"]
+
+    speakers = sorted({label_of(x) for x in segs})
     if len(speakers) < 2:
-        raise HTTPException(400, f"only one speaker in this clip ({len(speakers)} found)")
+        raise HTTPException(400, (
+            f"only one voice in this clip ({len(speakers)} found). If two people "
+            f"are in it and the diarizer merged them, open the lines that belong "
+            f"to the other person and name just those lines — the split follows "
+            f"the labels you can see."))
 
     audio, rate = sf.read(src, dtype="int16")
     if audio.ndim > 1:
@@ -2021,7 +2041,7 @@ async def api_split(name: str):
     for spk in speakers:
         parts = []
         for x in segs:
-            if x["speaker"] != spk:
+            if label_of(x) != spk:
                 continue
             a = max(0, int(x["start"] * rate))
             b = min(len(audio), int(x["end"] * rate))
@@ -2029,7 +2049,8 @@ async def api_split(name: str):
                 parts.append(audio[a:b])
         if not parts:
             continue
-        out_name = f"{base}__{spk}.wav"
+        safe_spk = re.sub(r"[^A-Za-z0-9_-]+", "_", spk).strip("_") or "voice"
+        out_name = f"{base}__{safe_spk}.wav"
         sf.write(os.path.join(DATA, out_name), np.concatenate(parts), rate,
                  subtype="PCM_16")
 
@@ -2037,12 +2058,15 @@ async def api_split(name: str):
         # immediately nameable without re-running the models.
         offset, new_segs = 0.0, []
         for x in segs:
-            if x["speaker"] != spk:
+            if label_of(x) != spk:
                 continue
             dur = max(0.0, x["end"] - x["start"])
             new_segs.append({"start": round(offset, 2), "end": round(offset + dur, 2),
                              "speaker": spk, "text": x["text"]})
             offset += dur
+        # Only a real diarized slot has a voiceprint. A group gathered from
+        # pinned names does not, and must not borrow the merged slot's -- that
+        # vector describes both voices, which is what went wrong upstream.
         emb = t.get("embeddings", {}).get(spk)
         json.dump({"clip": out_name, "created": time.time(), "segments": new_segs,
                    "speakers": {spk: (t.get("speakers", {}).get(spk)

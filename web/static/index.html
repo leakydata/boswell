@@ -308,6 +308,8 @@ button.who{font-size:11px}
 .who.named{background:color-mix(in srgb,var(--accent) 15%,transparent);color:var(--accent);
   border-color:color-mix(in srgb,var(--accent) 35%,transparent)}
 .who:hover{border-color:var(--accent)}
+/* The clip view's line label is a control now, as in the conversation reader. */
+button.who.wholine{cursor:pointer;font-family:var(--mono)}
 .spk{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px}
 .empty{color:var(--muted);font-size:14.5px;padding:22px 0;text-align:center}
 .item{border:1px solid var(--rule);border-radius:8px;padding:13px;margin-bottom:9px}
@@ -1813,6 +1815,11 @@ async function editLine(name, index, seg, ids, named, onSaved, colorFor){
   $("edErr").textContent = "";
   $("edNewName").hidden = false;
   $("edNewName").value = seg.speaker_name || "";
+  /* The distinction that matters when a clip has two voices under one label:
+     the buttons above reassign this line to another diarized voice, this field
+     names THIS LINE ONLY and touches no voiceprint. */
+  $("edSub").textContent = `${seg.start.toFixed(0)}s — correct the words, pick `
+    + `who said it, or name just this line.`;
 
   /* Chosen here rather than read back from the chips on save: reassigning a
      line is a different action from renaming a speaker, and mixing them is
@@ -2872,7 +2879,9 @@ async function renderTranscript(name){
     d.className = "seg";
     const col = s.speaker ? colorOf(spkColors[s.speaker] || "var(--accent)") : "";
     const who = s.speaker
-      ? `<span class="who" style="border-color:${col};color:${col};background:transparent">${esc(lineLabel(s))}</span> `
+      ? `<button class="who wholine" style="border-color:${col};color:${col};` +
+        `background:transparent" aria-label="Name this voice">` +
+        `${esc(lineLabel(s))}</button> `
       : "";
     if (s.edited) d.classList.add("wasedited");
     d.innerHTML = `<button class="t" data-at="${s.start}" ` +
@@ -2881,6 +2890,21 @@ async function renderTranscript(name){
     d.querySelector(".txt").textContent = s.text;
     d.querySelector(".t").onclick = () => { const p = $("player"); p.currentTime = s.start; p.play(); };
     d.querySelector(".txt").onclick = () => editLine(name, i, s, ids, named);
+    /* Clicking the name names the VOICE -- every line the diarizer gave that
+       id. When only some of them are that person, which is the common case
+       when a video plays over the end of a clip, the line editor pins a name
+       to one line instead. */
+    const w = d.querySelector(".wholine");
+    if (w){
+      w.title = s.speaker_name
+        ? `"${s.speaker_name}" is pinned to this line. Click to name the whole voice.`
+        : "Name this voice (every line it speaks). Click the words to name one line.";
+      w.onclick = (e) => {
+        e.stopPropagation();
+        nameSpeaker(name, s.speaker, (named[s.speaker] || {}).name || "",
+                    () => renderTranscript(name));
+      };
+    }
     $("dSegs").appendChild(d);
   });
 }
