@@ -716,6 +716,7 @@ html{scroll-padding-top:120px}
          style="width:100%;font-size:16px;padding:11px;border-radius:8px;
                 border:1px solid var(--rule);background:var(--paper);
                 color:var(--ink);margin-bottom:10px">
+  <div class="quick" id="edNameQuick"></div>
   <div id="edErr"></div>
   <div class="btns" style="margin-top:10px">
     <button id="edCancel">Cancel</button>
@@ -1815,6 +1816,14 @@ async function editLine(name, index, seg, ids, named, onSaved, colorFor){
   $("edErr").textContent = "";
   $("edNewName").hidden = false;
   $("edNewName").value = seg.speaker_name || "";
+  if (!namerPeople.length) await loadPeopleNames();
+  renderNameSuggestions();
+  $("edNewName").oninput = () => {
+    renderNameSuggestions();
+    edConfirmedNew = false;              // a pending question was about older text
+    const e = $("edErr");
+    if (e.dataset.nearmiss){ e.textContent = ""; delete e.dataset.nearmiss; }
+  };
   /* The distinction that matters when a clip has two voices under one label:
      the buttons above reassign this line to another diarized voice, this field
      names THIS LINE ONLY and touches no voiceprint. */
@@ -1842,11 +1851,47 @@ async function editLine(name, index, seg, ids, named, onSaved, colorFor){
   }
 
   $("edSave").textContent = "Save";
+  edConfirmedNew = false;
   $("edSave").onclick = async () => {
     const body = {index, text: $("editArea").value};
     if (chosen && chosen !== seg.speaker) body.speaker = chosen;
     const pinned = $("edNewName").value.trim();
     if (pinned !== (seg.speaker_name || "")) body.speaker_name = pinned;
+
+    /* Same question the namer asks. A pinned name does not create a person by
+       itself, but it is what the reader shows and what "Split by voice" groups
+       on, so "NileRed" here and "NileRed YouTube" elsewhere split one voice
+       across two labels just as surely. */
+    const near = pinned ? nearestName(pinned) : null;
+    if (near && !near.exact && !edConfirmedNew){
+      const err = $("edErr");
+      err.dataset.nearmiss = "1";
+      err.textContent = "";
+      const line = document.createElement("div");
+      line.textContent = `Did you mean “${near.name}”?`;
+      const useIt = document.createElement("button");
+      useIt.className = "pri";
+      useIt.textContent = `Use “${near.name}”`;
+      useIt.style.marginRight = "8px";
+      useIt.onclick = () => {
+        $("edNewName").value = near.name;
+        delete err.dataset.nearmiss; err.textContent = "";
+        renderNameSuggestions();
+        $("edSave").click();
+      };
+      const anyway = document.createElement("button");
+      anyway.textContent = `No — use “${pinned}”`;
+      anyway.onclick = () => {
+        edConfirmedNew = true;
+        delete err.dataset.nearmiss; err.textContent = "";
+        $("edSave").click();
+      };
+      const row = document.createElement("div");
+      row.style.marginTop = "8px";
+      row.appendChild(useIt); row.appendChild(anyway);
+      err.appendChild(line); err.appendChild(row);
+      return;
+    }
     try{
       const r = await fetch("/api/transcript/" + encodeURIComponent(name), {
         method: "PATCH", headers: {"Content-Type": "application/json"},
@@ -2968,6 +3013,18 @@ $("namerSave").onclick = saveName;
    either way. */
 let namerPeople = [];
 
+/* Shared by both fields that accept a person's name: the namer sheet and the
+   line editor. The check lived only in the namer, so naming one line could
+   still invent a second "NileRed" with nothing said -- the same fault, in the
+   field next to it. */
+async function loadPeopleNames(){
+  try{
+    const people = await (await fetch("/api/speakers")).json();
+    namerPeople = people.map(p => p.name).filter(Boolean);
+  }catch(e){ namerPeople = []; }
+  return namerPeople;
+}
+
 function normName(s){ return (s || "").toLowerCase().replace(/[^a-z0-9]/g, ""); }
 
 function nearestName(typed){
@@ -2985,6 +3042,31 @@ function nearestName(typed){
     }
   }
   return best;
+}
+
+/* Suggestions under the line editor's name field, same behaviour as the
+   namer's: narrowed as you type, and clicking one fills the field. */
+function renderNameSuggestions(){
+  const box = $("edNameQuick");
+  if (!box) return;
+  box.innerHTML = "";
+  const t = normName($("edNewName").value);
+  const hits = namerPeople.filter(n => !t || normName(n).includes(t));
+  if (!t){ return; }                       // empty field: do not wall it off
+  if (!hits.length){
+    const d = document.createElement("div");
+    d.className = "hint";
+    d.textContent = "nobody enrolled matches that — this line will carry the "
+                  + "name as typed";
+    box.appendChild(d);
+    return;
+  }
+  for (const n of hits.slice(0, 8)){
+    const b = document.createElement("button");
+    b.textContent = n;
+    b.onclick = () => { $("edNewName").value = n; renderNameSuggestions(); };
+    box.appendChild(b);
+  }
 }
 
 /* Narrow the list as you type rather than showing everyone at once. */
@@ -3041,6 +3123,7 @@ function msgAfterNaming(name, reason){
  * sitting there invisibly focusable.
  */
 let sheetReturn = null;
+let edConfirmedNew = false;
 
 function openSheet(id, focusId){
   sheetReturn = document.activeElement;
