@@ -816,14 +816,29 @@ function paint(s){
      the words can never contradict the number they sit next to. */
   const backlog = s.backlog_seconds || 0;
   const draining = backlog > 0;
+  /* The device's own account of itself, which outranks ours.
+     
+     The two can disagree: a device told to stop that did not stop goes on
+     capturing while this panel reads "Connected · paused" and clips land every
+     thirty seconds. Saying "paused" over a device that is recording is the one
+     error here with a cost outside the software, so when they disagree the
+     interface reports what the hardware is doing and says the two do not
+     agree. */
+  const deviceCapturing = s.device_streaming === true;
+  const disagreeing = s.connected && deviceCapturing && !s.armed;
   dot.className = "dot " + (!s.connected ? (s.scanning ? "off" : "off")
+                    : disagreeing ? "drain"
                     : !s.armed ? "idle"
                     : draining ? "drain" : "live");
   $("stxt").textContent = !s.connected ? (s.scanning ? "Searching…" : "Not connected")
+                        : disagreeing ? "Still recording — device has not stopped"
                         : !s.armed ? "Connected · paused"
                         : draining ? "Draining buffer" : "Recording";
   $("ssub").textContent = !s.connected ? (s.error || "press Connect to begin")
-                        : `${s.rate/1000} kHz · ADPCM · ${s.frames} frames`;
+                        : disagreeing
+                          ? "asked to stop and still capturing; retrying — audio "
+                            + "arriving now is being saved"
+                          : `${s.rate/1000} kHz · ADPCM · ${s.frames} frames`;
   $("ver").textContent = s.connected ? "XIAO-MIC" : "disconnected";
   $("frames").textContent = s.frames;
   $("lost").textContent = s.lost;

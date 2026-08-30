@@ -447,3 +447,35 @@ class TestHallucinatedSilence:
 
     def test_nothing_is_not_silence_to_discard(self):
         assert not self._f([])
+
+
+class TestCaptureReconciliation:
+    """The device and the host can disagree about whether it is recording.
+
+    Only one direction was handled -- host armed, device silent -- so a device
+    that kept capturing after being told to stop was never told again. Observed
+    live: prefs armed=False, the button reading "Start capture", the firmware's
+    magenta LED (which it defines as armed and buffering to flash), and clips
+    landing every thirty seconds throughout.
+    """
+
+    def _r(self, streaming, armed):
+        import server
+        return server.reconcile_capture(streaming, armed)
+
+    def test_device_silent_while_armed_is_re_armed(self):
+        assert self._r(False, True) == "rearm"
+
+    def test_device_capturing_while_paused_is_stopped_again(self):
+        """The direction that was missing, and the one that matters more.
+        Failing to record loses a conversation; recording while the interface
+        says otherwise breaks a promise to whoever is in the room."""
+        assert self._r(True, False) == "redisarm"
+
+    def test_agreement_needs_no_correction(self):
+        assert self._r(True, True) is None
+        assert self._r(False, False) is None
+
+    def test_a_device_that_does_not_report_is_not_guessed_at(self):
+        assert self._r(None, True) is None
+        assert self._r(None, False) is None

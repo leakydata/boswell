@@ -222,6 +222,26 @@ def parse_info(info):
     return out
 
 
+def reconcile_capture(device_streaming, armed):
+    """What to say to a device whose capture state disagrees with ours.
+
+    Returns "rearm", "redisarm" or None. Pulled out as a function because the
+    original was one line handling one direction, and the missing direction was
+    not visible as a gap until the device had been recording behind a paused
+    interface for a while.
+
+    device_streaming is None when the firmware is too old to report it, and
+    nothing is inferred from silence.
+    """
+    if device_streaming is None:
+        return None
+    if device_streaming is False and armed:
+        return "rearm"
+    if device_streaming is True and not armed:
+        return "redisarm"
+    return None
+
+
 class Device:
     """Owns the BLE connection and publishes state to any listening clients."""
 
@@ -691,6 +711,14 @@ class Device:
                         self.event("log", text="device was not capturing; re-arming")
                         await self._ctrl(0x01, 1)
                         self.state["armed"] = True
+                    if getattr(self, "_redisarm_needed", False):
+                        # And the other way. The device is capturing after being
+                        # told to stop, so tell it again rather than leave it
+                        # recording behind a paused interface.
+                        self._redisarm_needed = False
+                        self.event("log", text=("device still capturing while "
+                                                "paused; stopping it again"))
+                        await self._ctrl(0x01, 0)
                     self.publish()
 
             self.client = None
@@ -753,8 +781,24 @@ class Device:
         self._record_telemetry()
         # Say it again rather than assume it landed, but only when the device
         # publishes a capture state to disagree with.
-        if parsed["device_streaming"] is False and self.state.get("armed"):
+        #
+        # Both directions. This only ever handled "host armed, device silent",
+        # so a device that kept capturing after being told to stop was never
+        # told again -- and the interface went on reporting Connected · paused
+        # while clips landed every thirty seconds. Observed: prefs armed=False,
+        # the button reading "Start capture", the device LED magenta (which the
+        # firmware defines as armed and buffering to flash), and a new clip
+        # written while all of that was true.
+        #
+        # Of the two, this direction is the one that matters. Failing to record
+        # is a lost conversation; recording while the interface says you are not
+        # is a promise broken to whoever is in the room.
+        action = reconcile_capture(parsed["device_streaming"],
+                                   self.state.get("armed"))
+        if action == "rearm":
             self._rearm_needed = True
+        elif action == "redisarm":
+            self._redisarm_needed = True
 
     async def _ctrl(self, op: int, arg: int):
         """Write to the device control characteristic over whichever link we
