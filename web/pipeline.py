@@ -133,6 +133,28 @@ def save_speaker(name, vec, clip=None, speaker=None, seconds=None, force=False):
     c = sdb._conn()
     try:
         pid = sdb.person_id_for(name, c)
+
+        # One diarized slot is one piece of evidence, and belongs to exactly
+        # one person at a time.
+        #
+        # Naming used to append unconditionally, so correcting a mistake left
+        # the mistake behind: naming a slot Nathan, then NileRed, then Nathan
+        # again produced three references, two of them contradicting each
+        # other. Measured on a real slot that had been toggled twice -- four
+        # byte-identical references, two under each name, the slot standing as
+        # evidence for two different people at once.
+        #
+        # Replacing rather than appending also means renaming costs nothing:
+        # the reference count tracks conditions covered, not attempts made.
+        if clip and speaker:
+            prior = c.execute("SELECT id, person_id FROM voiceprints "
+                              "WHERE clip = ? AND speaker = ?",
+                              (clip, speaker)).fetchall()
+            for r in prior:
+                c.execute("DELETE FROM voiceprints WHERE id = ?", (r["id"],))
+            if prior:
+                c.commit()
+                sdb._bump()
         # What this sample scores against what is already stored, recorded for
         # information rather than used as a gate -- a low number here means new
         # coverage, which is the point.

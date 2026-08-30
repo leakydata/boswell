@@ -296,3 +296,37 @@ def test_one_voiceprint_is_enough_evidence_to_be_recognised(db):
     assert needed(2) == 1
     assert needed(3) == 2
     assert needed(5) == 3, "a bigger cluster still needs a majority"
+
+
+def test_renaming_a_slot_replaces_rather_than_accumulates(db, tmp_path, monkeypatch):
+    """Correcting a mistake must not leave the mistake behind.
+
+    Naming appended unconditionally, so a user who named a slot, saw the name
+    land on every line of the clip, switched it back and tried again produced
+    four references from one slot -- two under each name, the slot standing as
+    evidence for two different people at once. That is exactly how it happened
+    on a real clip.
+    """
+    import sys, os
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                    "..", "web"))
+    import pipeline
+    monkeypatch.setattr(pipeline, "_migrated", True)
+    monkeypatch.setattr(pipeline, "_sdb", lambda: db)
+
+    v = vec(70)
+    for who in ["Alice", "Bob", "Alice", "Bob"]:
+        pipeline.save_speaker(who, v, clip="c.wav", speaker="SPEAKER_00",
+                              seconds=18.3)
+
+    c = db._conn()
+    try:
+        n = c.execute("SELECT COUNT(*) n FROM voiceprints "
+                      "WHERE clip='c.wav'").fetchone()["n"]
+        assert n == 1, "one slot is one piece of evidence"
+        owner = c.execute("""SELECT p.name FROM voiceprints v
+                             JOIN people p ON p.id = v.person_id
+                             WHERE v.clip='c.wav'""").fetchone()["name"]
+        assert owner == "Bob", "it belongs to whoever was named last"
+    finally:
+        c.close()

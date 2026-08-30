@@ -2974,7 +2974,27 @@ async function nameSpeaker(clip, speaker, existing, onSaved){
      chip happened to come from. */
   namerCtx = {clip, speaker, onSaved};
   $("namerT").textContent = existing ? `Rename ${existing}?` : "Who is speaking?";
-  $("namerSub").textContent = `${speaker} · ${clip}`;
+
+  /* Say how much this touches, before it touches it.
+     
+     The subtitle read "SPEAKER_00 · clip.wav", which does not convey that the
+     name lands on every line that voice speaks. Someone correcting one line
+     renames the whole clip, sees every label change, switches it back, and
+     tries again -- which is exactly how one slot ended up enrolled as two
+     different people. */
+  let scope = `${speaker} · ${clip}`;
+  try{
+    const t = await (await fetch("/api/transcript/" + encodeURIComponent(clip))).json();
+    const n = (t.segments || []).filter(x => x.speaker === speaker).length;
+    const total = (t.segments || []).length;
+    if (n){
+      scope = n === total
+        ? `${speaker} — every line in this clip (${n})`
+        : `${speaker} — ${n} of ${total} lines in this clip`;
+      if (n > 1) scope += ". To name only one line, close this and click its words.";
+    }
+  }catch(e){}
+  $("namerSub").textContent = scope;
   $("namerInput").value = existing || "";
   $("namerErr").textContent = "";
   $("namerErr").style.color = "var(--bad)";
