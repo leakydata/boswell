@@ -128,6 +128,25 @@ def remove_clip(name):
     c.commit()
 
 
+def implausible_span(started, ended, seconds):
+    """Whether a clip claims more wall time than it could possibly cover.
+
+    With voice-activity gating off, a clip's frames are continuous and its span
+    should equal its audio. Dropped BLE frames can stretch it legitimately --
+    the audio that arrived covers a wider capture window with holes in it -- so
+    the bound is loose enough to leave those alone.
+
+    What it catches is a stale device counter on one frame. A 30-second clip
+    was written claiming to run from 23:48 to 10:24 the next morning: 38151
+    seconds of span for 30 of audio. Conversations are grouped by the gaps
+    between clips, so that one interval bridged the night and merged 333 clips
+    into a single 14-hour "conversation" holding 167 minutes of audio.
+    """
+    if not seconds:
+        return False
+    return (ended - started) > max(seconds * 4, seconds + 300)
+
+
 def device_times(name):
     """When the device says this recording started and ended, if it said.
 
@@ -140,7 +159,14 @@ def device_times(name):
     try:
         d = json.load(open(p))
         if "started" in d and "ended" in d:
-            return float(d["started"]), float(d["ended"])
+            started, ended = float(d["started"]), float(d["ended"])
+            secs = float(d.get("seconds") or 0)
+            # Checked at the reader as well as the writer: records made before
+            # the writer knew to check are still on disk, and one of them is
+            # enough to merge a whole night into a single conversation.
+            if implausible_span(started, ended, secs):
+                started = ended - secs
+            return started, ended
     except Exception:
         pass
     return None

@@ -296,3 +296,34 @@ def test_grouping_uses_device_time_when_mtime_disagrees():
         f"device time says one conversation; grouping produced {len(convs)}. "
         "The gap test is reading file timestamps.")
     assert len(convs[0]["clips"]) == 3
+
+
+def test_implausible_span_catches_a_stale_timestamp():
+    """One frame with a stale device counter merged a night of recording.
+
+    A 30-second clip was written claiming to span 38151 seconds, from late one
+    evening to mid-morning. Conversations are grouped by the gaps between
+    clips, so that single interval bridged the night and pulled 333 clips into
+    one 14-hour "conversation" holding 167 minutes of audio.
+    """
+    import sys, os
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                    "..", "web"))
+    from index_db import implausible_span
+
+    # The case that broke it.
+    assert implausible_span(1788061706, 1788099857, 30.18)
+
+    # A clip whose frames arrived cleanly.
+    assert not implausible_span(1000, 1030, 30.0)
+
+    # Dropped frames stretch a span legitimately, and must be left alone --
+    # the audio that arrived covers a wider window with holes in it.
+    assert not implausible_span(1000, 1090, 30.0)
+    assert not implausible_span(1000, 1300, 30.0)
+
+    # But not by hours.
+    assert implausible_span(1000, 2000, 30.0)
+
+    # Unknown duration cannot be judged, so it is not rejected.
+    assert not implausible_span(1000, 99999, 0)

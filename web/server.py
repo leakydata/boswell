@@ -496,6 +496,12 @@ class Device:
             return
         if ended is None or ended < started:
             ended = started + seconds
+        # A stale device counter on one frame can claim a span the audio
+        # cannot cover; see index_db.implausible_span for what that broke. The
+        # end is the trustworthy edge -- it is when the clip was actually
+        # written -- so the start is derived back from it.
+        if index_db.implausible_span(started, ended, seconds):
+            started = ended - seconds
         os.makedirs(TIMES, exist_ok=True)
         rec = {"name": os.path.basename(path), "started": round(started, 3),
                "ended": round(ended, 3), "seconds": round(seconds, 3),
