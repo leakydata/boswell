@@ -278,10 +278,17 @@ across days without also accepting strangers. A second embedder trained on
 different data falls the same way on the same audio, so this is a property of
 the speech or the capture path rather than of the model.
 
-That is why the **People** tab has a labelling queue and why it defaults to
-"since yesterday". Recognising somebody tomorrow means having a reference from
-tomorrow, so the system converges by a couple of minutes a day rather than by
-better matching. See `tools_speaker_diag/drift.py` and `embedders.py`.
+That is why the **People** tab has a labelling queue and a "since yesterday"
+view. Recognising somebody tomorrow means having a reference from tomorrow, so
+the system converges by a couple of minutes a day rather than by better
+matching. See `tools_speaker_diag/drift.py` and `embedders.py`.
+
+Most of that work happens without being asked. Conversations are re-diarized
+once they have been quiet for 150 s, which pools a voiceprint over minutes of
+speech instead of one clip's thirty seconds; unnamed voices are then re-tested
+against everyone already known, so a voice named this morning claims this
+afternoon's recording of the same person by itself. Naming one cluster attached
+768 clips in one pass here.
 
 Voices off a screen are tagged `media` rather than deleted. Their transcripts
 stay searchable -- half the point of recording a day is finding the video you
@@ -579,18 +586,54 @@ diarized conversations where conditions are held constant:
 | different people, same recording | 0.107 | p99 0.572 |
 
 A separation of 0.76, not the 0.16 an earlier three-pair measurement suggested.
-`MATCH_HIGH` is 0.75 with a 0.15 margin required between the top two *people* --
-not the top two references, since a well-covered person owns several of those.
-Run `tools_speaker_diag/` to re-derive any of it.
+
+A name is applied when a person clears 0.75 and beats the next *person* -- not
+the next reference, since a well-covered person owns several of those -- by
+0.15. Or when the winner is simply unambiguous: 0.25 clear of the field is
+accepted on its own, because held-out evaluation showed the absolute bar
+refusing 47 of 79 correct answers at scores of 0.744 against a bar of 0.75,
+while their margins ran 0.26 to 0.46. That change doubled recall, 22% to 44%,
+with precision unchanged.
+
+Measured by leave-one-out over hand-made labels, excluding any reference from
+the same clip *or* near-identical to the one held out:
+
+| | |
+|---|--:|
+| right person ranked first | 83% |
+| named, and correct | 44% |
+| precision, when it commits to a name | 100% (36 names, 0 wrong) |
+
+The gap between 83% and 44% is what the thresholds still refuse. "100%" means
+no errors observed across 36 names, not no errors possible.
+
+Duplicate references are collapsed at 0.98 -- consolidation writes one
+voiceprint into every clip of a conversation, so a 42-clip conversation leaves
+42 identical copies. Nothing is deleted; the duplicates are set aside and can be
+restored. They never hurt matching (it is a max, and a copy cannot beat its own
+original) but they broke the evaluation, which was recovering copies rather than
+recognising people.
+
+Run `tools_speaker_diag/` to re-derive any of it: `heldout.py` for the table
+above, `drift.py` for the day-to-day collapse, `embedders.py` to test whether
+another model behaves differently, `capture_path.py` for whether the microphone
+is at fault.
 
 ## Custom words
 
 Names, jargon and drug names are what a general transcriber gets wrong, so the
-**People** tab takes a word list. Terms are applied **after** transcription:
-near-misses are repaired, a single mangled word is matched fuzzily, and runs of
-two or three words are re-joined — so *"she prescribed met form in"* comes back
-as *"she prescribed Metformin"* and *"the boss well project"* as *"the Boswell
-project"*.
+**People** tab takes a word list, and everyone you enrol is added to it
+automatically. Terms are applied **after** transcription. A single mangled word
+is matched fuzzily, so *"she prescribed metformen"* comes back as *"she
+prescribed Metformin"*. Runs of two or three words are re-joined only when their
+letters match a term **exactly** — *"adp cm"* becomes *"ADPCM"*, *"data slayer
+youtube"* becomes *"Data Slayer YouTube"*.
+
+> That rejoin used to be fuzzy too, and a wrong rejoin does not mis-spell a
+> word, it deletes one: *"the boss well knows"* became *"the Boswell knows"* and
+> *"ryan longed for it"* became *"Ryan Long for it"*. Three of fourteen ordinary
+> phrases were rewritten that way, and the risk grew with every person enrolled,
+> because names are exactly the words that collide with ordinary ones.
 
 > **Decode-time boosting is deliberately not used.** Passing the word list as
 > `hotwords` or `initial_prompt` is the obvious approach and it loses audio.
