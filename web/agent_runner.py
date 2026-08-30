@@ -60,7 +60,20 @@ OLLAMA = "http://localhost:11434/api/chat"
 # gpt-oss:20b is ~13 GB and fits beside Whisper's ~9 GB on a 24 GB card.
 # glm-4.7-flash is the stronger MoE but at 19 GB the two do not coexist.
 DEFAULT_MODEL = "gpt-oss:20b"
-IDLE_SECONDS = 90.0        # silence that marks the end of a conversation
+# Silence that marks the end of a conversation.
+#
+# Ordering note, not yet acted on: consolidation settles at 150 s on a loop
+# ticking every 120 s, so it lands somewhere between 150 s and 270 s after the
+# last clip -- reliably after this. The agent therefore reads a conversation
+# while its speaker labels are still the per-clip SPEAKER_00 the diarizer
+# produced, rather than the names consolidation resolves, and writes notes
+# attributing things to nobody.
+#
+# Left alone deliberately: the value in data/prefs.json is the user's, and
+# raising it silently would change when their agent runs. Raising it above
+# ~300 s, or having the agent wait for a consolidated conversation, would fix
+# it whenever the LLM layer next gets attention.
+IDLE_SECONDS = 90.0
 MAX_WAIT = 900.0           # fire anyway if someone talks continuously
 MIN_CHARS = 120            # below this there is nothing worth reasoning about
 MAX_RETRIES = 3            # a batch survives this many failures before it is dropped

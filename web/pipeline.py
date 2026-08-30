@@ -789,6 +789,26 @@ def calibration_report():
         c.close()
 
 
+def is_hallucinated_silence(segments):
+    """Whisper writing a phrase over room tone, with no voice to back it.
+
+    The decoder's habit on near-silence is a short stock phrase -- "Thank you.",
+    "Okay." -- and the diarizer is the check: if it found no voice anywhere in
+    the audio, nobody spoke, whatever the decoder wrote. A real short utterance
+    survives because it comes with a speaker.
+
+    Extracted from _process, which was the only place that applied it. The
+    consolidation and re-transcription passes rewrite segments too and did not,
+    so they put back 24 of these that the original transcription had removed --
+    a guard is only as good as the number of paths that reach it.
+    """
+    if not segments:
+        return False
+    if any(x.get("speaker") for x in segments):
+        return False
+    return sum(len(x.get("text", "")) for x in segments) <= HALLUCINATION_CHARS
+
+
 class Worker:
     def __init__(self, notify=None, on_transcript=None):
         self.q: queue.Queue = queue.Queue()
@@ -940,9 +960,7 @@ class Worker:
         # decoder wrote. A real short utterance -- "Yeah." -- is still kept,
         # because it comes with a speaker. Only applied when diarization
         # actually ran, so disabling it does not silently discard everything.
-        if (self._diar is not None and segs
-                and not any(x.get("speaker") for x in segs)
-                and sum(len(x["text"]) for x in segs) <= HALLUCINATION_CHARS):
+        if self._diar is not None and is_hallucinated_silence(segs):
             self.notify("log", text=(
                 f"{clip}: no voice found; discarding "
                 f"{' '.join(x['text'] for x in segs)[:40]!r} as silence"))
@@ -1545,6 +1563,16 @@ class Worker:
             t["embeddings"] = embeddings
             t["speakers"] = identify({k: np.asarray(v) for k, v in embeddings.items()},
                                      clip=item["clip"])
+            # Re-diarizing can leave a clip with no voice at all, and if what
+            # the decoder wrote there is one short stock phrase it is room tone
+            # rather than speech -- the same test _process applies, applied
+            # here because this path rewrites the same field.
+            if is_hallucinated_silence(t.get("segments") or []):
+                self.notify("log", text=(
+                    f"{item['clip']}: no voice found after re-diarizing; "
+                    f"discarding "
+                    f"{' '.join(x['text'] for x in t['segments'])[:40]!r}"))
+                t["segments"] = []
             t["slot_quality"] = final_quality
             # A voice the diarizer cannot keep straight must not become
             # somebody's stored reference: a blend of two people looks

@@ -418,3 +418,32 @@ class TestVocabularyTermination:
         terms = ["Boswell", "Ryan Long", "Eli", "Network Chuck YouTube",
                  "Data Slayer YouTube", "Nathan"]
         assert self._apply(terms, text) == text
+
+
+class TestHallucinatedSilence:
+    """Whisper writes a stock phrase over room tone. The diarizer is the check:
+    no voice anywhere means nobody spoke, whatever the decoder produced.
+
+    The rule lived inside _process and nowhere else, so the consolidation and
+    re-transcription passes -- which rewrite the same field -- put back 24 of
+    these that the original transcription had removed.
+    """
+
+    def _f(self, segs):
+        import pipeline
+        return pipeline.is_hallucinated_silence(segs)
+
+    def test_a_stock_phrase_with_no_speaker_is_silence(self):
+        assert self._f([{"text": "Thank you.", "speaker": None}])
+        assert self._f([{"text": "Okay.", "speaker": None}])
+        assert self._f([{"text": ". . . . . .", "speaker": None}])
+
+    def test_a_short_utterance_with_a_speaker_is_speech(self):
+        assert not self._f([{"text": "Yeah.", "speaker": "SPEAKER_00"}])
+
+    def test_real_speech_survives_even_without_a_speaker(self):
+        long = {"text": "x" * 100, "speaker": None}
+        assert not self._f([long])
+
+    def test_nothing_is_not_silence_to_discard(self):
+        assert not self._f([])
