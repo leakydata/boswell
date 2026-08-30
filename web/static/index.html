@@ -531,6 +531,7 @@ html{scroll-padding-top:120px}
       <audio id="cvPlayer" preload="none"></audio>
       <div class="cvnow" id="cvNow" hidden>
         <button id="cvPlay" aria-label="Play or pause">▶</button>
+        <button id="cvStop" aria-label="Stop playback">■</button>
         <span id="cvNowLabel"></span>
       </div>
       <div id="cvSegs"></div>
@@ -2347,7 +2348,8 @@ async function openConversation(conv){
     t.className = "cvt";
     const el = elapsedOf(seg);
     t.textContent = `${Math.floor(el / 60)}:${String(Math.floor(el % 60)).padStart(2,"0")}`;
-    t.title = "Play from here";
+    t.dataset.clock = t.textContent;
+    t.title = "Play just this line";
     t.onclick = () => cvPlayFrom(seg, line);
 
     const body = document.createElement("div");
@@ -2402,25 +2404,90 @@ async function openConversation(conv){
   }
 }
 
-/* Plays the clip a line came from, positioned at that line. The conversation
-   spans many files, so there is no single timeline to seek within. */
+/* Plays ONE line, and stops at the end of it.
+   
+   It used to start at the line and run on through the rest of the clip, with
+   the only stop control sitting at the top of the reader -- so checking a voice
+   partway down a four-hundred-line conversation meant either listening to
+   thirty seconds you did not want or scrolling back up to stop it. When the
+   reason you are playing a line is to decide who is speaking, the line is the
+   unit you want.
+   
+   A small tail past the end, because the boundary is where the transcriber
+   thought the sentence stopped and it is often a fraction early. */
+const CV_TAIL = 0.4;
+let cvStopAt = null;
+let cvPlayingKey = null;
+
 function cvPlayFrom(seg, lineEl){
   const p = $("cvPlayer");
+  const key = `${seg.clip}|${seg.index}`;
+
+  /* The control that started it stops it. Clicking the same timestamp again
+     is the gesture people try first, and it is right where they already are.
+     
+     Keyed on which line is armed rather than on whether audio is actually
+     playing. play() can fail -- an autoplay policy, a decode error -- and
+     testing paused meant that when it did, the timestamp showed a stop icon
+     and clicking it did nothing at all. The icon is the promise; this keeps
+     it. */
+  if (cvPlayingKey === key){ cvStopPlayback(); return; }
+
   const src = "/api/audio/" + encodeURIComponent(seg.clip);
-  if (!p.src.endsWith(encodeURIComponent(seg.clip))){
-    p.src = src;
-  }
+  if (!p.src.endsWith(encodeURIComponent(seg.clip))) p.src = src;
   p.currentTime = seg.start;
+  cvStopAt = (typeof seg.end === "number" && seg.end > seg.start)
+             ? seg.end + CV_TAIL : null;
+  cvPlayingKey = key;
   p.play().catch(() => {});
+
   $("cvNow").hidden = false;
-  $("cvNowLabel").textContent = `playing from ${seg.start.toFixed(0)}s`;
-  [...document.querySelectorAll(".cvline.playing")].forEach(e => e.classList.remove("playing"));
-  if (lineEl) lineEl.classList.add("playing");
+  const len = cvStopAt ? (seg.end - seg.start) : null;
+  $("cvNowLabel").textContent = len
+    ? `playing one line · ${len.toFixed(1)}s` : `playing from ${seg.start.toFixed(0)}s`;
+  cvResetClocks();
+  if (lineEl){
+    lineEl.classList.add("playing");
+    const t = lineEl.querySelector(".cvt");
+    if (t){ t.textContent = "■"; t.title = "Stop"; }
+  }
 }
 
+function cvResetClocks(){
+  for (const e of document.querySelectorAll(".cvline.playing")){
+    e.classList.remove("playing");
+    const t = e.querySelector(".cvt");
+    if (t && t.dataset.clock){ t.textContent = t.dataset.clock;
+                               t.title = "Play just this line"; }
+  }
+}
+
+function cvStopPlayback(){
+  const p = $("cvPlayer");
+  p.pause();
+  cvStopAt = null;
+  cvPlayingKey = null;
+  $("cvNow").hidden = true;
+  cvResetClocks();
+}
+
+/* Stops itself at the end of the line rather than running into the next
+   thirty seconds of whatever else was in the clip. */
+$("cvPlayer").addEventListener("timeupdate", () => {
+  if (cvStopAt !== null && $("cvPlayer").currentTime >= cvStopAt) cvStopPlayback();
+});
+$("cvPlayer").addEventListener("ended", cvStopPlayback);
+
+$("cvStop").onclick = cvStopPlayback;
 $("cvPlay").onclick = () => {
   const p = $("cvPlayer");
-  if (p.paused) p.play().catch(() => {}); else p.pause();
+  if (p.paused){
+    /* Resuming from the bar means "keep going" -- the line limit is dropped,
+       so this is how to hear what comes after it. */
+    cvStopAt = null;
+    $("cvNowLabel").textContent = "playing on";
+    p.play().catch(() => {});
+  } else p.pause();
 };
 $("cvPlayer").addEventListener("play",  () => { $("cvPlay").textContent = "❚❚"; });
 $("cvPlayer").addEventListener("pause", () => { $("cvPlay").textContent = "▶"; });
@@ -2428,7 +2495,7 @@ $("cvPlayer").addEventListener("pause", () => { $("cvPlay").textContent = "▶";
 /* Both Back buttons do the same thing; the top one is the one you can reach
    without scrolling a few hundred lines first. */
 function cvGoBack(){
-  $("cvPlayer").pause();
+  cvStopPlayback();
   $("convDetail").hidden = true;
   $("clipList").hidden = false;
   cvCurrent = null;
@@ -2949,7 +3016,12 @@ $("namerCancel").onclick = closeNamer;
 $("edCancel").onclick = closeEditor;
 $("scrim").onclick = () => { closeNamer(); closeEditor(); };
 addEventListener("keydown", e => {
-  if (e.key === "Escape"){ closeNamer(); closeEditor(); }
+  if (e.key === "Escape"){
+    /* Escape stops the audio too, from anywhere in the reader, without having
+       to find a control first. */
+    if (typeof cvStopPlayback === "function" && !$("cvNow").hidden) cvStopPlayback();
+    closeNamer(); closeEditor();
+  }
 });
 $("namerInput").addEventListener("keydown", e => {
   if (e.key === "Enter"){ e.preventDefault(); saveName(); }
