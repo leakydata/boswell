@@ -1738,10 +1738,27 @@ def _rematch_clips(names=None):
                 cur.clear()
                 cur.update(rec)
                 if impure:
-                    # A slot the diarizer could not keep straight stays flagged
-                    # and stays unnamed, whatever the score says.
+                    # Flagged, but no longer silenced.
+                    #
+                    # This used to strip the name off an impure slot however
+                    # confidently it matched, on the grounds that the slot might
+                    # be two people blended together. Splitting was built to
+                    # test exactly that and refused on all eleven it was given,
+                    # with groups that separate but neither cohering -- so they
+                    # are not two voices, and the reason for the restriction was
+                    # already known to be wrong when it stayed in.
+                    #
+                    # What it cost: 3285 speaker slots that match a known person
+                    # confidently sat unnamed in the reader, and were re-stripped
+                    # on every rematch, so no amount of labelling would ever fix
+                    # them.
+                    #
+                    # The distinction that matters is the same one drawn for
+                    # clusters. Naming is attribution -- visible, reversible,
+                    # and what the reader is for. Enrolment is a permanent
+                    # reference, and that is where a blend would do lasting
+                    # damage; the store still refuses those separately.
                     cur["impure"] = True
-                    cur["name"] = None
                 dirty = True
         if dirty:
             atomicio.write_json(tp, t)
@@ -1826,6 +1843,10 @@ async def api_conversation(body: dict):
                 # has to guess which clip an id belonged to.
                 "name": seg.get("speaker_name") or rec.get("name"),
                 "score": rec.get("score"),
+                # The diarizer slot behind this name did not hold together, so
+                # the attribution is worth showing with a caveat rather than
+                # silently or not at all.
+                "shaky": bool(rec.get("impure")) and not seg.get("speaker_name"),
                 "edited": bool(seg.get("edited")),
             })
 
@@ -2671,7 +2692,6 @@ async def api_label(body: dict):
         t["speakers"][k] = v
         if prev.get("impure"):
             t["speakers"][k]["impure"] = True
-            t["speakers"][k]["name"] = None
     atomicio.write_json(tp, t, indent=2, allow_nan=False)
     index_db.upsert_clip(clip)
 

@@ -1502,10 +1502,14 @@ class Worker:
             # ever tell. Naming it by hand is still allowed -- a person
             # listening can hear what the model cannot -- but it is refused
             # for automatic enrolment and flagged in the interface.
+            # Flagged so the interface can say the attribution is shaky, and
+            # so the store refuses it as an automatic reference. Not silenced:
+            # a name the matcher is confident about is worth showing even when
+            # the slot behind it is untidy, and stripping it left thousands of
+            # lines reading SPEAKER_00 for no benefit anyone could name.
             for spk, q in final_quality.items():
                 if q.get("suspect") and spk in (t.get("speakers") or {}):
                     t["speakers"][spk]["impure"] = True
-                    t["speakers"][spk]["name"] = None
             t["consolidated"] = stamp
             atomicio.write_json(tp, t, indent=2, allow_nan=False)
             changed += 1

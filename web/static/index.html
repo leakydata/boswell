@@ -235,6 +235,10 @@ select.filter:focus{outline:2px solid var(--accent);outline-offset:-1px}
 .cvline .cvwho:hover,.cvline .cvwho:focus-visible{border-bottom-style:solid;
   outline:none}
 .cvline .cvwho.unnamed{opacity:.75;font-weight:500}
+/* Named, but from a slot whose own turns disagreed. Shown, because the match is
+   confident and hiding it left thousands of lines reading SPEAKER_00; marked,
+   because the slot behind it is untidy. */
+.cvline .cvwho.shaky{border-bottom-style:dashed;opacity:.85}
 .cvline .cvtext{font-size:14.5px;color:var(--ink);line-height:1.5}
 .cvline.playing{background:color-mix(in srgb,var(--accent) 10%,transparent)}
 .cvclip{display:flex;align-items:center;gap:9px;margin:15px 0 6px}
@@ -2387,10 +2391,15 @@ async function openConversation(conv){
        obvious gesture and it was doing nothing. */
     if (seg.speaker){
       const w = document.createElement("button");
-      w.className = "cvwho" + (seg.name ? "" : " unnamed");
+      w.className = "cvwho" + (seg.name ? "" : " unnamed")
+                            + (seg.shaky ? " shaky" : "");
       w.style.color = col;
-      w.textContent = who;
-      w.title = seg.name ? `Rename ${seg.name}` : "Who is this? Click to name";
+      w.textContent = who + (seg.shaky ? "?" : "");
+      w.title = seg.shaky
+        ? `${seg.name} — the matcher is confident, but the diarizer could not `
+          + `keep this stretch to one voice, so treat it as provisional. `
+          + `Click to correct.`
+        : (seg.name ? `Rename ${seg.name}` : "Who is this? Click to name");
       w.onclick = (e) => {
         e.stopPropagation();
         nameSpeaker(seg.clip, seg.speaker, seg.name || "",
