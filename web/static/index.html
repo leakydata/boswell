@@ -2941,14 +2941,24 @@ async function renderTranscript(name){
        to one line instead. */
     const w = d.querySelector(".wholine");
     if (w){
-      w.title = s.speaker_name
-        ? `"${s.speaker_name}" is pinned to this line. Click to name the whole voice.`
-        : "Name this voice (every line it speaks). Click the words to name one line.";
-      w.onclick = (e) => {
-        e.stopPropagation();
-        nameSpeaker(name, s.speaker, (named[s.speaker] || {}).name || "",
-                    () => renderTranscript(name));
-      };
+      /* Clicking a label edits whatever produced that label.
+         
+         It always opened the namer for the whole voice, so a line pinned to
+         "NileRed YouTube" displayed that and then offered "Rename Nathan" --
+         the control described one thing and did another. A pinned line goes to
+         the line editor, which owns the pin; an unpinned one names the voice. */
+      if (s.speaker_name){
+        w.title = `"${s.speaker_name}" is pinned to this line — click to change it`;
+        w.onclick = (e) => { e.stopPropagation(); editLine(name, i, s, ids, named); };
+      } else {
+        w.title = "Name this voice (every line it speaks). "
+                + "Click the words to name one line instead.";
+        w.onclick = (e) => {
+          e.stopPropagation();
+          nameSpeaker(name, s.speaker, (named[s.speaker] || {}).name || "",
+                      () => renderTranscript(name));
+        };
+      }
     }
     $("dSegs").appendChild(d);
   });
@@ -3340,9 +3350,29 @@ $("bSplit").onclick = async () => {
   const r = await fetch("/api/split/" + encodeURIComponent(current), {method:"POST"});
   const b = await r.json().catch(()=>({}));
   if (!r.ok){ msg(b.detail || "could not split", true); return; }
-  msg(`made ${b.clips.length} single-voice clips`);
+  /* Stay put and say what happened.
+     
+     This hid the clip view and showed the list, so a split that worked was
+     indistinguishable from a crash: the window closed, the confirmation was
+     drawn into the view just left, and nothing on screen mentioned the new
+     clips. They are the point of pressing the button, so they are listed here
+     with a way into each. */
   log(`split into: ${b.clips.map(c => `${c.speaker} ${c.seconds}s`).join(", ")}`);
-  $("detail").hidden = true; $("clipList").hidden = false; current = null;
+  const box = $("dMsg");
+  box.textContent = `Made ${b.clips.length} single-voice clip`
+                  + `${b.clips.length === 1 ? "" : "s"} — `;
+  for (const c of b.clips){
+    const open = document.createElement("button");
+    open.textContent = `${c.speaker} · ${c.seconds}s`;
+    open.style.marginRight = "6px";
+    open.onclick = () => openClip(c.name);
+    box.appendChild(open);
+  }
+  const back = document.createElement("button");
+  back.textContent = "Back to all clips";
+  back.onclick = () => { $("detail").hidden = true; $("clipList").hidden = false;
+                         current = null; loadClips(); };
+  box.appendChild(back);
   loadClips();
 };
 
