@@ -2924,7 +2924,15 @@ async function nameSpeaker(clip, speaker, existing, onSaved){
   $("namerErr").textContent = "";
   $("namerErr").style.color = "var(--bad)";
   $("namerSave").textContent = "Save name";
-  $("namerSave").onclick = saveName;
+  $("namerInput").addEventListener("input", () => {
+  filterNamerQuick();
+  /* A pending "did you mean" is about the previous text; drop it. */
+  if (namerCtx) namerCtx.confirmedNew = false;
+  const w = $("namerErr");
+  if (w && w.dataset.nearmiss){ w.textContent = ""; delete w.dataset.nearmiss; }
+});
+
+$("namerSave").onclick = saveName;
   namerCtx.force = false;
   document.getElementById("namerForce")?.remove();
 
@@ -2932,6 +2940,7 @@ async function nameSpeaker(clip, speaker, existing, onSaved){
   q.innerHTML = "";
   try{
     const people = await (await fetch("/api/speakers")).json();
+    namerPeople = people.map(p => p.name).filter(Boolean);
     for (const p of people){
       const b = document.createElement("button");
       /* samples is the list of voiceprint samples; count is how many.
@@ -2941,11 +2950,60 @@ async function nameSpeaker(clip, speaker, existing, onSaved){
       b.textContent = n ? `${p.name} · ${n}` : p.name;
       b.title = n ? `${n} voiceprint sample${n === 1 ? "" : "s"}` : "no voiceprint yet";
       b.onclick = () => { $("namerInput").value = p.name; saveName(); };
+      b.dataset.name = p.name;
       q.appendChild(b);
     }
-  }catch(e){}
+  }catch(e){ namerPeople = []; }
 
+  filterNamerQuick();
   openSheet("namer", "namerInput");
+}
+
+/* Everyone already enrolled, so typing can be checked against them.
+   
+   Matching is exact-string, so "NileRed" and "NileRed YouTube" are two people.
+   Nothing said so: the name was accepted and a second, half-covered person
+   appeared beside the first, each matching some recordings and neither matching
+   well. The more people are enrolled the likelier that gets, and it is silent
+   either way. */
+let namerPeople = [];
+
+function normName(s){ return (s || "").toLowerCase().replace(/[^a-z0-9]/g, ""); }
+
+function nearestName(typed){
+  const t = normName(typed);
+  if (!t) return null;
+  for (const n of namerPeople) if (normName(n) === t) return {name: n, exact: true};
+  let best = null;
+  for (const n of namerPeople){
+    const c = normName(n);
+    // One name contained in the other is the case that actually happens:
+    // "NileRed" typed where "NileRed YouTube" is enrolled.
+    if (c.includes(t) || t.includes(c)){
+      const score = Math.min(c.length, t.length) / Math.max(c.length, t.length);
+      if (score >= 0.4 && (!best || score > best.score)) best = {name: n, score, exact: false};
+    }
+  }
+  return best;
+}
+
+/* Narrow the list as you type rather than showing everyone at once. */
+function filterNamerQuick(){
+  const t = normName($("namerInput").value);
+  let shown = 0;
+  for (const b of $("namerQuick").querySelectorAll("[data-name]")){
+    const hit = !t || normName(b.dataset.name).includes(t);
+    b.hidden = !hit;
+    if (hit) shown++;
+  }
+  const none = $("namerQuick").querySelector(".nomatch");
+  if (none) none.remove();
+  if (!shown && t){
+    const d = document.createElement("div");
+    d.className = "nomatch hint";
+    d.textContent = "nobody enrolled matches that — saving will add a new person";
+    $("namerQuick").appendChild(d);
+  }
 }
 
 /* Naming succeeded; only the voiceprint was skipped. Say so plainly, rather
@@ -3032,6 +3090,45 @@ async function saveName(){
   if (!namerCtx) return;
   const name = $("namerInput").value.trim();
   if (!name){ $("namerErr").textContent = "Enter a name first"; return; }
+
+  /* Catch a near-miss before it becomes a second person.
+     
+     Names match exactly, so "NileRed" typed where "NileRed YouTube" is enrolled
+     silently creates a separate person -- and then each holds half the
+     references and neither matches well. Asking once is cheap; the two are
+     tedious to merge afterwards and there is no sign anything went wrong. */
+  const near = nearestName(name);
+  if (near && !near.exact && !namerCtx.confirmedNew){
+    const err = $("namerErr");
+    err.dataset.nearmiss = "1";
+    err.style.color = "var(--muted)";
+    err.textContent = "";
+    const line = document.createElement("div");
+    line.textContent = `Did you mean “${near.name}”?`;
+    const useIt = document.createElement("button");
+    useIt.className = "pri";
+    useIt.textContent = `Use “${near.name}”`;
+    useIt.style.marginRight = "8px";
+    useIt.onclick = () => {
+      $("namerInput").value = near.name;
+      delete err.dataset.nearmiss;
+      err.textContent = "";
+      saveName();
+    };
+    const anyway = document.createElement("button");
+    anyway.textContent = `No — add “${name}” as someone new`;
+    anyway.onclick = () => {
+      namerCtx.confirmedNew = true;
+      delete err.dataset.nearmiss;
+      err.textContent = "";
+      saveName();
+    };
+    const row = document.createElement("div");
+    row.style.marginTop = "8px";
+    row.appendChild(useIt); row.appendChild(anyway);
+    err.appendChild(line); err.appendChild(row);
+    return;
+  }
   $("namerSave").disabled = true;
   const savedLabel = $("namerSave").textContent;
   $("namerSave").textContent = "Saving…";
@@ -3081,6 +3178,14 @@ async function saveName(){
     }
   }
 }
+
+$("namerInput").addEventListener("input", () => {
+  filterNamerQuick();
+  /* A pending "did you mean" is about the previous text; drop it. */
+  if (namerCtx) namerCtx.confirmedNew = false;
+  const w = $("namerErr");
+  if (w && w.dataset.nearmiss){ w.textContent = ""; delete w.dataset.nearmiss; }
+});
 
 $("namerSave").onclick = saveName;
 $("namerCancel").onclick = closeNamer;
