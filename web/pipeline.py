@@ -526,17 +526,58 @@ def apply_vocabulary(text, terms):
             for i in range(len(toks) - width + 1):
                 span = toks[i:i + width]
                 # Only merge words that are adjacent with plain spaces.
-                between = text[span[0].end():span[-1].start()]
-                if _re.search(r"[^ ]", between):
+                #
+                # Checked gap by gap. This used to take the whole stretch from
+                # the first token's end to the last token's start, which for a
+                # three-word window contains the middle word -- so it always
+                # found letters there and always skipped. Width-3 rejoining had
+                # therefore never once fired, which is most of the multi-word
+                # terms: "data slayer youtube", "network chuck youtube".
+                gaps = [text[span[k].end():span[k + 1].start()]
+                        for k in range(len(span) - 1)]
+                if any(_re.search(r"[^ ]", g) for g in gaps):
                     continue
                 cand = letters("".join(m.group(0) for m in span))
                 if len(cand) < MIN_FUZZY_LEN:
                     continue
-                hit = difflib.get_close_matches(cand, joined.keys(), n=1, cutoff=0.87)
-                if hit:
-                    text = text[:span[0].start()] + joined[hit[0]] + text[span[-1].end():]
-                    replaced = True
-                    break
+                # Exact letters only, deliberately.
+                #
+                # This was a fuzzy match at 0.87, and a wrong rejoin does not
+                # merely mis-spell a word, it DELETES one: "the boss well knows"
+                # became "the Boswell knows", "a nathan is not a word" became
+                # "Nathan is not a word", and "ryan longed for it" became "Ryan
+                # Long for it". Three of fourteen ordinary phrases were rewritten
+                # that way, and the risk grows with the vocabulary -- enrolled
+                # names are added to it automatically, and names are exactly the
+                # words that collide with ordinary ones.
+                #
+                # Nothing is lost by requiring exactness here. What this pass is
+                # for is a term the decoder split across spaces -- "adp cm" for
+                # ADPCM, "nile red youtube" for NileRed YouTube -- and those
+                # join to the term's own letters exactly. Genuine misspellings
+                # are still caught by the single-word pass below, where a wrong
+                # answer changes one word rather than removing one.
+                if cand not in joined:
+                    continue
+                hit = [cand]
+                new_text = (text[:span[0].start()] + joined[hit[0]]
+                            + text[span[-1].end():])
+                # Only a substitution that CHANGES something counts as progress.
+                #
+                # This loop reran while any window matched, and a multi-word
+                # term already spelled correctly matches itself: "Ryan Long"
+                # joins to "ryanlong", hits the term "Ryan Long", is replaced by
+                # the identical string, and the loop goes round again forever.
+                # Every multi-word term did this -- and enrolled names are added
+                # to the vocabulary automatically, so naming somebody with a
+                # first and last name armed it. It runs inside _process(), so
+                # the cost was the transcription worker stopping for good the
+                # first time anybody said a name it already knew.
+                if new_text == text:
+                    continue
+                text = new_text
+                replaced = True
+                break
             if not replaced:
                 break
 

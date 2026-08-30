@@ -348,3 +348,73 @@ class TestBootId:
     def test_short_frame_has_no_boot_id(self):
         from server import parse_info
         assert parse_info(bytearray(22))["boot_id"] is None
+
+
+class TestVocabularyTermination:
+    """apply_vocabulary ran inside the transcription worker and could not stop.
+
+    Its phrase pass reran while any window matched, and a multi-word term
+    already spelled correctly matches itself: "Ryan Long" joins to "ryanlong",
+    hits the term "Ryan Long", is replaced by the identical string, and the loop
+    goes round again. Every multi-word term did it -- and enrolled names are
+    added to the vocabulary automatically, so naming somebody with a first and
+    last name armed it. The first clip transcribing that name would have stopped
+    the worker for good.
+    """
+
+    def _apply(self, terms, text, seconds=5):
+        import signal
+
+        import pipeline
+
+        def bang(sig, frame):
+            raise TimeoutError("apply_vocabulary did not terminate")
+
+        old = signal.signal(signal.SIGALRM, bang)
+        signal.alarm(seconds)
+        try:
+            return pipeline.apply_vocabulary(text, terms)
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, old)
+
+    @pytest.mark.parametrize("term,text", [
+        ("Ryan Long", "ryan long ago"),
+        ("Ryan Long", "Ryan Long"),
+        ("Peggy Gironde", "peggy gironde said"),
+        ("NileRed YouTube", "nilered youtube video"),
+        ("Data Slayer YouTube", "the data slayer youtube channel"),
+    ])
+    def test_a_term_already_spelled_correctly_terminates(self, term, text):
+        assert self._apply([term], text)
+
+    def test_it_still_rejoins_a_split_term(self):
+        assert self._apply(["Metformin"], "metformen tablets") == "Metformin tablets"
+        assert self._apply(["ADPCM"], "adp cm measurement") == "ADPCM measurement"
+
+    def test_a_term_is_normalised_but_only_once(self):
+        assert self._apply(["Ryan Long"], "ryan long ago") == "Ryan Long ago"
+
+    def test_a_three_word_term_rejoins(self):
+        """The adjacency check took the stretch from the first token's end to
+        the last token's start, which for a three-word window contains the
+        middle word -- so it always found letters there and always skipped.
+        Width-3 rejoining had never fired, which is most of the multi-word
+        terms."""
+        t = "Data Slayer YouTube"
+        assert self._apply([t], "data slayer youtube channel") == f"{t} channel"
+
+    @pytest.mark.parametrize("text", [
+        "the boss well knows",
+        "ryan longed for it",
+        "we had an ell of cloth",
+        "network truck driver",
+        "data slaying dragons",
+    ])
+    def test_ordinary_phrases_survive(self, text):
+        """A wrong rejoin does not mis-spell a word, it deletes one: this pass
+        turned "the boss well knows" into "the Boswell knows" and "ryan longed
+        for it" into "Ryan Long for it". It matches letters exactly now."""
+        terms = ["Boswell", "Ryan Long", "Eli", "Network Chuck YouTube",
+                 "Data Slayer YouTube", "Nathan"]
+        assert self._apply(terms, text) == text
