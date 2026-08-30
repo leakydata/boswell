@@ -479,3 +479,33 @@ class TestCaptureReconciliation:
     def test_a_device_that_does_not_report_is_not_guessed_at(self):
         assert self._r(None, True) is None
         assert self._r(None, False) is None
+
+
+class TestImpureNeverEnrolls:
+    """Naming a blended slot must apply the name and learn nothing.
+
+    A slot flagged suspect at coherence 0.472 -- 26s of the wearer and 4s of a
+    video pooled into one vector -- was enrolled as Nathan and again as NileRed
+    YouTube, twice each: four byte-identical references describing two people,
+    sitting in both reference sets. The impure gate covered origin "auto" and
+    left the hand-naming path open, which is the one a person actually uses.
+    """
+
+    def test_the_store_refuses_an_impure_automatic_reference(self, tmp_path, monkeypatch):
+        import sys, os
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                        "..", "web"))
+        import numpy as np
+        import speaker_store as store
+        monkeypatch.setattr(store, "DB", str(tmp_path / "s.db"))
+        store._cache.update(version=None, ids=None, pids=None, M=None)
+        store._bump()
+
+        rng = np.random.default_rng(1)
+        v = store.unit(rng.normal(size=256))
+        pid = store.person_id_for("Alice")
+        assert not store.add_voiceprint(pid, v, origin="auto", impure=True)["ok"]
+        # An unnamed cluster may still hold it -- it claims nothing about who
+        # anybody is, and that is what keeps it reachable in the queue.
+        cluster = store.new_person()
+        assert store.add_voiceprint(cluster, v, origin="auto", impure=True)["ok"]

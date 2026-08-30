@@ -2739,8 +2739,28 @@ async def api_label(body: dict):
     # 2. The voiceprint, only if this audio is worth learning from.
     enrolled, reason, count = False, None, None
     vec = (t.get("embeddings") or {}).get(spk)
+    impure = bool((t.get("speakers", {}).get(spk) or {}).get("impure"))
     if vec is None:
         reason = "no voiceprint was extracted for this speaker"
+    elif impure:
+        # Naming is attribution; enrolment is a permanent reference. That
+        # distinction is stated everywhere in the store and was only half
+        # implemented: the impure gate covered origin "auto" and left this path
+        # open, which is the one a person actually uses.
+        #
+        # What it cost, on one real clip: a slot flagged suspect at coherence
+        # 0.472 -- 26 seconds of the wearer and 4 of a video, pooled into one
+        # vector -- was enrolled as Nathan and again as NileRed YouTube, twice
+        # each. Four byte-identical references, similarity 1.0000 to one
+        # another, describing two people at once and now sitting in both their
+        # reference sets to drag future matches around.
+        #
+        # The name still applies. That is a label on a line and can be
+        # corrected. A reference cannot be told from a real one afterwards.
+        reason = ("this stretch holds more than one voice, so its voiceprint "
+                  "would describe both. The name is applied; nothing was "
+                  "learned from the audio. Split by voice first, then name the "
+                  "single-voice clip to teach it properly.")
     else:
         secs = sum(x["end"] - x["start"]
                    for x in t.get("segments", []) if x.get("speaker") == spk)
