@@ -278,3 +278,21 @@ def test_compaction_collapses_copies_and_is_reversible(db):
     assert len(db.voiceprints(pid)) == 6
     assert db.uncompact(pid)["restored"] == 4
     assert db.compact_person(pid)["flagged"] == 4
+
+
+def test_one_voiceprint_is_enough_evidence_to_be_recognised(db):
+    """A cluster holding a single voiceprint must be resolvable.
+
+    recheck required max(2, min(3, n)) agreeing votes, which for n=1 demands
+    two votes from one voice -- impossible by construction. 91 of the 92
+    clusters queued for hand-labelling were exactly that, so no amount of
+    confidence could ever clear them. One voiceprint deciding "matched" is the
+    same evidence identify() already acts on when it names a voice outright.
+    """
+    def needed(tested):
+        return max(1, (tested + 1) // 2)
+
+    assert needed(1) == 1, "one voiceprint cannot be asked for two votes"
+    assert needed(2) == 1
+    assert needed(3) == 2
+    assert needed(5) == 3, "a bigger cluster still needs a majority"

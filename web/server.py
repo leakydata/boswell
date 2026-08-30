@@ -1006,9 +1006,29 @@ async def auto_consolidator():
         try:
             if PREFS.get("auto_consolidate", True) and not _bulk["running"]:
                 await _consolidate_settled()
+                # Identity has to be re-earned daily, so a voice named this
+                # morning is what recognises this afternoon's recording of the
+                # same person. Doing that only when somebody presses a button
+                # means the queue fills with people already known -- 41 of 92
+                # waiting clusters turned out to be exactly that.
+                await _resolve_known()
         except Exception as e:
             device.event("log", text=f"auto-consolidate: {str(e)[:100]}")
         await asyncio.sleep(AUTO_CONSOLIDATE_EVERY)
+
+
+async def _resolve_known():
+    """Absorb unnamed clusters that are somebody already enrolled."""
+    if worker.busy:
+        return
+    loop = asyncio.get_running_loop()
+    r = await loop.run_in_executor(None, pipeline.recheck_unknowns)
+    if r.get("absorbed"):
+        into = ", ".join(f"{k} (+{v})" for k, v in r["into"].items())
+        n = _rematch_clips()
+        device.event("log", text=(f"resolved {r['absorbed']} voice(s) "
+                                  f"automatically -- {into}"
+                                  + (f", {n} clip(s) relabelled" if n else "")))
 
 
 async def _consolidate_settled():
@@ -2326,9 +2346,17 @@ async def api_voices_scan():
     """File every diarized voice nobody has accounted for into a cluster."""
     loop = asyncio.get_running_loop()
     stats = await loop.run_in_executor(None, pipeline.scan_voices)
-    device.event("log", text=(f"voice scan: {stats['clustered']} filed into "
-                              f"{stats['new_clusters']} new cluster(s), "
-                              f"{stats['matched']} already known"))
+    # Then immediately resolve whatever is already somebody known. A scan that
+    # files a voice into a cluster and leaves it there has created work rather
+    # than done it.
+    re = await loop.run_in_executor(None, pipeline.recheck_unknowns)
+    stats["resolved"] = re.get("absorbed", 0)
+    stats["into"] = re.get("into", {})
+    if re.get("absorbed"):
+        stats["clips_relabelled"] = _rematch_clips()
+    device.event("log", text=(f"voice scan: {stats['clustered']} filed, "
+                              f"{stats['new_clusters']} new, "
+                              f"{stats['resolved']} resolved automatically"))
     return stats
 
 

@@ -307,16 +307,39 @@ def recheck_unknowns():
             # Decide on the cluster's best-evidenced voices rather than any
             # single one: a cluster is a claim that these are all the same
             # person, so a lone flattering vector should not carry it.
+            tested = rows[:5]
             votes = {}
-            for r in rows[:5]:
+            for r in tested:
                 m = sdb.match(sdb._unpack(r["vec"]), c)
-                if m["decision"] == "matched" and m.get("person_id"):
-                    votes[m["person_id"]] = votes.get(m["person_id"], 0) + 1
+                # A media person is capped at "uncertain" so it can never
+                # confer a name on a PERSON. It can still claim a cluster of
+                # its own: labelling one video as the wrong creator is cheap
+                # and undoable, and refusing to means every video ever watched
+                # queues up for hand-labelling forever. 42 of the 92 clusters
+                # waiting here had a media person as their closest match.
+                top = (m.get("candidates") or [None])[0]
+                decision = m["decision"]
+                if (decision == "uncertain" and top and top.get("kind") == "media"
+                        and sdb.decide(m["score"], m.get("margin")) == "matched"):
+                    decision = "matched"
+                if decision == "matched" and top:
+                    votes[top["person_id"]] = votes.get(top["person_id"], 0) + 1
             if not votes:
                 continue
             pid, n = max(votes.items(), key=lambda kv: kv[1])
-            if n < max(2, min(3, len(rows[:5]))):
-                continue          # not agreed on by enough of the cluster
+
+            # A majority of what could be tested, and at least one.
+            #
+            # The old bar was max(2, min(3, len(tested))), which for a cluster
+            # holding a single voiceprint demanded two votes from one voice --
+            # impossible by construction. 91 of the 92 clusters waiting to be
+            # labelled were exactly that, so recheck could never resolve any of
+            # them however confident the match. One voiceprint deciding
+            # "matched" is the same evidence identify() already acts on when it
+            # names a voice outright; requiring more of it here was not caution
+            # but arithmetic nobody had checked.
+            if n < max(1, (len(tested) + 1) // 2):
+                continue
 
             name = c.execute("SELECT name FROM people WHERE id = ?",
                              (pid,)).fetchone()["name"]
