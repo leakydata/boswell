@@ -229,7 +229,12 @@ select.filter:focus{outline:2px solid var(--accent);outline-offset:-1px}
   border:none;cursor:pointer}
 .cvline .cvt:hover{color:var(--accent)}
 .cvline .cvbody{flex:1;min-width:0}
-.cvline .cvwho{font-size:11.5px;font-weight:600;margin-right:7px}
+.cvline .cvwho{font-size:11.5px;font-weight:600;margin-right:7px;
+  background:none;border:0;padding:0;font-family:inherit;cursor:pointer;
+  border-bottom:1px dotted currentColor}
+.cvline .cvwho:hover,.cvline .cvwho:focus-visible{border-bottom-style:solid;
+  outline:none}
+.cvline .cvwho.unnamed{opacity:.75;font-weight:500}
 .cvline .cvtext{font-size:14.5px;color:var(--ink);line-height:1.5}
 .cvline.playing{background:color-mix(in srgb,var(--accent) 10%,transparent)}
 .cvclip{display:flex;align-items:center;gap:9px;margin:15px 0 6px}
@@ -2097,6 +2102,74 @@ async function loadSemanticSearch(el){
    line rather than being the only way in. */
 let cvCurrent = null;
 
+/* Lines currently on screen, so a rename can update the labels where they are.
+   Re-rendering the conversation would work and would also throw away the scroll
+   position, which in a reader hundreds of lines long means losing your place
+   every time you name somebody -- and naming somebody is the thing you are
+   there to do. */
+let cvLines = [];
+
+async function refreshConversationLabels(){
+  if (!cvCurrent || !cvLines.length) return;
+  let data;
+  try{
+    const r = await fetch("/api/conversation", {method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({names: cvCurrent.clips})});
+    if (!r.ok) return;
+    data = await r.json();
+  }catch(e){ return; }
+
+  /* Match by (clip, speaker, start) rather than by position. Naming can
+     propagate across the whole archive and a re-transcription can change how
+     many lines there are, so an index into the old list is not safe to trust
+     against the new one. */
+  const fresh = new Map();
+  for (const sg of (data.segments || [])){
+    fresh.set(`${sg.clip}|${sg.speaker}|${sg.start}`, sg);
+  }
+  const keyOf = seg => seg.name || `${seg.clip}:${seg.speaker}`;
+  assignSpeakerColors([...new Set((data.segments || []).map(keyOf))]);
+
+  let changed = 0;
+  for (const {el, seg} of cvLines){
+    const now = fresh.get(`${seg.clip}|${seg.speaker}|${seg.start}`);
+    if (!now) continue;
+    const w = el.querySelector(".cvwho");
+    if (!w) continue;
+    const label = now.name || now.speaker || "";
+    if (w.textContent !== label) changed++;
+    w.textContent = label;
+    w.classList.toggle("unnamed", !now.name);
+    w.style.color = now.speaker ? colorOf(spkColors[keyOf(now)]) : "var(--faint)";
+    w.title = now.name ? `Rename ${now.name}` : "Who is this? Click to name";
+    seg.name = now.name;
+  }
+
+  for (const chip of document.querySelectorAll("#cvSpeakers [data-voice]")){
+    const [clip, speaker] = chip.dataset.voice.split("|");
+    const v = (data.voices || []).find(x => x.clip === clip && x.speaker === speaker)
+           || (data.voices || []).find(x => x.speaker === speaker);
+    if (!v) continue;
+    const secs = v.seconds < 10 ? v.seconds.toFixed(1) : v.seconds.toFixed(0);
+    chip.textContent = v.name ? `${v.name} · ${secs}s`
+                              : `${v.speaker} · ${secs}s · tap to name`;
+    chip.className = "who" + (v.name ? " named" : "");
+    const col = colorOf(spkColors[v.name || `${v.clip}:${v.speaker}`]);
+    chip.style.borderColor = col; chip.style.color = col;
+    chip.title = v.name ? "" : `unnamed in ${v.clip}`;
+  }
+
+  /* The title still describes the old state, so it is rebuilt from the same
+     response rather than left stale. */
+  const people = [...new Set((data.segments || [])
+    .map(x => x.name).filter(Boolean))];
+  $("cvTitle").textContent = `${fmtClock(cvCurrent.start)}–${fmtClock(cvCurrent.end)}`
+    + (people.length ? ` · ${people.join(", ")}` : "");
+  $("cvTitleTop").textContent = $("cvTitle").textContent;
+  if (changed) $("cvMsg").textContent = `${changed} line(s) relabelled`;
+}
+
 async function openConversation(conv){
   cvCurrent = conv;
   $("clipList").hidden = true;
@@ -2162,10 +2235,11 @@ async function openConversation(conv){
     chip.textContent = v.name ? `${v.name} · ${secs}s`
                               : `${v.speaker} · ${secs}s · tap to name`;
     chip.title = v.name ? "" : `unnamed in ${v.clip}`;
-    /* Re-reads the whole conversation afterwards: enrolling a voiceprint
-       propagates the name to every clip it matches, not just this one. */
+    chip.dataset.voice = `${v.clip}|${v.speaker}`;
+    /* Enrolling a voiceprint propagates the name to every clip it matches, so
+       the whole reader is refreshed -- but in place, keeping the scroll. */
     chip.onclick = () => nameSpeaker(v.clip, v.speaker, v.name || "",
-                                     () => openConversation(conv));
+                                     () => refreshConversationLabels());
     $("cvSpeakers").appendChild(chip);
   }
   if (hiddenVoices){
@@ -2183,8 +2257,9 @@ async function openConversation(conv){
         c.style.background = "transparent";
         const secs = v.seconds < 10 ? v.seconds.toFixed(1) : v.seconds.toFixed(0);
         c.textContent = `${v.speaker} · ${secs}s · tap to name`;
+        c.dataset.voice = `${v.clip}|${v.speaker}`;
         c.onclick = () => nameSpeaker(v.clip, v.speaker, "",
-                                      () => openConversation(conv));
+                                      () => refreshConversationLabels());
         $("cvSpeakers").appendChild(c);
       }
     };
@@ -2223,6 +2298,7 @@ async function openConversation(conv){
   data.clips.forEach(c => { offsetOf[c.name] = acc; acc += (c.seconds || 0); });
   const elapsedOf = seg => (offsetOf[seg.clip] || 0) + seg.start;
 
+  cvLines = [];
   let lastClip = null;
   data.segments.forEach(seg => {
     if (seg.clip !== lastClip){
@@ -2260,17 +2336,41 @@ async function openConversation(conv){
 
     const body = document.createElement("div");
     body.className = "cvbody";
-    body.innerHTML = (who ? `<span class="cvwho" style="color:${col}">${esc(who)}</span>` : "")
-      + `<span class="cvtext">${esc(seg.text)}</span>`;
+
+    /* The label is a button, not decoration.
+       
+       Naming used to mean scrolling to the chips at the top of the
+       conversation, finding the right one, and scrolling back -- for every
+       speaker, in a reader that can run to hundreds of lines. The name is
+       already sitting next to the words it belongs to; clicking it is the
+       obvious gesture and it was doing nothing. */
+    if (seg.speaker){
+      const w = document.createElement("button");
+      w.className = "cvwho" + (seg.name ? "" : " unnamed");
+      w.style.color = col;
+      w.textContent = who;
+      w.title = seg.name ? `Rename ${seg.name}` : "Who is this? Click to name";
+      w.onclick = (e) => {
+        e.stopPropagation();
+        nameSpeaker(seg.clip, seg.speaker, seg.name || "",
+                    () => refreshConversationLabels());
+      };
+      body.appendChild(w);
+    }
+    const txt = document.createElement("span");
+    txt.className = "cvtext";
+    txt.textContent = seg.text;
     /* Clicking the words edits the line, the same as in a single clip. */
-    body.querySelector(".cvtext").style.cursor = "text";
-    body.querySelector(".cvtext").onclick = () =>
+    txt.style.cursor = "text";
+    txt.onclick = () =>
       editLine(seg.clip, seg.index, seg,
                Object.keys(data.clip_speakers[seg.clip] || {}),
                data.clip_speakers[seg.clip] || {});
+    body.appendChild(txt);
 
     line.appendChild(t);
     line.appendChild(body);
+    cvLines.push({el: line, seg});
     $("cvSegs").appendChild(line);
   });
 
@@ -2727,7 +2827,16 @@ function openSheet(id, focusId){
 function restoreSheetFocus(){
   const el = sheetReturn;
   sheetReturn = null;
-  if (el && document.contains(el)) el.focus();
+  /* preventScroll, because focus() otherwise scrolls whatever it lands on into
+     view. Naming a speaker from a line partway down a four-hundred-line
+     conversation put focus back on something near the top of the document and
+     took the reader with it -- sixteen thousand pixels, every time, which is
+     the whole benefit of naming in place undone at the last step. Focus still
+     goes back where it was, for anyone using a keyboard. */
+  if (el && document.contains(el)){
+    try { el.focus({preventScroll: true}); }
+    catch (e) { el.focus(); }
+  }
 }
 
 function closeNamer(){
