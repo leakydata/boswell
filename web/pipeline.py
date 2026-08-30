@@ -227,7 +227,7 @@ def scan_voices(limit=None, min_seconds=3.0):
     try:
         seen = sdb.seen_voices(c)
         stats = {"scanned": 0, "skipped_known": 0, "skipped_short": 0,
-                 "skipped_impure": 0, "matched": 0, "clustered": 0,
+                 "impure": 0, "matched": 0, "clustered": 0,
                  "new_clusters": 0}
         files = sorted(f for f in os.listdir(TRANSCRIPTS)
                        if f.endswith(".json")) if os.path.isdir(TRANSCRIPTS) else []
@@ -247,13 +247,13 @@ def scan_voices(limit=None, min_seconds=3.0):
                 if (named.get(spk) or {}).get("name"):
                     stats["skipped_known"] += 1
                     continue
-                # A slot the diarizer could not keep straight is a blend of
-                # two voices. Clustering it would spread that blend across
-                # everything it lands near, and nothing downstream could ever
-                # tell -- so it waits for a person to listen instead.
-                if (named.get(spk) or {}).get("impure"):
-                    stats["skipped_impure"] += 1
-                    continue
+                # A slot the diarizer could not keep straight still reaches the
+                # queue -- it is exactly the case where a person listening beats
+                # the model -- but in a cluster of its own, so a blend of two
+                # voices cannot spread across everything it lands near.
+                impure = bool((named.get(spk) or {}).get("impure"))
+                if impure:
+                    stats["impure"] += 1
                 secs = voice_seconds(segs, spk)
                 if secs < min_seconds:
                     stats["skipped_short"] += 1
@@ -264,7 +264,7 @@ def scan_voices(limit=None, min_seconds=3.0):
                     stats["matched"] += 1
                     continue
                 g = sdb.ingest_unknown(vec, clip=clip, speaker=spk,
-                                       seconds=secs, c=c)
+                                       seconds=secs, isolate=impure, c=c)
                 if g.get("ok"):
                     stats["clustered"] += 1
                     stats["new_clusters"] += 1 if g.get("new_cluster") else 0

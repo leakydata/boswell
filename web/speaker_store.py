@@ -121,6 +121,10 @@ CREATE TABLE IF NOT EXISTS voiceprints (
     speaker   TEXT,                   -- diarizer label it came from
     origin    TEXT NOT NULL,          -- manual | confirmed | auto | legacy
     redundant INTEGER NOT NULL DEFAULT 0,
+    -- Pooled from a diarizer slot that disagreed with itself, so possibly a
+    -- blend of two voices. Kept, shown and nameable by hand; never mixed with
+    -- references that are not.
+    impure    INTEGER NOT NULL DEFAULT 0,
     created   REAL
 );
 CREATE INDEX IF NOT EXISTS vp_person ON voiceprints(person_id);
@@ -159,6 +163,10 @@ def _conn():
     vcols = {r["name"] for r in c.execute("PRAGMA table_info(voiceprints)")}
     if "source_cluster" not in vcols:
         c.execute("ALTER TABLE voiceprints ADD COLUMN source_cluster INTEGER")
+        c.commit()
+    if "impure" not in vcols:
+        c.execute("ALTER TABLE voiceprints ADD COLUMN impure INTEGER "
+                  "NOT NULL DEFAULT 0")
         c.commit()
     return c
 
@@ -430,10 +438,21 @@ def add_voiceprint(person_id, vec, seconds=None, clip=None, speaker=None,
             return {"ok": False, "reason": "unusable",
                     "detail": "the voiceprint is empty or not finite"}
         # A voiceprint pooled over a slot that disagreed with itself is a blend
-        # of two voices. It is indistinguishable from a real one afterwards --
-        # normal length, normal neighbours, and wrong -- so it is refused here
-        # rather than left for a pruning pass that cannot detect it either.
-        if impure and origin == "auto":
+        # of two voices, indistinguishable from a real one afterwards -- normal
+        # length, normal neighbours, and wrong. So it is refused as a reference
+        # for somebody with a NAME, which is where the damage would be done.
+        #
+        # It is allowed under an unnamed cluster, because a cluster asserts
+        # nothing about who anybody is. Refusing it there was a mistake with a
+        # measurable cost: 132 of the 137 voices recorded in one day were
+        # impure, so they never became clusters, never reached the labelling
+        # queue, and the interface reported nothing to do after a full day of
+        # recording. The check was meant to stop a bad reference being learned
+        # automatically, not to hide a fifth of the archive from the person who
+        # could actually identify it.
+        named = c.execute("SELECT name FROM people WHERE id = ?",
+                          (person_id,)).fetchone()
+        if impure and origin == "auto" and named and named["name"]:
             return {"ok": False, "reason": "impure",
                     "detail": "this voice could not be told apart from another "
                               "in the same recording; naming it by hand still "
@@ -448,10 +467,10 @@ def add_voiceprint(person_id, vec, seconds=None, clip=None, speaker=None,
         v = unit(vec)
         cur = c.execute("""INSERT INTO voiceprints
                            (person_id, vec, dim, seconds, clip, speaker,
-                            origin, created)
-                           VALUES (?,?,?,?,?,?,?,?)""",
+                            origin, impure, created)
+                           VALUES (?,?,?,?,?,?,?,?,?)""",
                         (person_id, _pack(v), int(v.size), seconds, clip,
-                         speaker, origin, time.time()))
+                         speaker, origin, 1 if impure else 0, time.time()))
         c.commit()
         return {"ok": True, "voiceprint_id": cur.lastrowid,
                 "person_id": person_id}
@@ -741,13 +760,23 @@ def set_kind(person_id, kind, c=None):
             c.close()
 
 
-def _best_unknown(v, c):
-    """The unnamed cluster this voice most resembles, if any clears CLUSTER_MIN."""
+def _best_unknown(v, c, impure=False):
+    """The unnamed cluster this voice most resembles, if any clears CLUSTER_MIN.
+
+    Impure voices are matched only against other impure ones, and clean against
+    clean. Mixing them was the harm the purity check exists to prevent -- a
+    blend of two people chained into a clean cluster spreads across everything
+    it lands near. Isolating each impure voice completely was the first attempt
+    at that and traded one problem for another: one person across thirty clips
+    became thirty one-clip entries, which is the wall of SPEAKER_00 the queue
+    was built to replace.
+    """
     rows = c.execute("""
         SELECT v.person_id, v.vec FROM voiceprints v
         JOIN people p ON p.id = v.person_id
         WHERE p.name IS NULL AND (p.kind IS NULL OR p.kind != ?)
-    """, (KIND_MEDIA,)).fetchall()
+          AND v.impure = ?
+    """, (KIND_MEDIA, 1 if impure else 0)).fetchall()
     if not rows:
         return None, 0.0
     M = np.stack([_unpack(r["vec"]) for r in rows])
@@ -764,7 +793,8 @@ def _best_unknown(v, c):
 
 
 @_invalidates
-def ingest_unknown(vec, clip=None, speaker=None, seconds=None, c=None):
+def ingest_unknown(vec, clip=None, speaker=None, seconds=None,
+                   isolate=False, c=None):
     """File one unidentified voice, joining a cluster or starting one.
 
     Stored with origin 'auto' -- but note these are attached to NOBODY. An
@@ -781,12 +811,16 @@ def ingest_unknown(vec, clip=None, speaker=None, seconds=None, c=None):
         if not is_usable(vec):
             return {"ok": False, "reason": "unusable"}
         v = unit(vec)
-        pid, score = _best_unknown(v, c)
+        # An impure voice groups with other impure voices, never with clean
+        # ones. It stays out of the clusters a name will be attached to, and
+        # still gathers its own repeats so a person who turns up all afternoon
+        # is one entry to listen to rather than thirty.
+        pid, score = _best_unknown(v, c, impure=isolate)
         created = pid is None
         if created:
             pid = new_person(None, c)
         r = add_voiceprint(pid, v, seconds=seconds, clip=clip, speaker=speaker,
-                           origin="auto", c=c)
+                           origin="auto", impure=isolate, c=c)
         if not r.get("ok"):
             return r
         return {"ok": True, "person_id": pid, "voiceprint_id": r["voiceprint_id"],

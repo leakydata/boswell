@@ -110,6 +110,34 @@ def test_impure_slots_are_refused_for_automatic_enrolment(db):
     assert db.add_voiceprint(pid, vec(4), origin="manual", impure=True)["ok"]
 
 
+def test_an_impure_voice_still_reaches_the_queue(db):
+    """Refusing it everywhere hid a fifth of the archive from the one person
+    who could identify it.
+
+    The refusal is about not learning a blended reference for somebody with a
+    name. An unnamed cluster asserts nothing about who anybody is, so an impure
+    voice belongs there -- visible, listenable, and flagged. It gets a cluster
+    of its own rather than joining one, so the blend cannot spread.
+    """
+    a = db.new_person()
+    db.add_voiceprint(a, vec(50), origin="auto")
+
+    r = db.ingest_unknown(near(vec(50), 0.97), isolate=True)
+    assert r["ok"], "an impure voice must still be storable as an unknown"
+    assert r["new_cluster"], "it must not join a clean cluster, however close"
+    assert r["person_id"] != a
+
+    ids = {c["id"] for c in db.unknown_clusters()}
+    assert {a, r["person_id"]} <= ids, "both must be visible in the queue"
+
+    # But impure voices must gather with each other, or one person across
+    # thirty clips becomes thirty one-clip entries.
+    again = db.ingest_unknown(near(vec(50), 0.96, seed=7), isolate=True)
+    assert again["person_id"] == r["person_id"], \
+        "a repeat of the same impure voice must join it, not start again"
+    assert not again["new_cluster"]
+
+
 def test_writes_invalidate_the_reference_cache(db):
     """Naming somebody must affect the very next match.
 
