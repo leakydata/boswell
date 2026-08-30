@@ -1,19 +1,25 @@
 #!/usr/bin/env python3
-"""
-Named-speaker enrollment database.
+"""Read and enrol against the speaker store, from a shell.
 
-Diarization only ever produces per-file labels (SPEAKER_00, SPEAKER_01) that
-mean nothing across recordings. This maps those to real people by cosine
-matching against enrolled voiceprints.
+The web interface owns this data now and is a much better place to do the work:
+it can play a voice on its own, show the closest named people with scores, and
+undo a naming that attached three hundred references at once. This is for the
+cases a browser is awkward for -- a script, a remote shell, a quick look.
 
-There is no training step. Enrolling appends to a running centroid, so a
-person's print sharpens with every label you add and is usable from the first.
+It reads the same SQLite store the web side writes, rather than keeping one of
+its own. It previously read and wrote data/speakers.npz directly, which quietly
+stopped being authoritative when the store moved, so `identify` was scoring
+against centroids nothing else had used in some time and reporting the answer
+with a straight face.
 
-Usage:
-    uv run host/speaker_db.py enroll  alice   data/spk_vad_sample.npz SPEAKER_00
     uv run host/speaker_db.py list
-    uv run host/speaker_db.py identify data/spk_ble_voice.npz
-    uv run host/speaker_db.py label    data/spk_vad_sample.npz
+    uv run host/speaker_db.py identify data/spk_other.npz
+    uv run host/speaker_db.py enroll alice data/spk_meeting.npz SPEAKER_00
+
+Enrolling adds one reference. It does not average anything into a centroid and
+does not refuse a sample for being unlike what is already stored -- a voice in
+a different room is meant to look different, and that sample is the valuable
+one.
 """
 
 import argparse
@@ -35,6 +41,22 @@ def unit(v):
     v = np.asarray(v, dtype=np.float64).ravel()
     n = np.linalg.norm(v)
     return v / n if n else v
+
+
+def _store():
+    """The live store. This tool no longer keeps one of its own.
+
+    It used to read and write data/speakers.npz directly, which stopped being
+    authoritative when the web side moved to SQLite -- so `identify` was
+    scoring against centroids nothing else had used for some time and
+    reporting the answer with a straight face. A stale second opinion is worse
+    than no second opinion.
+    """
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                    "..", "web"))
+    import speaker_store
+    speaker_store.migrate()
+    return speaker_store
 
 
 def load_db():
@@ -91,47 +113,58 @@ def cmd_enroll(args):
         print(f"{args.speaker} not in {args.npz}; has {src.files}", file=sys.stderr)
         return 1
 
-    vec = unit(src[args.speaker])
-    vecs, meta = load_db()
-
-    if args.name in vecs:
-        n = meta.get(args.name, {}).get("count", 1)
-        # Running mean in embedding space, renormalised so the centroid stays
-        # comparable by cosine.
-        vecs[args.name] = unit(unit(vecs[args.name]) * n + vec)
-        meta[args.name]["count"] = n + 1
-        print(f"updated '{args.name}' (now {n + 1} samples)")
-    else:
-        vecs[args.name] = vec
-        meta[args.name] = {"count": 1}
-        print(f"enrolled '{args.name}' (1 sample)")
-
-    meta[args.name].setdefault("sources", []).append(f"{args.npz}:{args.speaker}")
-    save_db(vecs, meta)
+    store = _store()
+    c = store._conn()
+    try:
+        pid = store.person_id_for(args.name, c)
+        # No averaging, and no resemblance check. Every enrolment is its own
+        # reference: a sample unlike the ones already held covers a condition
+        # they do not, which is the point.
+        r = store.add_voiceprint(pid, src[args.speaker], clip=args.npz,
+                                 speaker=args.speaker, origin="manual", c=c)
+        if not r.get("ok"):
+            print(f"refused: {r.get('detail', r.get('reason'))}", file=sys.stderr)
+            return 1
+        n = len(store.voiceprints(pid, c))
+    finally:
+        c.close()
+    print(f"enrolled '{args.name}' ({n} reference{'' if n == 1 else 's'})")
     return 0
 
 
 def cmd_list(args):
-    vecs, meta = load_db()
-    if not vecs:
+    store = _store()
+    people = [p for p in store.people() if p["name"]]
+    if not people:
         print("no speakers enrolled")
         return 0
-    print(f"{len(vecs)} enrolled:")
-    for name in sorted(vecs):
-        c = meta.get(name, {}).get("count", "?")
-        print(f"  {name:<20} {c} sample(s)")
-    if len(vecs) > 1:
-        print("\n  pairwise similarity between enrolled people:")
-        names = sorted(vecs)
-        for i, a in enumerate(names):
-            for b in names[i + 1:]:
-                s = float(unit(vecs[a]) @ unit(vecs[b]))
-                warn = "   <-- too close, may confuse" if s > MATCH_THRESHOLD else ""
-                print(f"    {a} vs {b}: {s:.3f}{warn}")
+    print(f"{len(people)} enrolled:")
+    for p in people:
+        kind = f"  [{p['kind']}]" if p.get("kind") else ""
+        print(f"  {p['name']:<24} {p['prints']} reference(s), "
+              f"{p['seconds']:.0f}s{kind}")
     return 0
 
 
 def cmd_identify(args):
+    store = _store()
+    src = np.load(args.npz)
+    c = store._conn()
+    try:
+        for spk in src.files:
+            r = store.match(src[spk], c)
+            who = r.get("name") or "UNKNOWN"
+            cands = ", ".join(f"{x['name']} {x['score']:.3f}"
+                              for x in r.get("candidates", [])[:3]
+                              if x.get("name"))
+            print(f"  {spk:<14} {who:<20} {r['decision']:<10} "
+                  f"score {r['score']:.3f}" + (f"   [{cands}]" if cands else ""))
+    finally:
+        c.close()
+    return 0
+
+
+def _cmd_identify_legacy(args):
     vecs, meta = load_db()
     if not vecs:
         print("no speakers enrolled yet", file=sys.stderr)

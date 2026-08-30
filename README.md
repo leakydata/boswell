@@ -263,17 +263,31 @@ Diarization only produces per-file labels — `SPEAKER_00` in one recording is
 not the same person as `SPEAKER_00` in another. Boswell maps those to real
 people by cosine-matching 256-dim voiceprints against an enrollment database.
 
-**There is no training step.** Enrolling appends to a running centroid in
-embedding space. It works from the first sample and sharpens with each label.
+**There is no training step, and no average.** Every label is kept as its own
+voiceprint and matching takes the closest single one. Averaging a person into a
+centroid was the previous design and it was wrong: the same voice in a quiet
+room and outdoors are genuinely far apart in embedding space, and a mean of the
+two matches neither well. A person accumulates a reference per condition
+instead, and any one of them is enough to recognise them in that condition.
 
-```bash
-uv run host/speaker_db.py enroll alice data/spk_meeting.npz SPEAKER_00
-uv run host/speaker_db.py identify data/spk_other.npz
-```
+**Identity does not survive the night.** Measured across eleven days of labelled
+references: the same voice scores about 0.86 against itself within the hour and
+about 0.5 a day later, while two different people under matched conditions reach
+0.57 at the 99th percentile. Those overlap, so no threshold accepts a voice
+across days without also accepting strangers. A second embedder trained on
+different data falls the same way on the same audio, so this is a property of
+the speech or the capture path rather than of the model.
 
-This also gives you background rejection for free: a voice from a television
-or radio matches nobody enrolled, scores below threshold, and is reported as
-`UNKNOWN`.
+That is why the **People** tab has a labelling queue and why it defaults to
+"since yesterday". Recognising somebody tomorrow means having a reference from
+tomorrow, so the system converges by a couple of minutes a day rather than by
+better matching. See `tools_speaker_diag/drift.py` and `embedders.py`.
+
+Voices off a screen are tagged `media` rather than deleted. Their transcripts
+stay searchable -- half the point of recording a day is finding the video you
+half-remember -- and they stop competing to be somebody, which is how a YouTube
+narrator once spent weeks filed under a real name. They are also the only
+cross-condition reference data in the archive, which is worth keeping.
 
 ---
 
@@ -538,26 +552,36 @@ Because the reference is an average, a bad sample degrades it, so two checks
 run before anything is enrolled:
 
 - **Length.** Under 5 seconds of a voice in a clip is refused. Short speech
-  makes an unreliable embedding, and averaging one in drags the reference away
-  from how the person actually sounds.
-- **Outliers.** A sample scoring below 0.55 against the existing reference is
-  refused as probably belonging to somebody else. Measured on this hardware,
-  the same speaker across recordings scores 0.65–0.87 and two different
-  speakers 0.38–0.48, so 0.55 sits in the gap. An earlier threshold of 0.40 sat
-  *inside* the different-speaker range and let a wrong voice enrol silently.
+  makes an unreliable embedding, and a bad reference is permanent.
+- **Purity.** A diarizer slot whose own turns disagree with each other is
+  refused for automatic enrolment. It is usually two people run together, and a
+  voiceprint pooled from two voices is indistinguishable from a real one
+  afterwards -- right length, right neighbours, quietly wrong forever. Naming
+  one by hand still works, because a person listening can hear what the model
+  cannot.
 
-Both are advisory. The interface says why and offers to add it anyway, because
-only the person listening can settle a genuinely unusual recording.
+There is deliberately **no resemblance check**. The previous design refused any
+sample scoring below 0.55 against the person already enrolled, which rejected
+exactly the different-room, different-day samples this store exists to collect.
+A sample that resembles nothing already held is the valuable one.
 
-Every sample is kept individually rather than only the average, so the **People**
-tab can list what a voiceprint was built from and remove any one of them, and the
-reference is rebuilt without it.
+Every reference is kept individually, so the **People** tab lists them, groups
+the ones that arrived together from naming a voice, and can put a whole group
+back if the name was wrong.
 
-Quality matters more than quantity. Measured on short real-world clips,
-identification scores 0.42–0.74 against a 0.60 threshold — the same voice is
-recognised in some clips and missed in others when the enrolment came from a
-single session. Label long clips with clear speech, and use **split by voice**
-first so the voiceprint comes from one person rather than a conversation.
+Coverage matters more than quantity. The thresholds are derived rather than
+guessed -- 1642 same-speaker and 2141 different-speaker pairs, harvested from
+diarized conversations where conditions are held constant:
+
+| | median | p10 / p99 |
+|---|--:|--:|
+| same person, matched conditions | 0.863 | p10 0.715 |
+| different people, same recording | 0.107 | p99 0.572 |
+
+A separation of 0.76, not the 0.16 an earlier three-pair measurement suggested.
+`MATCH_HIGH` is 0.75 with a 0.15 margin required between the top two *people* --
+not the top two references, since a well-covered person owns several of those.
+Run `tools_speaker_diag/` to re-derive any of it.
 
 ## Custom words
 
@@ -706,7 +730,9 @@ this firmware already spends on 8 kHz ADPCM. So Opus is not a bandwidth saving
 at their settings; it is roughly double the audio bandwidth for the same cost.
 That matters more for speaker identification than for battery, since voiceprints
 depend on spectral detail that 8 kHz throws away — and identification is the
-weakest part of this system, scoring 0.42–0.74 against a 0.60 threshold.
+weakest part of this system: within a recording it is reliable, across days it
+fails outright. Whether the capture path is what causes that is the one open
+question left, and `tools_speaker_diag/capture_path.py` has the protocol.
 
 **Their audio buffer is 16000 samples, one second.** Arrived at here
 independently while chasing a click in flash-buffered recordings: a NOR sector

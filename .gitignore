@@ -27,3 +27,4 @@ __pycache__/
 # browser automation snapshots — these capture the live interface,
 # including real names and transcript text
 .playwright-mcp/
+.codex/
