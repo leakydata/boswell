@@ -1758,7 +1758,12 @@ function clipTime(name){
 }
 
 
-async function editLine(name, index, seg, ids, named){
+async function editLine(name, index, seg, ids, named, onSaved, colorFor){
+  /* onSaved lets the conversation reader refresh itself in place. Without it
+     this called renderTranscript(), which draws the SINGLE-CLIP view -- so
+     correcting a line from a conversation saved the edit and then threw you
+     out of the conversation into one clip of it, with your place gone. The
+     edit had worked; the reader had been replaced underneath it. */
   $("edT").textContent = "Edit line";
   $("edSub").textContent = `${seg.start.toFixed(0)}s — correct the words, or pick who said it.`;
   $("editArea").value = seg.text || "";
@@ -1773,7 +1778,7 @@ async function editLine(name, index, seg, ids, named){
   $("edSpk").innerHTML = "";
   for (const id of ids){
     const b = document.createElement("button");
-    const col = colorOf(spkColors[id]);
+    const col = colorOf(colorFor ? colorFor(id) : spkColors[id]);
     const nm = (named[id] && named[id].name) ? named[id].name : id;
     b.className = "who" + (id === chosen ? " named" : "");
     b.style.borderColor = col; b.style.color = col; b.style.background = "transparent";
@@ -1802,7 +1807,8 @@ async function editLine(name, index, seg, ids, named){
         return;
       }
       closeEditor();
-      await renderTranscript(name);
+      if (onSaved) await onSaved();
+      else await renderTranscript(name);
     }catch(e){ $("edErr").textContent = "Could not reach the server"; }
   };
 
@@ -2109,7 +2115,7 @@ let cvCurrent = null;
    there to do. */
 let cvLines = [];
 
-async function refreshConversationLabels(){
+async function refreshConversationLines(){
   if (!cvCurrent || !cvLines.length) return;
   let data;
   try{
@@ -2120,21 +2126,30 @@ async function refreshConversationLabels(){
     data = await r.json();
   }catch(e){ return; }
 
-  /* Match by (clip, speaker, start) rather than by position. Naming can
-     propagate across the whole archive and a re-transcription can change how
-     many lines there are, so an index into the old list is not safe to trust
-     against the new one. */
+  /* Keyed on (clip, index), which is what an edit cannot move. Matching on
+     the speaker would break the moment a line was reassigned to somebody else
+     -- which the editor can do -- and matching on position in the list breaks
+     when naming propagates or a re-transcription changes how many lines there
+     are. */
   const fresh = new Map();
   for (const sg of (data.segments || [])){
-    fresh.set(`${sg.clip}|${sg.speaker}|${sg.start}`, sg);
+    fresh.set(`${sg.clip}|${sg.index}`, sg);
   }
   const keyOf = seg => seg.name || `${seg.clip}:${seg.speaker}`;
   assignSpeakerColors([...new Set((data.segments || []).map(keyOf))]);
 
   let changed = 0;
   for (const {el, seg} of cvLines){
-    const now = fresh.get(`${seg.clip}|${seg.speaker}|${seg.start}`);
+    const now = fresh.get(`${seg.clip}|${seg.index}`);
     if (!now) continue;
+
+    const tx = el.querySelector(".cvtext");
+    if (tx && tx.textContent !== now.text){
+      tx.textContent = now.text;
+      seg.text = now.text;
+      changed++;
+    }
+
     const w = el.querySelector(".cvwho");
     if (!w) continue;
     const label = now.name || now.speaker || "";
@@ -2144,6 +2159,7 @@ async function refreshConversationLabels(){
     w.style.color = now.speaker ? colorOf(spkColors[keyOf(now)]) : "var(--faint)";
     w.title = now.name ? `Rename ${now.name}` : "Who is this? Click to name";
     seg.name = now.name;
+    seg.speaker = now.speaker;
   }
 
   for (const chip of document.querySelectorAll("#cvSpeakers [data-voice]")){
@@ -2167,7 +2183,7 @@ async function refreshConversationLabels(){
   $("cvTitle").textContent = `${fmtClock(cvCurrent.start)}–${fmtClock(cvCurrent.end)}`
     + (people.length ? ` · ${people.join(", ")}` : "");
   $("cvTitleTop").textContent = $("cvTitle").textContent;
-  if (changed) $("cvMsg").textContent = `${changed} line(s) relabelled`;
+  if (changed) $("cvMsg").textContent = `${changed} line(s) updated`;
 }
 
 async function openConversation(conv){
@@ -2239,7 +2255,7 @@ async function openConversation(conv){
     /* Enrolling a voiceprint propagates the name to every clip it matches, so
        the whole reader is refreshed -- but in place, keeping the scroll. */
     chip.onclick = () => nameSpeaker(v.clip, v.speaker, v.name || "",
-                                     () => refreshConversationLabels());
+                                     () => refreshConversationLines());
     $("cvSpeakers").appendChild(chip);
   }
   if (hiddenVoices){
@@ -2259,7 +2275,7 @@ async function openConversation(conv){
         c.textContent = `${v.speaker} · ${secs}s · tap to name`;
         c.dataset.voice = `${v.clip}|${v.speaker}`;
         c.onclick = () => nameSpeaker(v.clip, v.speaker, "",
-                                      () => refreshConversationLabels());
+                                      () => refreshConversationLines());
         $("cvSpeakers").appendChild(c);
       }
     };
@@ -2353,7 +2369,7 @@ async function openConversation(conv){
       w.onclick = (e) => {
         e.stopPropagation();
         nameSpeaker(seg.clip, seg.speaker, seg.name || "",
-                    () => refreshConversationLabels());
+                    () => refreshConversationLines());
       };
       body.appendChild(w);
     }
@@ -2362,10 +2378,16 @@ async function openConversation(conv){
     txt.textContent = seg.text;
     /* Clicking the words edits the line, the same as in a single clip. */
     txt.style.cursor = "text";
+    txt.title = "Click to correct these words";
     txt.onclick = () =>
       editLine(seg.clip, seg.index, seg,
                Object.keys(data.clip_speakers[seg.clip] || {}),
-               data.clip_speakers[seg.clip] || {});
+               data.clip_speakers[seg.clip] || {},
+               () => refreshConversationLines(),
+               /* This view colours by resolved identity, so the editor cannot
+                  look a bare SPEAKER_00 up in the same table. */
+               id => spkColors[(data.clip_speakers[seg.clip] || {})[id]?.name
+                               || `${seg.clip}:${id}`]);
     body.appendChild(txt);
 
     line.appendChild(t);
@@ -2545,7 +2567,14 @@ function assignSpeakerColors(ids){
   spkColors = {};
   ids.forEach((id, i) => { spkColors[id] = SPK_PALETTE[i % SPK_PALETTE.length]; });
 }
-function colorOf(c){ return c.startsWith("var(") ? cssVar("--accent") : c; }
+function colorOf(c){
+  /* Tolerates an unknown key. This threw on undefined, and because the throw
+     happened partway through editLine the editor sheet never opened at all --
+     correcting a line from the conversation view did nothing, silently, with
+     the failure showing up as a missing dialog rather than as an error. */
+  if (!c) return cssVar("--accent");
+  return c.startsWith("var(") ? cssVar("--accent") : c;
+}
 
 function cssVar(n){ return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
 
