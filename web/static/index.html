@@ -1685,7 +1685,8 @@ async function loadPeople(){
       const cnt = document.createElement("span");
       cnt.className = "cnt";
       cnt.textContent = `${p.count} voiceprint${p.count === 1 ? "" : "s"}`
-                      + (p.kind === "media" ? " · media" : "");
+                      + (p.kind === "media" ? " · media" : "")
+                      + (p.role ? ` · ${p.role}` : "");
       h.appendChild(cnt);
       d.appendChild(h);
 
@@ -1694,6 +1695,48 @@ async function loadPeople(){
          a YouTube narrator sat under a real name here for weeks -- while its
          words stay searchable and its voiceprints stay as the only
          cross-condition reference data in the archive. */
+      /* A profile starts as a name and gains the rest whenever somebody
+         feels like it. Asking for a role and a note at naming time would put
+         two optional questions in front of the one that matters, and the
+         answer to "who is this" is usually just a name.
+         Renaming here carries the new name out to every recording that
+         mentions the old one -- the transcripts hold a copy, so without that
+         the store and the archive would disagree about who somebody is. */
+      const prof = document.createElement("div");
+      prof.className = "samp";
+      const rename = document.createElement("button");
+      rename.textContent = "Rename";
+      rename.title = "Changes the name here and on every clip that says it";
+      rename.onclick = async () => {
+        const to = prompt(`Rename ${p.name} to:`, p.name);
+        if (!to || to.trim() === p.name) return;
+        const r = await fetch(`/api/voices/${p.person_id}/name`, {
+          method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({name: to.trim()})});
+        const b = await r.json().catch(() => ({}));
+        if (r.ok) log(`renamed to ${b.name}`
+                      + (b.renamed_clips ? ` on ${b.renamed_clips} clip(s)` : ""));
+        else log(b.detail || "could not rename");
+        loadPeople(); loadVoices();
+      };
+      const role = document.createElement("input");
+      role.placeholder = "who are they? (YouTuber, housemate, …)";
+      role.value = p.role || "";
+      role.style.cssText = "flex:1;min-width:140px;padding:6px 9px;border-radius:7px;"
+        + "border:1px solid var(--rule);background:var(--paper);color:var(--ink)";
+      const saveProf = document.createElement("button");
+      saveProf.textContent = "Save";
+      saveProf.onclick = async () => {
+        saveProf.disabled = true;
+        await fetch(`/api/voices/${p.person_id}/profile`, {
+          method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({role: role.value})});
+        log(`${p.name}: ${role.value.trim() || "role cleared"}`);
+        saveProf.disabled = false;
+      };
+      prof.append(rename, role, saveProf);
+      d.appendChild(prof);
+
       const kind = document.createElement("button");
       kind.textContent = p.kind === "media" ? "Treat as a person" : "It's a video";
       kind.style.cssText = "margin-right:8px";

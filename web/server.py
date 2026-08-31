@@ -2002,6 +2002,46 @@ async def api_transcript(name: str):
     return JSONResponse(json.load(open(tp)))
 
 
+def _rename_in_transcripts(old, new):
+    """Carry a rename out to every recording that mentions the old name.
+
+    Both places it can appear: the name resolved for a diarized voice, and a
+    name pinned to one line by hand. Returns how many clips changed.
+    """
+    changed = 0
+    for f in sorted(os.listdir(DATA)):
+        if not f.endswith(".wav"):
+            continue
+        tp = pipeline.transcript_path(f)
+        if not os.path.exists(tp):
+            continue
+        try:
+            t = json.load(open(tp))
+        except Exception:
+            continue
+        hit = False
+        for info in (t.get("speakers") or {}).values():
+            if info and info.get("name") == old:
+                info["name"] = new
+                hit = True
+            for cand in (info or {}).get("candidates") or []:
+                if cand.get("name") == old:
+                    cand["name"] = new
+                    hit = True
+        for seg in t.get("segments") or []:
+            if seg.get("speaker_name") == old:
+                seg["speaker_name"] = new
+                hit = True
+        if hit:
+            atomicio.write_json(tp, t, indent=2, allow_nan=False)
+            try:
+                index_db.upsert_clip(f)
+            except Exception:
+                pass
+            changed += 1
+    return changed
+
+
 def _rematch_clips(names=None):
     """Re-run speaker matching from stored voiceprint embeddings.
 
@@ -2636,7 +2676,7 @@ async def api_auto_set(body: dict):
 
 
 @app.post("/api/conversation/consolidate_all")
-async def api_consolidate_all(min_clips: int = 3):
+async def api_consolidate_all(min_clips: int = 3, limit: int = 400):
     """Re-diarize every conversation in the archive, one at a time.
 
     Worth doing once: every voiceprint in the store was pooled over at most
@@ -2647,14 +2687,20 @@ async def api_consolidate_all(min_clips: int = 3):
     if _bulk["running"]:
         raise HTTPException(409, "already running")
     import index_db
-    groups = [cv["clips"] for cv in index_db.conversations(300, 400)
+    # `limit` is how many clips back to look, and it defaulted to 400 with no
+    # way to say otherwise -- so "re-diarize every conversation in the archive"
+    # quietly meant the newest 400 clips of nearly two thousand, and the voices
+    # in everything older stayed as they were. Nothing said which it had done.
+    groups = [cv["clips"] for cv in index_db.conversations(300, limit)
               if len(cv.get("clips") or []) >= min_clips]
     if not groups:
         raise HTTPException(400, "no conversations big enough to be worth it")
     threading.Thread(target=_bulk_consolidate, args=(groups,),
                      daemon=True).start()
-    device.event("log", text=f"consolidating {len(groups)} conversation(s)")
-    return {"ok": True, "conversations": len(groups)}
+    clips = sum(len(g) for g in groups)
+    device.event("log", text=(f"consolidating {len(groups)} conversation(s), "
+                              f"{clips} clips"))
+    return {"ok": True, "conversations": len(groups), "clips": clips}
 
 
 @app.get("/api/conversation/consolidate_all")
@@ -2829,6 +2875,7 @@ async def api_voices_name(person_id: int, body: dict):
                         (person_id,)).fetchone()
         if row is None:
             raise HTTPException(404, "no such voice")
+        was = row["name"]
         n = c.execute("SELECT COUNT(*) n FROM voiceprints WHERE person_id = ?",
                       (person_id,)).fetchone()["n"]
         r = speaker_store.name_person(person_id, name, c)
@@ -2837,10 +2884,24 @@ async def api_voices_name(person_id: int, body: dict):
     device.event("log", text=(f"named {n} voiceprint(s) as {name}"
                               + (" (merged into an existing person)"
                                  if r.get("merged") else "")))
+    # A rename has to reach the recordings, not only the store.
+    #
+    # The transcripts keep the name as a copy -- that is what the reader shows
+    # and what search and export use -- so renaming somebody in the store left
+    # every clip still saying the old thing, and the store and the archive
+    # disagreeing about who somebody is. Re-matching does not fix it either:
+    # it leaves hand-set names alone by design, which is right, and means a
+    # correction to one of those would never land.
+    renamed = 0
+    if was and was != name:
+        renamed = _rename_in_transcripts(was, name)
+        device.event("log", text=(f"renamed {was!r} to {name!r} on "
+                                  f"{renamed} clip(s)"))
+
     # Names travel back through the transcripts the same way a hand label
     # does, so the clips this voice appears in stop saying SPEAKER_00.
     changed = _rematch_clips()
-    return {"ok": True, "name": name, "voiceprints": n,
+    return {"ok": True, "name": name, "voiceprints": n, "renamed_clips": renamed,
             "merged": r.get("merged", False), "clips_relabelled": changed}
 
 

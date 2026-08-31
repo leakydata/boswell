@@ -1615,3 +1615,72 @@ class TestOfferingTheRestOfTheClip:
         window, instant put it at 826."""
         page = self._page()
         assert 'behavior: "smooth"' not in page
+
+
+class TestRenamingReachesTheRecordings:
+    """A rename in the store has to change what the clips say.
+
+    The transcripts hold the name as a copy -- it is what the reader shows and
+    what search and export use -- so renaming somebody in the store alone left
+    every clip still saying the old thing, with the store and the archive
+    disagreeing about who somebody is.
+
+    Re-matching does not cover it: that leaves hand-set names alone by design,
+    which is right, and means a correction to one of those would never land.
+    """
+
+    def _rename(self, tmp_path, monkeypatch, transcripts):
+        import json, sys, os
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "web"))
+        import server, pipeline, index_db
+        data = tmp_path / "data"
+        (data / "transcripts").mkdir(parents=True)
+        monkeypatch.setattr(server, "DATA", str(data))
+        monkeypatch.setattr(pipeline, "DATA", str(data))
+        monkeypatch.setattr(pipeline, "TRANSCRIPTS", str(data / "transcripts"))
+        monkeypatch.setattr(index_db, "upsert_clip", lambda *a, **k: None)
+        for name, body in transcripts.items():
+            (data / name).write_bytes(b"")
+            (data / "transcripts" / (name[:-4] + ".json")).write_text(json.dumps(body))
+        return server, data
+
+    def test_a_resolved_name_is_carried_over(self, tmp_path, monkeypatch):
+        server, data = self._rename(tmp_path, monkeypatch, {
+            "a.wav": {"speakers": {"SPEAKER_00": {"name": "Ryan Long"}},
+                      "segments": []}})
+        import json
+        assert server._rename_in_transcripts("Ryan Long", "Ryan") == 1
+        t = json.loads((data / "transcripts" / "a.json").read_text())
+        assert t["speakers"]["SPEAKER_00"]["name"] == "Ryan"
+
+    def test_a_pinned_line_is_carried_over(self, tmp_path, monkeypatch):
+        server, data = self._rename(tmp_path, monkeypatch, {
+            "a.wav": {"speakers": {}, "segments":
+                      [{"text": "hi", "speaker_name": "Ryan Long"}]}})
+        import json
+        assert server._rename_in_transcripts("Ryan Long", "Ryan") == 1
+        t = json.loads((data / "transcripts" / "a.json").read_text())
+        assert t["segments"][0]["speaker_name"] == "Ryan"
+
+    def test_candidates_are_carried_over_too(self, tmp_path, monkeypatch):
+        """Otherwise the queue keeps offering a name nobody has any more."""
+        server, data = self._rename(tmp_path, monkeypatch, {
+            "a.wav": {"speakers": {"S": {"name": None, "candidates":
+                                         [{"name": "Ryan Long", "score": 0.7}]}},
+                      "segments": []}})
+        import json
+        assert server._rename_in_transcripts("Ryan Long", "Ryan") == 1
+        t = json.loads((data / "transcripts" / "a.json").read_text())
+        assert t["speakers"]["S"]["candidates"][0]["name"] == "Ryan"
+
+    def test_other_people_are_left_alone(self, tmp_path, monkeypatch):
+        server, data = self._rename(tmp_path, monkeypatch, {
+            "a.wav": {"speakers": {"S": {"name": "Nathan"}}, "segments": []}})
+        assert server._rename_in_transcripts("Ryan Long", "Ryan") == 0
+
+    def test_it_counts_clips_not_mentions(self, tmp_path, monkeypatch):
+        server, _ = self._rename(tmp_path, monkeypatch, {
+            "a.wav": {"speakers": {"S": {"name": "Ryan Long"}},
+                      "segments": [{"text": "x", "speaker_name": "Ryan Long"}]},
+            "b.wav": {"speakers": {"S": {"name": "Ryan Long"}}, "segments": []}})
+        assert server._rename_in_transcripts("Ryan Long", "Ryan") == 2
