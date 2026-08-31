@@ -1368,12 +1368,17 @@ class TestWhichNonPersonLabelsLearn:
         assert "TV" not in re.findall(r'"([^"]+)"', block)
 
     def test_the_gate_runs_before_the_voiceprint_is_looked_at(self):
-        """It must refuse by name, not by whether a vector happens to exist."""
+        """It must refuse by name, not by whether a vector happens to exist.
+
+        Measured on offsets in the whole file rather than inside a fixed-size
+        window: the first version sliced 900 characters and the explanatory
+        comment between the two branches is longer than that, so it failed on
+        the size of a comment rather than on the order of the code.
+        """
         s = self._server()
-        i = s.index("enrolled, reason, count = False, None, None")
-        block = s[i:i + 900]
-        gate = block.index("if name in NEVER_ENROL_NAMES:")
-        novec = block.index("elif vec is None:")
+        start = s.index("enrolled, reason, count = False, None, None")
+        gate = s.index("if name in NEVER_ENROL_NAMES:", start)
+        novec = s.index("elif vec is None:", start)
         assert gate < novec, "the name check must come first"
 
     def test_all_three_are_still_marked_media(self):
