@@ -925,21 +925,24 @@ function paint(s){
                             + "arriving now is being saved"
                           : `${s.rate/1000} kHz · ADPCM · ${s.frames} frames`;
   $("ver").textContent = s.connected ? "XIAO-MIC" : "disconnected";
+  lastStateAt = Date.now();
 
   /* Live state in the top bar, in the same words and the same colours the
      device's own light uses -- so what is on screen and what is on the strap
      agree without translation. */
   const cap = $("capState");
-  cap.hidden = !s.connected && !s.scanning;
-  if (!cap.hidden){
-    const st = !s.connected ? ["waiting", "#4a90e0"]
-             : s.armed ? (s.backlog_bytes > 2048 ? ["catching up", "#4ad0d0"]
-                                                 : ["recording", "#5ad07a"])
-             : ["paused", "#e05a5a"];
-    cap.querySelector("i").style.background = st[1];
-    cap.querySelector("b").textContent = st[0];
-    cap.style.color = st[1];
-  }
+  /* Always shown, never hidden. A pill that disappears when the device drops
+     is a third state the reader has to notice the absence of, and the one it
+     is easiest to misread as the one before it. */
+  cap.hidden = false;
+  const st = !s.connected ? (s.scanning ? ["looking for the device", "#4a90e0"]
+                                        : ["device offline", "var(--faint)"])
+           : s.armed ? (s.backlog_bytes > 2048 ? ["catching up", "#4ad0d0"]
+                                               : ["recording", "#5ad07a"])
+           : ["paused", "#e05a5a"];
+  cap.querySelector("i").style.background = st[1];
+  cap.querySelector("b").textContent = st[0];
+  cap.style.color = st[1];
   const bat = $("battState");
   bat.hidden = !s.connected || !s.battery_pct;
   if (!bat.hidden){
@@ -1048,7 +1051,9 @@ async function connect(){
       }
     }
   };
+  ws.onerror = () => linkLost("connection lost");
   ws.onclose = (e) => {
+    linkLost(e.code === 1008 ? "not authorised" : "connection lost");
     /* 1008 is the server refusing the credentials. Retrying forever against
        a refusal is how the token gate never appeared: the socket closed, the
        page reconnected, and nobody was ever asked for anything. */
@@ -3773,6 +3778,33 @@ $("bSave").onclick = () => send({cmd:"save"});
 /* One place that turns a register value into something readable, so the label
    under the slider and the label written when it moves cannot disagree.
    0x28 (40) is 0 dB and a step is half a decibel. */
+/* Everything on this page is a picture of a moment the server last described.
+   When the description stops arriving, the picture is not "still true", it is
+   "unknown" -- and the two look identical unless something says so.
+   The status pill sat there reading a confident green "recording" while the
+   page had been cut off from the server and had no idea what the device was
+   doing, which is worse than showing nothing: it is showing the wrong thing
+   with the same confidence as the right one. */
+let lastStateAt = 0;
+
+function linkLost(why){
+  lastStateAt = 0;
+  const cap = $("capState");
+  cap.hidden = false;
+  cap.querySelector("i").style.background = "var(--faint)";
+  cap.querySelector("b").textContent = why;
+  cap.style.color = "var(--faint)";
+  $("battState").hidden = true;
+  $("ver").textContent = "no server";
+}
+
+/* The socket can also stay open while the far end stops saying anything, which
+   closes nothing and fires no event. State arrives every couple of seconds in
+   normal running, so silence for fifteen is not a slow moment. */
+setInterval(() => {
+  if (lastStateAt && Date.now() - lastStateAt > 15000) linkLost("not responding");
+}, 5000);
+
 function gainLabel(v){
   const db = (v - 40) * 0.5;
   return `${v} · ${db >= 0 ? "+" : ""}${db.toFixed(1)} dB`;
