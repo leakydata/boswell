@@ -265,6 +265,18 @@ up", which is the whole difficulty: the model is not being stupid, a fan
 blowing into a microphone genuinely resembles a prop engine. It is simply
 useless for finding things, which is the only thing the tags are for.
 
+Where it is reliable, checked the same way. Four clips tagged Dog were played
+to their owner across the confidence range — 0.89, 0.74, 0.55 and 0.37, the
+last being the weakest of the 26 that clear the bar. All four were real, and
+two of them were whining rather than barking, which the model still called a
+dog. So the 0.35 bar holds: the clip nearest to it is not a false positive.
+
+That is the shape of this model on this hardware. It is trustworthy about
+events that happen — a bark, a whine, a microwave, a cupboard — and unreliable
+about featureless continuous noise, which it will name something rather than
+nothing. The suppression list is not a list of the model's mistakes in
+general; it is a list of what one fan sounds like to it.
+
 Both clusters are hidden from the browsing list and left searchable, so a real
 car is still findable by asking for it. What they must not do is fill a page
 titled "what is in this archive" with something that never happened.
