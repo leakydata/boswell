@@ -1452,7 +1452,7 @@ async def api_clip_sounds(name: str, body: dict):
     except Exception:
         raise HTTPException(500, "could not read the transcript")
 
-    if not any(n == tag for n, _ in (t.get("sounds") or [])):
+    if not any(row and row[0] == tag for row in (t.get("sounds") or [])):
         raise HTTPException(404, f"{tag!r} was never heard in this clip")
 
     removed = list(t.get("sounds_removed") or [])
@@ -1493,9 +1493,12 @@ async def api_sounds_notable(per_tag: int = 6):
         for ex in g["examples"]:
             try:
                 t = json.load(open(pipeline.transcript_path(ex["clip"])))
-                ex["score"] = next((round(float(v), 2)
-                                    for n, v in (t.get("sounds") or [])
-                                    if n == g["tag"]), None)
+                ex["score"] = next((round(float(row[1]), 2)
+                                    for row in (t.get("sounds") or [])
+                                    if row and row[0] == g["tag"]), None)
+                ex["at"] = next((row[2] for row in (t.get("sounds") or [])
+                                 if row and row[0] == g["tag"] and len(row) > 2),
+                                None)
             except Exception:
                 ex["score"] = None
         g["examples"].sort(key=lambda e: -(e["score"] or 0))

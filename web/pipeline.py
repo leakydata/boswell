@@ -961,6 +961,17 @@ def is_hallucinated_silence(segments, voices=None):
 # for want of a signal. Storing it now keeps all of those open.
 SOUND_MODEL = "MIT/ast-finetuned-audioset-10-10-0.4593"
 SOUND_KEEP = 10          # tags stored per clip
+
+# Listening in windows rather than in one gulp. Five seconds is long enough to
+# hold an event and short enough that a two-second bark is most of it; the half
+# overlap means nothing falls between two windows. Eleven passes over a
+# thirty-second clip costs 153 ms against 24 ms for one -- six times as much of
+# a thing that was already free, and 1.3% of what transcribing the same clip
+# costs.
+SOUND_WINDOW = 5.0       # seconds per window
+SOUND_HOP = 2.5          # seconds between windows
+SOUND_WINDOW_MIN = 0.25  # a window has "seen" a sound at this score
+SOUND_WINDOW_KEEP = 0.35 # ...and needs this, in two windows, to be recorded
 SOUND_FLOOR = 0.02       # below this the label carries no information
 
 
@@ -1105,6 +1116,23 @@ class Worker:
         Returns [(label, score), ...] strongest first, or None if the model is
         not loaded. Independent of the speech path on purpose: a model that
         only knows about speech cannot tell an empty room from a dog.
+
+        Listened to in overlapping windows rather than all at once, because a
+        short event inside a long clip is invisible to a single verdict over
+        thirty seconds. Measured on the clip that exposed it -- somebody
+        talking while dogs barked at a delivery:
+
+            Dog                       0.009  ->  0.559     seen in 7 windows
+            Animal                    0.023  ->  0.587
+            Domestic animals, pets    0.007  ->  0.423
+
+        Sixty-two times, on audio the model had already been given and scored
+        as nothing. The bark is two seconds of a thirty second clip and gets
+        averaged away; five seconds of the same audio is mostly bark.
+
+        The control is the neighbouring clip, where the same person says "so
+        you dogs" and no dog makes a sound: Dog stays at 0.001 windowed. It
+        finds the bark, not the word.
         """
         if self._sound is None:
             return None
@@ -1113,16 +1141,60 @@ class Worker:
         a = np.asarray(audio, dtype=np.float32).ravel()
         if a.size < int(0.20 * sr):
             return None          # shorter than the model's analysis window
-        try:
+
+        def look(seg):
             with torch.no_grad():
-                x = fe(a, sampling_rate=sr, return_tensors="pt").to("cuda")
-                p = torch.sigmoid(model(**x).logits[0]).cpu()
+                x = fe(seg, sampling_rate=sr, return_tensors="pt").to("cuda")
+                return torch.sigmoid(model(**x).logits[0]).cpu().numpy()
+
+        try:
+            whole = look(a)
+            n, step = int(SOUND_WINDOW * sr), int(SOUND_HOP * sr)
+            frames, times = [], []
+            for i in range(0, max(1, a.size - n + 1), step):
+                seg = a[i:i + n]
+                if seg.size < sr:
+                    break
+                frames.append(look(seg))
+                times.append(i / float(sr))
         except Exception:
             return None
-        top = torch.topk(p, SOUND_KEEP)
-        return [[labels[i.item()], round(float(v), 3)]
-                for v, i in zip(top.values, top.indices)
-                if float(v) >= SOUND_FLOOR]
+
+        if not frames:
+            P, times = whole[None, :], [0.0]
+        else:
+            P = np.stack(frames)
+        # The whole clip is just the longest window, and for a sound that runs
+        # the entire thirty seconds it is the best one: the model is surest
+        # when it hears the most. Windowing alone made a fan that had scored
+        # 0.109 across the clip score 0.083 in its best five seconds -- a
+        # constant noise loses by being chopped up, exactly as a brief one
+        # loses by being averaged. So both are kept and the stronger wins.
+        peak = np.maximum(P.max(axis=0), whole)
+        # How many windows saw it at all. Best-of-N gives noise N chances to
+        # cross a line and it takes them: over 120 clips, best-of-eleven added
+        # a sheep, an oink, a neigh and six heartbeats to a house containing a
+        # dog and a computer. A real event outlasts one window -- they overlap
+        # by half -- so a window-only find has to appear in two. That rule left
+        # every one of those inventions behind and kept the speech, the music,
+        # the throat clearing and the dog.
+        seen = (P >= SOUND_WINDOW_MIN).sum(axis=0)
+
+        out = []
+        for j in np.argsort(-peak)[:SOUND_KEEP * 3]:
+            j = int(j)
+            score = float(peak[j])
+            if float(whole[j]) >= SOUND_FLOOR:
+                pass                          # the whole clip heard it anyway
+            elif not (score >= SOUND_WINDOW_KEEP and seen[j] >= 2):
+                continue                      # only one window: not enough
+            if score < SOUND_FLOOR:
+                continue
+            out.append([labels[j], round(score, 3),
+                        round(float(times[int(np.argmax(P[:, j]))]), 1)])
+            if len(out) >= SOUND_KEEP:
+                break
+        return out
 
     def _process(self, clip):
         import whisperx

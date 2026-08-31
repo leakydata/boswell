@@ -3546,6 +3546,10 @@ async function renderTranscript(name){
      and clicking one asks the archive for everything else that sounds like
      it. */
   const gone = new Set(t.sounds_removed || []);
+  /* A row is [name, score] or [name, score, when]; everything tagged before
+     the windowed listener existed has the shorter form. */
+  const heardAt = new Map((t.sounds || [])
+      .filter(x => x.length > 2).map(x => [x[0], x[2]]));
   const heard = (t.sounds || []).filter(x => x[1] >= 0.10).slice(0, 8);
   if (heard.length){
     const row = document.createElement("div");
@@ -3560,10 +3564,17 @@ async function renderTranscript(name){
 
       const b = document.createElement("button");
       b.className = "sound" + (v >= 0.4 ? " strong" : "");
-      b.textContent = `${n} ${Number(v).toFixed(2)}`;
+      /* The tagger listens in overlapping five-second windows now, so it can
+         say where in the clip it heard the thing rather than only that it was
+         somewhere in the thirty seconds. */
+      const at = heardAt.get(n);
+      b.textContent = `${n} ${Number(v).toFixed(2)}`
+        + (at == null ? "" : ` · ${fmtClockShort(at)}`);
       b.title = gone.has(n)
         ? `${n} is marked wrong on this clip`
-        : `Show every recording with ${n} in it`;
+        : (at == null ? `Show every recording with ${n} in it`
+                      : `Loudest around ${Math.round(at)}s — click to show every `
+                        + `recording with ${n} in it`);
       b.onclick = () => {
         if (gone.has(n)) return;
         clipGoBack();
@@ -4187,6 +4198,12 @@ function linkLost(why){
 setInterval(() => {
   if (lastStateAt && Date.now() - lastStateAt > 15000) linkLost("not responding");
 }, 5000);
+
+/* Seconds into a clip, as m:ss, for labels that sit inside a chip. */
+function fmtClockShort(sec){
+  const s = Math.max(0, Math.round(sec));
+  return s < 60 ? `${s}s` : `${Math.floor(s/60)}:${String(s%60).padStart(2,"0")}`;
+}
 
 function gainLabel(v){
   const db = (v - 40) * 0.5;

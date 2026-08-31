@@ -126,8 +126,11 @@ def upsert_clip(name, transcript_path=None, wav_path=None):
             # is not what happened. Kept in the transcript rather than deleted,
             # so a correction survives re-transcription and can be undone.
             dropped = set(t.get("sounds_removed") or [])
-            kept = [(n, float(v)) for n, v in (t.get("sounds") or [])
-                    if n not in dropped]
+            # A row is [name, score] or [name, score, when]: the tagger
+            # started reporting where in the clip it heard the thing, and every
+            # transcript written before that has the shorter form.
+            kept = [(row[0], float(row[1])) for row in (t.get("sounds") or [])
+                    if row and row[0] not in dropped]
             voice_tag = max([v for n, v in kept if n in VOICE_TAGS] or [0.0])
             heard = [n for n, v in kept if v >= SOUND_FLOOR]
             sounds = "\n".join(heard) if heard else None

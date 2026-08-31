@@ -953,3 +953,66 @@ class TestOverrulingASoundTag:
         db = self._clip(tmp_path, monkeypatch, [["Bird", 0.30]], None)
         row = db._conn().execute("SELECT sounds FROM clips").fetchone()
         assert (row["sounds"] or "").split("\n") == ["Bird"]
+
+
+class TestSoundRowsGrewAThirdField:
+    """A stored sound was [name, score]; it is now [name, score, when].
+
+    The tagger listens in overlapping windows, so it knows roughly where in
+    the clip it heard the thing. Every transcript written before that has the
+    two-field form and there are fourteen hundred of them, so both shapes have
+    to work everywhere -- a consumer that unpacks exactly two values raises
+    ValueError on the new rows and takes the indexer down with it.
+    """
+
+    def _db(self, tmp_path, monkeypatch):
+        import index_db
+        monkeypatch.setattr(index_db, "DB_PATH", str(tmp_path / "index.db"))
+        monkeypatch.setattr(index_db, "_local", type(index_db._local)())
+        return index_db
+
+    def _index(self, tmp_path, monkeypatch, sounds, removed=None):
+        import json, index_db, soundfile as sf, numpy as np
+        db = self._db(tmp_path, monkeypatch)
+        data = tmp_path / "data"
+        (data / "transcripts").mkdir(parents=True)
+        monkeypatch.setattr(index_db, "DATA", str(data))
+        wav = data / "c.wav"
+        sf.write(str(wav), np.zeros(16000, dtype="float32"), 16000)
+        tp = data / "transcripts" / "c.json"
+        tp.write_text(json.dumps({"clip": "c.wav", "segments": [],
+                                  "sounds": sounds,
+                                  "sounds_removed": removed or []}))
+        db.upsert_clip("c.wav", transcript_path=str(tp), wav_path=str(wav))
+        return db
+
+    def test_the_new_three_field_rows_index(self, tmp_path, monkeypatch):
+        db = self._index(tmp_path, monkeypatch, [["Dog", 0.56, 8.0]])
+        row = db._conn().execute("SELECT sounds, voice_tag FROM clips").fetchone()
+        assert (row["sounds"] or "").split("\n") == ["Dog"]
+
+    def test_the_old_two_field_rows_still_index(self, tmp_path, monkeypatch):
+        """Fourteen hundred transcripts predate the third field."""
+        db = self._index(tmp_path, monkeypatch, [["Dog", 0.56]])
+        row = db._conn().execute("SELECT sounds FROM clips").fetchone()
+        assert (row["sounds"] or "").split("\n") == ["Dog"]
+
+    def test_a_mixture_of_both_shapes_indexes(self, tmp_path, monkeypatch):
+        """Which is what a transcript looks like mid-migration."""
+        db = self._index(tmp_path, monkeypatch,
+                         [["Dog", 0.56, 8.0], ["Speech", 0.66]])
+        row = db._conn().execute("SELECT sounds, voice_tag FROM clips").fetchone()
+        assert set((row["sounds"] or "").split("\n")) == {"Dog", "Speech"}
+        assert row["voice_tag"] == 0.66
+
+    def test_a_removal_still_applies_to_a_timed_row(self, tmp_path, monkeypatch):
+        db = self._index(tmp_path, monkeypatch,
+                         [["Pigeon, dove", 0.24, 3.0], ["Bird", 0.24, 3.0]],
+                         removed=["Pigeon, dove"])
+        row = db._conn().execute("SELECT sounds FROM clips").fetchone()
+        assert (row["sounds"] or "").split("\n") == ["Bird"]
+
+    def test_an_empty_row_does_not_take_the_indexer_down(self, tmp_path, monkeypatch):
+        db = self._index(tmp_path, monkeypatch, [[], ["Dog", 0.56, 8.0]])
+        row = db._conn().execute("SELECT sounds FROM clips").fetchone()
+        assert (row["sounds"] or "").split("\n") == ["Dog"]

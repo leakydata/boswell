@@ -109,6 +109,15 @@ def tag(path, fe, model, dev, labels, topk=6):
                      zip(top.values, top.indices)]}
 
 
+# This tool still scores a clip in one pass, deliberately. The pipeline listens
+# in overlapping windows now, because a two-second bark inside thirty seconds
+# is averaged into nothing that way -- 0.009 against 0.559 on the clip that
+# exposed it. But what this tool decides is what to DELETE, and for that the
+# whole-clip verdict is the conservative one: it under-reports, and
+# under-reporting keeps clips. Anything deciding what a clip contains should
+# use pipeline.tag_sounds instead.
+
+
 def verdict(r):
     """keep | empty, and why. Deliberately biased towards keeping.
 

@@ -252,7 +252,12 @@ def get_clip(clip: str) -> dict:
                          "sentences around them as approximate. Do not quote "
                          "this as verbatim speech.")
     if t.get("sounds"):
-        out["sounds"] = [[n, v] for n, v in t["sounds"][:6]]
+        # name, score, and where in the clip it was loudest -- the last of
+        # those is what lets a reader say "a dog barked about ten seconds in"
+        # rather than "a dog barked at some point in these thirty seconds".
+        out["sounds"] = [{"sound": r[0], "score": r[1],
+                          **({"at_seconds": r[2]} if len(r) > 2 else {})}
+                         for r in t["sounds"][:6] if r]
     return out
 
 

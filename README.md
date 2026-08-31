@@ -167,12 +167,57 @@ Host (Linux + CUDA)
     → ADPCM decode → WAV
     → level normalise              never attenuates, capped at 30 dB
     → WhisperX large-v3            transcript + word timestamps
-    → AST / AudioSet               527 everyday sound classes, searchable
+    → AST / AudioSet               527 sound classes, in 5 s windows
     → pyannote diarization         SPEAKER_00 / SPEAKER_01
     → voiceprint match             → real names
     → chunk on pauses & turns
     → local LLM (tool calling)     → notes / tasks / events / facts
 ```
+
+### What else is in the audio
+
+Every clip goes through a second model — AST, fine-tuned on AudioSet — that
+names what it hears from 527 everyday classes. It is not a speech model and
+does not care whether anyone spoke, which is the point: it is the only thing
+that can tell an empty room from a dog.
+
+It listens in **five-second windows overlapping by half**, not to the whole
+clip at once. A short event inside a long recording is invisible to a single
+verdict over thirty seconds, and the difference is not marginal:
+
+| | whole clip | windowed |
+|---|---|---|
+| Dog, on a clip of someone talking while dogs barked | 0.009 | **0.559** |
+| Bark | 0.031 | 0.347 |
+| Throat clearing | 0.112 | 0.731 |
+
+The control is the neighbouring clip where the same person says "so you dogs"
+and no dog makes a sound: it stays at 0.001. It finds the bark, not the word.
+
+The whole-clip score is kept and the stronger of the two wins, because a
+*constant* sound loses by being chopped up exactly as a brief one loses by
+being averaged — windowing alone dropped a fan from 0.109 to 0.083.
+
+A window-only find must appear in **two** windows. Best-of-eleven gives noise
+eleven chances to cross a threshold and it takes them: across 120 clips it
+added a sheep, an oink, a neigh and six heartbeats to a house containing a dog
+and a computer. The two-window rule left every one of those behind.
+
+It costs 153 ms a clip against 24 ms for a single pass — six times as much of
+something that was already free, and 1.3% of what transcribing the same clip
+costs.
+
+What it is used for: finding things (`Recordings` has a sound filter, `Heard`
+lists everything that was not speech or room noise, rarest first, with a player
+on each), knowing a silent clip held a voice, and deciding what is safe to
+delete. Tags can be marked wrong on a clip — the correction survives
+re-transcription and reaches every view, including the one that decides
+deletability.
+
+Its limits, measured: it misses a quiet laugh entirely (0.000 in every window),
+it hedges across neighbouring classes rather than committing (Dog, Animal and
+Domestic animals within 0.16 of each other), and it describes a window rather
+than an instant.
 
 ### What the status light means
 
