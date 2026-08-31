@@ -4284,6 +4284,8 @@ $("bDelete").onclick = async () => {
 $("bSplit").onclick = async () => {
   if (!current) return;
   msg("splitting…");
+  $("dMsg").style.color = "var(--muted)";
+  $("dMsg").textContent = "splitting…";
   const r = await fetch("/api/split/" + encodeURIComponent(current), {method:"POST"});
   const b = await r.json().catch(()=>({}));
   if (!r.ok){ msg(b.detail || "could not split", true); return; }
@@ -4305,6 +4307,14 @@ $("bSplit").onclick = async () => {
     open.onclick = () => openClip(c.name);
     box.appendChild(open);
   }
+  /* Put it where the eye is. The confirmation sits under the buttons, which
+     on a 929px window landed at y=856 -- on screen by 27 pixels, and off it
+     entirely on anything shorter or if the reader had not scrolled down. A
+     split that worked was reported as "nothing seemed to happen", which for
+     the person pressing the button is the same as not working. */
+  box.style.color = "var(--ink)";
+  box.scrollIntoView({block: "center", behavior: "smooth"});
+
   const back = document.createElement("button");
   back.textContent = "Back to all clips";
   back.onclick = () => { $("detail").hidden = true; $("clipList").hidden = false;
