@@ -272,7 +272,24 @@ class Device:
         }
         # Anything remembered from a previous run wins over the defaults
         # above, so a restart resumes rather than resets.
-        for k in ("vad", "backlog_mode", "led_level", "led_mode", "gain"):
+        # "armed" belongs here for a reason that took two lost recordings and a
+        # log line to see. This starts False, and the reconciler compares it
+        # against what the device reports on the first info packet -- which
+        # arrives before the connect path gets round to asserting the
+        # remembered value. So a service restart looked like "the device is
+        # capturing while we believe it is not", and the reconciler dutifully
+        # stopped it:
+        #
+        #     reconcile: device capturing while we believe it is not; stopping it
+        #     capture ARMED (asserted on connect); remembered=True
+        #     reconcile: device not capturing while we believe it is; re-arming
+        #
+        # Three writes to the radio and a gap in the recording, decided by
+        # which of the two fired last. Believing what was remembered before
+        # anything is compared against it removes the race rather than
+        # sequencing it.
+        for k in ("vad", "backlog_mode", "led_level", "led_mode", "gain",
+                  "armed"):
             if k in PREFS:
                 self.state[k] = PREFS[k]
         self.relay: WebSocket | None = None
@@ -818,8 +835,14 @@ class Device:
         action = reconcile_capture(parsed["device_streaming"],
                                    self.state.get("armed"))
         if action == "rearm":
+            if not getattr(self, "_rearm_needed", False):
+                print("reconcile: device not capturing while we believe it is; "
+                      "re-arming", flush=True)
             self._rearm_needed = True
         elif action == "redisarm":
+            if not getattr(self, "_redisarm_needed", False):
+                print("reconcile: device capturing while we believe it is not; "
+                      "stopping it", flush=True)
             self._redisarm_needed = True
 
     async def _ctrl(self, op: int, arg: int):
@@ -854,10 +877,23 @@ class Device:
         Re-asserting what was already read is not a decision, so it does not
         write. Turning it off from the interface is, so it does.
         """
+        was = self.state.get("armed")
         self.state["armed"] = bool(on)
         if by_user:
             self.remember(armed=bool(on))
             self.event("log", text=f"recording {'on' if on else 'off'}")
+        # To the journal, not only to whatever browser happens to be open.
+        #
+        # Capture has stopped twice without anyone being able to say what
+        # stopped it: the interface log goes to connected websocket clients and
+        # is gone when the page is closed, which is exactly the case where a
+        # device quietly stops recording and nobody is watching. A state change
+        # on the one thing this device exists to do belongs somewhere that
+        # outlives the session.
+        if was != bool(on):
+            print(f"capture {'ARMED' if on else 'DISARMED'} "
+                  f"({'by a person' if by_user else 'asserted on connect'}); "
+                  f"remembered={PREFS.get('armed')}", flush=True)
         await self._ctrl(0x01, 1 if on else 0)
         self.publish()
 
