@@ -282,6 +282,14 @@ audio.voiceclip{display:block;width:100%;height:34px}
   font-size:10.5px;color:var(--muted);align-items:center}
 .legend i{width:9px;height:9px;border-radius:2px;display:inline-block;margin-right:5px}
 @media(max-width:430px){.legend{display:none}}
+.ledkey{margin-top:8px;display:grid;gap:5px;font-size:12.5px;color:var(--muted)}
+.ledkey i{width:10px;height:10px;border-radius:3px;display:inline-block;
+  margin-right:7px;vertical-align:-1px;flex:none}
+.ledkey div{display:flex;align-items:flex-start;line-height:1.45}
+.ledkey b{color:var(--ink);font-weight:600;margin-right:5px}
+.ledkey .ledgrp{display:block;color:var(--ink);font-weight:600;font-size:12px;
+  letter-spacing:.04em;text-transform:uppercase;margin-top:6px}
+.ledkey .ledgrp:first-child{margin-top:0}
 .seg{display:flex;gap:10px;padding:9px 0;border-bottom:1px solid var(--rule);font-size:15px}
 .seg:last-child{border:none}
 .seg .t{font-family:var(--mono);font-size:11.5px;color:var(--faint);flex:none;
@@ -461,6 +469,25 @@ html{scroll-padding-top:120px}
         keep it lit, and use the slider to dim it: dimming is real PWM, so
         current falls with brightness, though below a few percent the PWM
         hardware costs more than the light does. Off costs nothing.
+      </div>
+      <!-- Grouped by the question you actually ask across a room: am I
+           recording? Every warm-bright colour means yes. -->
+      <div class="ledkey" aria-label="What the status light means">
+        <div class="ledgrp">Recording</div>
+        <div><i style="background:#5ad07a"></i><b>green</b> everything is
+          reaching the computer</div>
+        <div><i style="background:#4ad0d0"></i><b>cyan</b> live, and sending
+          buffered audio alongside it</div>
+        <div><i style="background:#c060d0"></i><b>magenta</b> no computer —
+          saving to flash to send later</div>
+        <div class="ledgrp">Not recording</div>
+        <div><i style="background:#e05a5a"></i><b>red</b> connected, paused</div>
+        <div><i style="background:#4a90e0"></i><b>blue</b> waiting to be
+          found</div>
+        <div class="ledgrp">Something is wrong</div>
+        <div><i style="background:#e0c04a"></i><b>yellow</b> recording, but the
+          flash chip is not available — anything the radio cannot carry is lost
+          rather than buffered</div>
       </div>
       <label class="row">Play catch-up live
         <span class="switch" id="blmode" role="switch" aria-checked="false" tabindex="0"></span>

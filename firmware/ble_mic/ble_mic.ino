@@ -408,18 +408,56 @@ static void servicePulse() {
   }
 }
 
-/* Capture is "armed" independently of the link, so the LED has to show both:
- *   blue     advertising, not armed
- *   magenta  armed with no host -- buffering to flash
- *   cyan     connected, draining the backlog
- *   green    connected, streaming live
- *   red      connected, not armed
+/* The light's whole vocabulary, defined once, here.
+ *
+ * Three things matter to somebody looking at the device across a room, and
+ * the colours are chosen so each answers the first one before the second:
+ *
+ *   AM I RECORDING?      green, cyan, magenta and yellow all mean yes.
+ *   WHERE IS IT GOING?   green straight to the host, cyan host plus catching
+ *                        up, magenta into flash because there is no host.
+ *   IS ANYTHING WRONG?   yellow, and only yellow.
+ *
+ * Not recording is red or blue, and those two are the only dark-warm/cold
+ * pair -- so "am I recording" is answerable at a glance, without remembering
+ * which of five colours is which.
+ *
+ * Named rather than written as three bools at each call site, because
+ * setLed(false, true, true) says nothing about what it is for and the meaning
+ * lived only in a comment that the code could drift away from.
  */
+struct LedColour { bool r, g, b; const char *name; };
+
+/* recording, and it is all reaching the host */
+static const LedColour LED_RECORDING     = { false, true,  false, "green"   };
+/* recording, and sending buffered audio alongside it */
+static const LedColour LED_CATCHING_UP   = { false, true,  true,  "cyan"    };
+/* recording with no host: straight into flash, to be sent later */
+static const LedColour LED_BUFFERING     = { true,  false, true,  "magenta" };
+/* not recording, host connected -- deliberately paused */
+static const LedColour LED_IDLE_LINKED   = { true,  false, false, "red"     };
+/* not recording, no host -- advertising, waiting to be found */
+static const LedColour LED_IDLE_WAITING  = { false, false, true,  "blue"    };
+/* recording, but the flash chip never came up.
+ *
+ * The one fault colour, and the reason this list exists. Without it a device
+ * whose QSPI failed to initialise showed plain green -- healthy in every
+ * visible way, right up to the disconnection that turns the fault into lost
+ * recordings. Anything the radio cannot carry in that state is gone, not
+ * buffered, and the only warning was silence in the archive afterwards. */
+static const LedColour LED_NO_FLASH      = { true,  true,  false, "yellow"  };
+
+static void setLed(const LedColour &c) { setLed(c.r, c.g, c.b); }
+
+/* Worst first, then most-constrained first. Capture is armed independently of
+ * the link, so both have to be visible in one colour. */
 static void updateLed() {
-  if (!connected)                     setLed(streaming, false, true);
-  else if (!streaming)                setLed(true, false, false);
-  else if (qspiOk && qspiPendingBytes()) setLed(false, true, true);
-  else                                setLed(false, true, false);
+  if (streaming && !qspiOk)                setLed(LED_NO_FLASH);
+  else if (!connected)                     setLed(streaming ? LED_BUFFERING
+                                                            : LED_IDLE_WAITING);
+  else if (!streaming)                     setLed(LED_IDLE_LINKED);
+  else if (qspiPendingBytes())             setLed(LED_CATCHING_UP);
+  else                                     setLed(LED_RECORDING);
 }
 
 // ---------------------------------------------------------------- helpers

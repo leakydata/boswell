@@ -39,7 +39,11 @@ struct boswell_state g_state = {
     .use16k       = false,       /* 8 kHz fits a Bluetooth 4.0 host */
     .vad_enabled  = false,
     .vad_thresh   = 1120,
-    .gain         = 50,
+    /* +13 dB. Raised from 50 (+5 dB) after measuring the archive: clips below
+     * -35 dBFS yield about a quarter the words of clips above it, the median
+     * sat at -35.5 and was drifting down, and +8 dB costs mild clipping on
+     * four already-working clips out of 2484. See ble_mic.ino for the tables. */
+    .gain         = 66,
     .led_level    = 255,
     .led_mode     = 1,           /* blink: ~1% of the power of staying lit */
     /* On by default. The device is meant to be worn out of range of its
@@ -104,8 +108,8 @@ static void usb_service(void)
 
 /* ---------------------------------------------------------------- leds */
 
-/* blue advertising · green capturing · red connected but idle · magenta
- * draining the flash backlog. Brightness and steady-vs-pulse live in led.c. */
+/* The colours are defined once, in led.h, and named there. Brightness and
+ * steady-vs-pulse live in led.c. */
 static bool led_probing;
 
 static void led_state(void)
@@ -114,27 +118,40 @@ static void led_state(void)
         return;
     }
     /* The wearer's first question is "is it recording?", so that decides the
-     * colour: green while capturing, red while stopped. Everything else is
-     * secondary and must not be able to mask it.
+     * colour before anything else: every bright colour here means yes, and
+     * red or blue means no. Nothing secondary is allowed to mask that.
      *
-     * A real backlog replay still shows magenta, but only a real one. The
-     * test used to be "any pending byte at all", which is briefly true during
-     * ordinary live streaming as frames pass through the staging ring, so the
-     * light sat magenta nearly all the time. A quarter of a second of audio
-     * is the smallest backlog worth reporting.
+     * A real backlog replay is reported, but only a real one. The test used to
+     * be "any pending byte at all", which is briefly true during ordinary live
+     * streaming as frames pass through the staging ring, so the light sat on
+     * the replay colour nearly all the time. A quarter of a second of audio is
+     * the smallest backlog worth mentioning.
      *
-     * Being armed with no host used to come out as red plus blue, which is
-     * the same magenta as draining -- two unrelated states, one colour. It is
-     * green now, because the device is recording either way; where the audio
-     * is going is what the blue channel is for. */
-    if (qspi_store_pending() > 2048 && ble_audio_ready()) {
-        led_set_colour(true, false, true);          /* magenta: replaying */
+     * Armed with no host and draining a backlog were once the same magenta --
+     * two unrelated states, one colour. That was first fixed by making both
+     * green, which removed the collision by removing the information: there
+     * was then no way to tell audio going straight to the computer from audio
+     * piling up in flash, and those differ by whether anything would survive
+     * the device being switched off. They are separated properly now: replay
+     * moved to cyan and magenta means buffering, which is also what the
+     * Arduino build says. The two firmwares disagreed about this light for
+     * some time, which is worse than either scheme.
+     *
+     * Yellow is the only fault colour. Without it a device whose QSPI never
+     * came up showed plain green: recording, healthy-looking, and quietly
+     * unable to keep anything the radio could not carry. */
+    if (g_state.streaming && !qspi_store_ready()) {
+        led_set_colour(LED_NO_FLASH);               /* yellow: nowhere to buffer */
+    } else if (g_state.streaming && !ble_audio_connected()) {
+        led_set_colour(LED_BUFFERING);              /* magenta: into flash */
+    } else if (qspi_store_pending() > 2048 && ble_audio_ready()) {
+        led_set_colour(LED_CATCHING_UP);            /* cyan: replaying */
     } else if (g_state.streaming) {
-        led_set_colour(false, true, false);         /* green: capturing */
+        led_set_colour(LED_RECORDING);              /* green: live */
     } else if (!ble_audio_connected()) {
-        led_set_colour(false, false, true);         /* blue: waiting for a host */
+        led_set_colour(LED_IDLE_WAITING);           /* blue: waiting for a host */
     } else {
-        led_set_colour(true, false, false);         /* red: connected, stopped */
+        led_set_colour(LED_IDLE_LINKED);            /* red: connected, stopped */
     }
 }
 

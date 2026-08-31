@@ -7,11 +7,47 @@ UF2="${1:?usage: flash.sh <file.uf2>}"
 PORT="${2:-/dev/ttyACM0}"
 [ -f "$UF2" ] || { echo "no such file: $UF2" >&2; exit 1; }
 
-if [ -e "$PORT" ]; then
-  echo "attempting 1200-baud auto-reset on $PORT ..."
-  stty -F "$PORT" 1200 hupcl 2>/dev/null
-  (exec 3<>"$PORT"; sleep 0.3; exec 3<&-) 2>/dev/null
-fi
+# Getting the board into the bootloader, by whichever route it answers to.
+#
+# The 1200-baud touch is an Arduino core convention: the core's USB stack
+# watches for a host opening the port at 1200 baud and reboots itself. Zephyr
+# implements nothing of the sort, so on the firmware this project actually
+# ships the touch does nothing at all -- the script sat here for 200 seconds
+# telling somebody to double-tap RESET on a board that had a perfectly good
+# way to do it itself.
+#
+# That way is the `dfu` shell command: it writes 0x57 to GPREGRET and resets,
+# which is the flag the Adafruit bootloader reads on boot to decide whether to
+# stay in UF2 mode. The shell is a USB CDC interface and it is NOT necessarily
+# the first one -- on this board it is ttyACM1, while ttyACM0 is silent -- so
+# every ACM port is asked rather than assuming.
+enter_bootloader() {
+  if lsusb 2>/dev/null | grep -q "2886:0045"; then
+    echo "board is already in the bootloader"
+    return 0
+  fi
+  for p in /dev/ttyACM*; do
+    [ -e "$p" ] || continue
+    stty -F "$p" raw -echo 115200 2>/dev/null || continue
+    exec 3<>"$p" || continue
+    printf '\r\n' >&3
+    resp=$(timeout 1.5 head -c 2000 <&3 2>/dev/null | tr -d '\000' || true)
+    if printf '%s' "$resp" | grep -q 'boswell>'; then
+      echo "Zephyr shell on $p — asking the board to reboot into the bootloader"
+      printf 'boswell dfu\r\n' >&3
+      exec 3<&-
+      return 0
+    fi
+    exec 3<&-
+  done
+  # No shell answered: an Arduino build, or a board that is not talking.
+  if [ -e "$PORT" ]; then
+    echo "no Zephyr shell found; trying the 1200-baud touch on $PORT ..."
+    stty -F "$PORT" 1200 hupcl 2>/dev/null
+    (exec 3<>"$PORT"; sleep 0.3; exec 3<&-) 2>/dev/null
+  fi
+}
+enter_bootloader
 
 echo "waiting for bootloader (double-tap RESET if nothing happens) ..."
 DEV=""

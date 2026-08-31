@@ -8,8 +8,10 @@
  *                     device is alive and what it is doing.
  *   mode 0            steady, at `level` brightness.
  *
- * Colour meaning: blue advertising, green capturing, red connected but idle,
- * magenta draining the flash backlog.
+ * The colours are named below rather than written as three bools at each call
+ * site: led_set_colour(false, true, true) says nothing about what it is for,
+ * and for a while the meaning lived only in a comment that this firmware and
+ * the Arduino build had drifted apart on.
  */
 
 #ifndef BOSWELL_LED_H
@@ -17,6 +19,31 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+
+/* The light's whole vocabulary.
+ *
+ * Ordered by the question somebody actually asks looking at the device: am I
+ * recording? Every bright colour means yes, and where the audio is going is
+ * the second question, not the first.
+ *
+ *   green    recording, everything reaching the host
+ *   cyan     recording, and sending a real backlog alongside it
+ *   magenta  recording with no host -- into flash, to be sent later
+ *   red      not recording, host connected
+ *   blue     not recording, no host: advertising
+ *   yellow   recording with no flash available. The only fault colour, and
+ *            the one that is not obvious: without it a device whose QSPI
+ *            never came up looks perfectly healthy while quietly unable to
+ *            keep anything the radio cannot carry.
+ *
+ * Macros rather than an enum because led_set_colour takes three channels, and
+ * C has no overloads to hide that behind. */
+#define LED_RECORDING     false, true,  false   /* green   */
+#define LED_CATCHING_UP   false, true,  true    /* cyan    */
+#define LED_BUFFERING     true,  false, true    /* magenta */
+#define LED_IDLE_LINKED   true,  false, false   /* red     */
+#define LED_IDLE_WAITING  false, false, true    /* blue    */
+#define LED_NO_FLASH      true,  true,  false   /* yellow  */
 
 int  led_init(void);
 /* What the LED *should* show. In pulse mode it is displayed briefly. */

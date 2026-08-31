@@ -174,6 +174,41 @@ Host (Linux + CUDA)
     → local LLM (tool calling)     → notes / tasks / events / facts
 ```
 
+### What the status light means
+
+The colours answer the question you actually ask across a room — *am I
+recording?* — before the one you ask second. Every bright colour means yes.
+
+**Recording**
+
+| colour | meaning |
+|---|---|
+| green | everything is reaching the computer |
+| cyan | live, and sending buffered audio alongside it |
+| magenta | no computer — saving to flash to send later |
+
+**Not recording**
+
+| colour | meaning |
+|---|---|
+| red | connected, paused |
+| blue | waiting to be found |
+
+**Something is wrong**
+
+| colour | meaning |
+|---|---|
+| yellow | recording, but the flash chip is not available. Anything the radio cannot carry is lost rather than buffered. |
+
+Each is one steady colour, or in pulse mode that same colour flashed briefly —
+never a pattern to count. They are named constants in `ble_mic.ino`
+(`LED_RECORDING`, `LED_BUFFERING`, …) rather than bare triples at each call
+site, so this table has one source.
+
+Yellow was added after noticing that a device whose QSPI never initialised
+showed plain green: healthy in every visible way, until the disconnection that
+turned the fault into lost recordings.
+
 ### Frame format
 
 Each BLE frame carries **its own ADPCM predictor state**:
