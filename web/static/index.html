@@ -290,6 +290,11 @@ audio.voiceclip{display:block;width:100%;height:34px}
 .ledkey .ledgrp{display:block;color:var(--ink);font-weight:600;font-size:12px;
   letter-spacing:.04em;text-transform:uppercase;margin-top:6px}
 .ledkey .ledgrp:first-child{margin-top:0}
+.pager{display:flex;align-items:center;justify-content:center;gap:14px;
+  padding:12px 4px;margin-top:6px}
+.pager.top{margin:0 0 8px;padding-top:4px;border-bottom:1px solid var(--rule)}
+.pager button{min-width:92px}
+.pager .count{font-family:var(--mono);font-size:12px;color:var(--muted)}
 .seg{display:flex;gap:10px;padding:9px 0;border-bottom:1px solid var(--rule);font-size:15px}
 .seg:last-child{border:none}
 .seg .t{font-family:var(--mono);font-size:11.5px;color:var(--faint);flex:none;
@@ -536,6 +541,13 @@ html{scroll-padding-top:120px}
         <option value="conv">Conversations</option>
         <option value="day">By day</option>
         <option value="flat">All clips</option>
+      </select>
+      <select class="filter" id="fPerPage" aria-label="How many to show per page">
+        <option value="25">25 per page</option>
+        <option value="50" selected>50 per page</option>
+        <option value="100">100 per page</option>
+        <option value="200">200 per page</option>
+        <option value="0">Show all</option>
       </select>
     </div>
     <div class="toolbar2">
@@ -1679,6 +1691,81 @@ on("bVoiceScan", "click", async () => {
 
 /* ---- recordings ---- */
 let clipFilter = "all", dateFilter = "all", query = "";
+
+/* Paging, and why it is not just a slice.
+   Nine days of recording is already 1339 clips, and the day the archive is
+   interesting is the day it is too long to scroll. The page is per list --
+   clips, conversations and search results keep their own -- because carrying
+   "page 7" from a 1300-clip list into a 12-result search lands the reader on
+   an empty page and looks broken. */
+let pageSize = 50;
+const pageAt = {};
+const CLIP_FETCH_LIMIT = 20000;
+
+/* Where the reader was before they opened something. Going back to the top of
+   a list you had already scrolled through is the single most annoying thing a
+   list view can do, and it was doing it: clipGoBack reloaded from scratch. */
+let listScrollY = 0;
+
+function rememberScroll(){ listScrollY = window.scrollY || 0; }
+function restoreScroll(){
+  const want = listScrollY;
+  if (!want) return;
+  const go = () => window.scrollTo({top: want, behavior: "instant"});
+  /* Immediately, then again as the layout settles: the list is rebuilt from
+     scratch on the way back, and a scroll requested while the page is still
+     short is silently clamped to whatever fits.
+     Not requestAnimationFrame, which was the first attempt and did nothing at
+     all -- rAF does not fire in a tab that is not visible, so the restore
+     worked only for a reader who never switched away, which is the reader who
+     least needed it. setTimeout keeps running, throttled, either way. */
+  go();
+  for (const d of [0, 50, 150, 400]) setTimeout(go, d);
+}
+
+function pageSlice(key, items){
+  if (!pageSize) return {rows: items, pages: 1, index: 0, total: items.length};
+  const pages = Math.max(1, Math.ceil(items.length / pageSize));
+  const index = Math.min(pageAt[key] || 0, pages - 1);
+  pageAt[key] = index;
+  return {rows: items.slice(index * pageSize, (index + 1) * pageSize),
+          pages, index, total: items.length};
+}
+
+function resetPages(){ for (const k of Object.keys(pageAt)) pageAt[k] = 0; }
+
+/* Rendered under the list, and again above it when there is more than one
+   page, so the reader who has just read to the bottom does not scroll back up
+   to turn it. */
+function renderPager(el, key, info, reload, atTop){
+  if (info.pages <= 1) return;
+  const bar = document.createElement("div");
+  bar.className = "pager" + (atTop ? " top" : "");
+  const go = (i) => {
+    pageAt[key] = Math.max(0, Math.min(info.pages - 1, i));
+    listScrollY = 0;
+    reload().then(() => window.scrollTo({top: 0, behavior: "instant"}));
+  };
+  const btn = (label, target, disabled, aria) => {
+    const b = document.createElement("button");
+    b.textContent = label;
+    if (aria) b.setAttribute("aria-label", aria);
+    b.disabled = disabled;
+    b.onclick = () => go(target);
+    return b;
+  };
+  bar.appendChild(btn("‹ Newer", info.index - 1, info.index === 0, "Previous page"));
+  const where = document.createElement("span");
+  where.className = "count";
+  const from = info.index * pageSize + 1;
+  const to = Math.min(info.total, (info.index + 1) * pageSize);
+  where.textContent = `${from}–${to} of ${info.total}`
+                    + `  ·  page ${info.index + 1} of ${info.pages}`;
+  bar.appendChild(where);
+  bar.appendChild(btn("Older ›", info.index + 1,
+                      info.index >= info.pages - 1, "Next page"));
+  el.appendChild(bar);
+}
 // Below this the tagger is not saying much, and the measured control -- 31
 // clips it scored under 0.05 -- produced three words of stock phrase between
 // them. Listening to those is listening to a fan.
@@ -1698,9 +1785,21 @@ function on(id, event, fn){
 }
 
 let groupMode = "conv";
-on("fContent", "change", () => { clipFilter = $("fContent").value; loadClips(); });
-on("fDate",    "change", () => { dateFilter = $("fDate").value;    loadClips(); });
-on("fGroup",   "change", () => { groupMode  = $("fGroup").value;   loadClips(); });
+on("fContent", "change", () => {
+  clipFilter = $("fContent").value; resetPages(); loadClips();
+});
+on("fPerPage", "change", () => {
+  pageSize = parseInt($("fPerPage").value, 10) || 0;
+  resetPages(); loadClips();
+});
+/* Every one of these changes what the list contains, so page 7 of the old one
+   is meaningless in the new one -- and lands the reader on an empty page. */
+on("fDate",  "change", () => {
+  dateFilter = $("fDate").value; resetPages(); loadClips();
+});
+on("fGroup", "change", () => {
+  groupMode = $("fGroup").value; resetPages(); loadClips();
+});
 /* Keyword search only finds a conversation if you remember a word from it.
    Meaning search embeds the query and compares it against every line. */
 /* Display choices live in the browser, not on the server.
@@ -1711,7 +1810,8 @@ on("fGroup",   "change", () => { groupMode  = $("fGroup").value;   loadClips(); 
  * holds the recordings. Device settings are a different question and are
  * remembered server-side, because they describe what the hardware is doing.
  */
-const VIEW_PREFS = ["fMode", "fGroup", "fContent", "fDate", "itemKind", "dupThresh"];
+const VIEW_PREFS = ["fMode", "fGroup", "fContent", "fDate", "fPerPage",
+                    "itemKind", "dupThresh"];
 
 function loadViewPrefs(){
   let saved = {};
@@ -1740,6 +1840,7 @@ function applyViewPrefs(){
   groupMode  = $("fGroup").value;
   clipFilter = $("fContent").value;
   dateFilter = $("fDate").value;
+  pageSize   = parseInt($("fPerPage").value, 10) || 0;
 }
 
 function saveViewPrefs(){
@@ -1754,7 +1855,9 @@ function saveViewPrefs(){
 for (const id of VIEW_PREFS) on(id, "change", saveViewPrefs);
 
 let searchMode = "both";
-on("fMode", "change", () => { searchMode = $("fMode").value; loadClips(); });
+on("fMode", "change", () => {
+  searchMode = $("fMode").value; resetPages(); loadClips();
+});
 
 /* Called here, not at startup further up: applyViewPrefs assigns the four
    variables above, and a let is unreachable until its own declaration has
@@ -1786,8 +1889,10 @@ async function loadConversations(el){
     return;
   }
   el.innerHTML = "";
+  const page = pageSlice("convs", convs);
+  renderPager(el, "convs", page, loadClips, true);
   let lastDay = null;
-  for (const c of convs){
+  for (const c of page.rows){
     const day = fmtDay(c.end);
     if (day !== lastDay){
       lastDay = day;
@@ -1814,9 +1919,9 @@ async function loadConversations(el){
     const parts = d.querySelector(".parts");
     /* The heading and the preview are the obvious things to click. */
     d.querySelector(".ch").style.cursor = "pointer";
-    d.querySelector(".ch").onclick = () => openConversation(c);
+    d.querySelector(".ch").onclick = () => { rememberScroll(); openConversation(c); };
     const pv = d.querySelector(".cpv");
-    if (pv){ pv.style.cursor = "pointer"; pv.onclick = () => openConversation(c); }
+    if (pv){ pv.style.cursor = "pointer"; pv.onclick = () => { rememberScroll(); openConversation(c); }; }
 
     /* Opens the whole conversation. This used to open the first clip, which
        meant the thing the agent summarises could only be read thirty seconds
@@ -1824,7 +1929,7 @@ async function loadConversations(el){
     const openBtn = document.createElement("button");
     openBtn.className = "pri";
     openBtn.textContent = "Read";
-    openBtn.onclick = () => openConversation(c);
+    openBtn.onclick = () => { rememberScroll(); openConversation(c); };
     acts.appendChild(openBtn);
 
     /* The parts list is worth having but not worth showing by default: a long
@@ -1869,6 +1974,7 @@ async function loadConversations(el){
 
     el.appendChild(d);
   }
+  renderPager(el, "convs", page, loadClips, false);
 }
 
 function fmtClockSec(t){
@@ -2012,10 +2118,13 @@ let qTimer;
 $("q").addEventListener("input", () => {
   $("qClear").hidden = !$("q").value;
   clearTimeout(qTimer);
-  qTimer = setTimeout(() => { query = $("q").value.trim().toLowerCase(); loadClips(); }, 180);
+  qTimer = setTimeout(() => {
+    query = $("q").value.trim().toLowerCase(); resetPages(); loadClips();
+  }, 180);
 });
 $("qClear").onclick = () => {
-  $("q").value = ""; $("qClear").hidden = true; query = ""; loadClips(); $("q").focus();
+  $("q").value = ""; $("qClear").hidden = true; query = "";
+  resetPages(); loadClips(); $("q").focus();
 };
 
 async function loadSearch(el){
@@ -2157,7 +2266,15 @@ async function loadClips(){
     // 180-character preview here only ever found the opening sentence.
     if (query){ return await loadSearch(el); }
     if (groupMode === "conv" && !selectMode){ return await loadConversations(el); }
-    const all = await (await fetch("/api/clips")).json();
+    /* The default limit is 1000 and the archive passed that on day two, so the
+       list quietly stopped at a thousand and nothing said so -- pagination is
+       what made it visible ("1-50 of 1000" against 1339 clips on disk).
+       A clip row is 279 bytes of JSON, so the whole archive is under 400 KB
+       and fetching it over loopback costs nothing worth measuring. This
+       becomes the wrong shape somewhere around 20000 clips, roughly fifty
+       days at the current rate, and the fix then is to push the date filter
+       into the query rather than to raise this again. */
+    const all = await (await fetch("/api/clips?limit=" + CLIP_FETCH_LIMIT)).json();
     // has_speech is null until a clip is transcribed; an unknown clip is not
     // the same as a silent one, so it stays out of both filtered views.
     // "Silent, but a voice was heard": the sound tagger found a person
@@ -2197,6 +2314,7 @@ async function loadClips(){
       return;
     }
     el.innerHTML = "";
+    const page = pageSlice("clips", clips);
     /* What this list turned out to be, said before it wastes anybody's time.
        Its owner listened through the most confident of them and found the
        tagger right every time and the words gone every time: a television in
@@ -2214,13 +2332,27 @@ async function loadClips(){
         + "after the microphone gain was raised should not land here.";
       el.appendChild(note);
     }
+    if (all.length >= CLIP_FETCH_LIMIT){
+      const w = document.createElement("div");
+      w.className = "empty";
+      w.style.cssText = "text-align:left;margin-bottom:10px";
+      w.textContent = `Showing the most recent ${CLIP_FETCH_LIMIT} recordings. `
+        + "Narrow by date to reach older ones.";
+      el.appendChild(w);
+    }
+    renderPager(el, "clips", page, loadClips, true);
     let lastDay = null;
+    /* "Shown" means this page. Selecting 1339 clips because the reader could
+       see fifty of them is not what the button says. */
     $("bSelAll").onclick = () => {
-      clips.forEach(c => selected.add(c.name));
+      page.rows.forEach(c => selected.add(c.name));
       syncSelectUI(); loadClips();
     };
-    for (const c of clips){
-      if (groupMode === "day"){
+    for (const c of page.rows){
+      /* Date bars in the flat list too, not only in "By day". A list of
+         timestamps with no breaks in it is a wall, and the reader is almost
+         always looking for a day rather than a clip. */
+      if (groupMode === "day" || groupMode === "flat"){
         const day = fmtDay(c.modified);
         if (day !== lastDay){
           lastDay = day;
@@ -2253,10 +2385,11 @@ async function loadClips(){
         if (selectMode){
           selected.has(c.name) ? selected.delete(c.name) : selected.add(c.name);
           syncSelectUI(); loadClips();
-        } else openClip(c.name);
+        } else { rememberScroll(); openClip(c.name); }
       };
       el.appendChild(b);
     }
+    renderPager(el, "clips", page, loadClips, false);
   }catch(e){ el.innerHTML = '<div class="empty">could not load recordings</div>'; }
 }
 
@@ -2714,12 +2847,13 @@ $("cvPlayer").addEventListener("pause", () => { $("cvPlay").textContent = "▶";
 
 /* Both Back buttons do the same thing; the top one is the one you can reach
    without scrolling a few hundred lines first. */
-function cvGoBack(){
+async function cvGoBack(){
   cvStopPlayback();
   $("convDetail").hidden = true;
   $("clipList").hidden = false;
   cvCurrent = null;
-  loadClips();
+  await loadClips();
+  restoreScroll();
 }
 $("cvBack").onclick = cvGoBack;
 $("cvBackTop").onclick = cvGoBack;
@@ -3529,13 +3663,14 @@ $("bSplit").onclick = async () => {
   loadClips();
 };
 
-function clipGoBack(){
+async function clipGoBack(){
   $("detail").hidden = true;
   /* A clip opened from inside a conversation goes back to the conversation,
      not to the top of the list the reader had already scrolled past. */
   if (cvCurrent){ openConversation(cvCurrent); return; }
   $("clipList").hidden = false;
-  loadClips();
+  await loadClips();
+  restoreScroll();
 }
 $("bBack").onclick = clipGoBack;
 $("bBackTop").onclick = clipGoBack;
