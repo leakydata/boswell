@@ -1389,6 +1389,14 @@ class Worker:
     # Turns per slot to test. Purity is a spread measurement; a dozen samples
     # describe the spread as well as fifty and cost a quarter as much.
     PURITY_TURNS = 12
+    # How like the slot's most representative turn another turn must be to
+    # count as the same voice under the same conditions. Below CLUSTER_MIN,
+    # which decides whether two SLOTS are one person: this is a weaker
+    # question, asked of turns seconds apart in one recording.
+    CORE_MIN = 0.60
+    # And how much of that agreeing speech is needed before it is worth
+    # enrolling from.
+    CORE_MIN_SECONDS = 4.0
 
     def _embed_spans(self, audio, spans, sr=16000):
         """Embed individual stretches of audio with the diarizer's own model.
@@ -1473,6 +1481,25 @@ class Worker:
         M = np.stack(vecs)
         S = M @ M.T
 
+        # The slot's own core, computed whatever the split decides.
+        #
+        # A refused split leaves a slot that is flagged and unusable: 2849 of
+        # them here, 25 voices whose every reference was blocked, 38% of the
+        # archive's speech, including a narrator saying "welcome back to Cody's
+        # Lab" over and over. They cannot be enrolled and so can never be
+        # recognised, and the flag's own docstring admits nobody knows what it
+        # measures.
+        #
+        # What is knowable is which turns agree with each other. The medoid is
+        # the turn most like the rest; the core is the turns that are close to
+        # it. Whatever drags a slot's coherence down -- a second voice, poor
+        # audio, a passing noise -- it is in the turns that disagree, and they
+        # are exactly the ones this leaves out. A vector pooled over turns that
+        # agree cannot be a blend of two people, which is the only thing the
+        # flag was ever protecting against.
+        medoid = int(np.argmax(S.sum(axis=1)))
+        core = [i for i in range(n) if float(S[medoid, i]) >= self.CORE_MIN]
+
         # Seed on the two least-alike turns: if the slot holds two people, the
         # furthest-apart pair is one from each.
         iu = np.triu_indices(n, k=1)
@@ -1485,7 +1512,8 @@ class Worker:
             labels[a], labels[b] = 0, 1
             groups = [np.where(labels == 0)[0], np.where(labels == 1)[0]]
             if min(len(g) for g in groups) < 2:
-                return {"split": False, "reason": "one side collapsed"}
+                return {"split": False, "reason": "one side collapsed",
+                    "medoid": medoid, "core": core}
             # New medoid per group: the member most like the rest of its group.
             new = []
             for g in groups:
@@ -1496,7 +1524,8 @@ class Worker:
 
         groups = [np.where(labels == 0)[0], np.where(labels == 1)[0]]
         if min(len(g) for g in groups) < 2:
-            return {"split": False, "reason": "one side collapsed"}
+            return {"split": False, "reason": "one side collapsed",
+                    "medoid": medoid, "core": core}
         within = []
         for g in groups:
             sub = S[np.ix_(g, g)]
@@ -1511,7 +1540,8 @@ class Worker:
             # Not two voices. On this archive that most likely means the audio
             # is too poor to voiceprint a turn at a time -- which is worth
             # knowing, and is not something a better diarizer would fix.
-            quality.update(split=False, reason="no clean separation")
+            quality.update(split=False, reason="no clean separation",
+                           medoid=medoid, core=core)
             return quality
         quality.update(split=True, labels=labels.tolist(), medoids=[int(a), int(b)])
         return quality
@@ -1749,6 +1779,8 @@ class Worker:
         # each side gets its medoid turn instead, an actual recording of that
         # voice rather than an average of two.
         split_vecs = {}
+        # Slots that would not separate, rebuilt from the turns that agree.
+        core_vecs = {}
         for wi, win in enumerate(windows):
             # The same gain the transcriber gets, over the whole window rather
             # than clip by clip. The embedder is exactly indifferent to it --
@@ -1794,6 +1826,30 @@ class Worker:
                 r["split_attempt"] = {k: v for k, v in sq.items()
                                       if k not in ("labels", "medoids")}
                 if not sq.get("split"):
+                    # Not two voices, so nothing to separate -- but the turns
+                    # that agree with each other are still this voice, and
+                    # refusing outright is what left 38% of the archive's
+                    # speech unenrollable. Pool the core and use that instead
+                    # of pyannote's vector, which was pooled over the
+                    # disagreeing turns as well.
+                    core = sq.get("core") or []
+                    spans = tested_spans.get(spk) or []
+                    secs = sum(b - a for i, (a, b) in enumerate(spans)
+                               if i in set(core))
+                    if len(core) >= 2 and secs >= self.CORE_MIN_SECONDS:
+                        vs = [turn_vecs[spk][i] for i in core
+                              if i < len(turn_vecs[spk])]
+                        if vs:
+                            core_vecs[(wi, spk)] = unit(np.mean(np.stack(vs), axis=0))
+                            purity[spk]["core_turns"] = len(core)
+                            purity[spk]["core_seconds"] = round(secs, 1)
+                            # It is no longer a pooled blend, so it no longer
+                            # carries the warning that it might be one.
+                            purity[spk]["suspect"] = False
+                            purity[spk]["rescued"] = True
+                            self.notify("log", text=(
+                                f"slot {spk} would not separate; enrolling from "
+                                f"{len(core)} agreeing turns ({secs:.0f}s)"))
                     continue
                 labels = sq["labels"]
                 spans = tested_spans.get(spk) or []
@@ -1852,6 +1908,8 @@ class Worker:
                     turns.append({"start": base + a, "end": base + b,
                                   "local": (wi, spk)})
                 vec = split_vecs.get((wi, spk))
+                if vec is None:
+                    vec = core_vecs.get((wi, spk))
                 if vec is None:
                     vec = local.get(spk)
                 if vec is None or not np.all(np.isfinite(np.asarray(vec))):

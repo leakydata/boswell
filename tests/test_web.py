@@ -1494,3 +1494,71 @@ class TestASlotWithSomebodyElsePinnedInIt:
         block = server[i:i + 500]
         assert "The name is applied" in block
         assert "Split by voice" in block
+
+
+class TestRescuingASlotThatWillNotSplit:
+    """A suspect slot is not two voices, and refusing it cost 38% of the archive.
+
+    The purity check flags slots whose turns disagree. Its own docstring says
+    what a flag means: not two people -- splitting refused every one it was
+    given, 2849 of them here, at every cluster count tried. What it actually
+    measures is unknown.
+
+    Meanwhile 25 voices had every voiceprint flagged, so they could be named
+    but never taught, and they held 62 of 163 minutes: a narrator saying
+    "welcome back to Cody's Lab" 34 times among them.
+
+    The turns that agree with each other are still that voice. Pooling those
+    and leaving out the ones that disagree gives a reference that cannot be a
+    blend of two people, which is the only thing the flag ever protected
+    against.
+    """
+
+    def _source(self):
+        import os
+        here = os.path.dirname(__file__)
+        with open(os.path.join(here, "..", "web", "pipeline.py"),
+                  encoding="utf-8") as f:
+            return f.read()
+
+    def test_a_refused_split_reports_the_core(self):
+        src = self._source()
+        for reason in ('"one side collapsed"', '"no clean separation"'):
+            i = src.index(reason)
+            assert "core" in src[i - 40:i + 160], f"{reason} must carry the core"
+
+    def test_the_core_is_turns_that_agree_with_the_medoid(self):
+        src = self._source()
+        i = src.index("medoid = int(np.argmax(S.sum(axis=1)))")
+        block = src[i:i + 200]
+        assert "S[medoid, i]) >= self.CORE_MIN" in block
+
+    def test_the_core_bar_is_below_the_bar_for_joining_two_slots(self):
+        """Turns seconds apart in one recording are a weaker question than two
+        slots being the same person."""
+        import sys, os
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "web"))
+        import pipeline, speaker_store
+        assert pipeline.Worker.CORE_MIN < speaker_store.CLUSTER_MIN
+
+    def test_a_rescued_slot_stops_being_suspect(self):
+        """It is no longer a pooled blend, so it no longer carries the warning
+        that it might be one."""
+        src = self._source()
+        start = src.index("core_vecs[(wi, spk)]")
+        end = src.index("continue", start)          # the end of the branch
+        block = src[start:end]
+        assert '"suspect"] = False' in block
+        assert '"rescued"] = True' in block
+
+    def test_it_refuses_when_there_is_too_little_agreeing_speech(self):
+        src = self._source()
+        i = src.index("if len(core) >= 2 and secs >= self.CORE_MIN_SECONDS:")
+        assert i > 0
+
+    def test_the_core_vector_is_preferred_over_the_pooled_one(self):
+        """pyannote's vector was pooled over the disagreeing turns too."""
+        src = self._source()
+        i = src.index("vec = split_vecs.get((wi, spk))")
+        block = src[i:i + 260]
+        assert block.index("core_vecs.get") < block.index("local.get(spk)")
