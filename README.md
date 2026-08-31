@@ -182,7 +182,28 @@ does not care whether anyone spoke, which is the point: it is the only thing
 that can tell an empty room from a dog.
 
 It listens in **ten-second windows overlapping by half** — five passes over a
-thirty-second clip — not to the whole clip at once. A short event inside a long recording is invisible to a single
+thirty-second clip — not to the whole clip at once, and the width is not a
+preference.
+
+**AST truncates at 10.24 seconds.** `ASTFeatureExtractor` has `max_length`
+1024 frames at a 10 ms hop, and anything longer is cut rather than summarised.
+It fails silently: it returns a confident verdict on the part it kept. So the
+original whole-clip tagging never looked at a whole clip — it judged thirty
+seconds by their first ten and threw the rest away.
+
+    feature shape, whole 30 s clip    (1, 1024, 128)
+    feature shape, first 10.24 s      (1, 1024, 128)
+    whole-clip verdict == first 10.24 s?   True
+
+                         whole    first 10.24s   last 10.24s
+    Dog                  0.009        0.009         0.564
+    Mechanical fan       0.109        0.109         0.003
+
+Which is why a bark eight seconds from the end scored 0.009, and why two
+thirds of this archive had never been listened to at all. Ten seconds at a
+five-second hop covers `[0–10]` through `[20–30]` with every second inside two
+windows and nothing truncated; fifteen-second windows would be silently cut to
+10.24 and leave the last five seconds of every clip unheard. A short event inside a long recording is invisible to a single
 verdict over thirty seconds, and the difference is not marginal:
 
 | | whole clip | windowed |

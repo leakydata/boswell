@@ -969,19 +969,47 @@ SOUND_KEEP = 10          # tags stored per clip
 # Measured both, over 20 clips known to hold a dog and 96 that do not, counting
 # detections of things this house does not contain:
 #
-#     windows            dogs found   heartbeats   ms/clip
-#     whole clip (1)        4/20           0          24
-#     15s / 15s  (2)        8/20           0          27
-#     10s / 10s  (3)        8/20           0          38
-#     10s / 5s   (5)        9/20           0          68     <- here
-#     5s  / 2.5s (11)       8/20           4         156
+# Ten-second windows, five seconds apart. The width is not a preference: it is
+# the largest the model will actually look at.
 #
-# Five ten-second windows is better than eleven five-second ones on every axis
-# that matters: it finds one more dog, invents no heartbeats, and costs less
-# than half as much. Narrower was not more sensitive, only noisier -- a bark is
-# loud enough to carry a ten-second window, and the extra passes bought nothing
-# but chances to be wrong.
-SOUND_WINDOW = 10.0      # seconds per window
+# ASTFeatureExtractor has max_length 1024 frames at a 10 ms hop, which is
+# 10.24 seconds, and anything longer is TRUNCATED rather than summarised. Not
+# documented anywhere we were reading, and easy to miss because it fails
+# silently -- it returns a confident verdict on the part it kept.
+#
+# Measured, on the clip where dogs bark in the last third:
+#
+#     feature shape, whole 30 s clip    (1, 1024, 128)
+#     feature shape, first 10.24 s      (1, 1024, 128)
+#     whole-clip verdict == first 10.24 s?   True
+#
+#                          whole    first 10.24s   last 10.24s
+#     Dog                  0.009        0.009         0.564
+#     Mechanical fan       0.109        0.109         0.003
+#
+# So the original tagging never looked at a whole clip. It judged thirty
+# seconds by their first ten and discarded the rest, which is why a bark at
+# eight seconds scored 0.009 and why two thirds of this archive had never been
+# listened to at all. Everything about windows above follows from that.
+#
+# It also rules out anything wider. Fifteen-second windows at a 7.5 s hop
+# read as [0-10.2], [7.5-17.7], [15-25.2]: the last five seconds of every clip
+# would never be seen. Ten seconds at five covers [0-10] through [20-30] with
+# every second inside two windows and nothing truncated.
+#
+# Measured over 20 clips known to hold a dog, and 60 recorded between midnight
+# and six when the fan is all there is:
+#
+#     windows            dogs found   heartbeats   engines   ms/clip
+#     whole clip (1)        6/20           0          0         23
+#     15s / 7.5s (3)       10/20           0         13         38
+#     10s / 5s   (5)       10/20           0          9         59
+#     5s  / 2.5s (11)       9/20           4          1        123
+#
+# The artefacts are the same fan either way: a short window of rumble reads as
+# a throbbing heartbeat, a long one as a steady engine. Neither is in the room,
+# and both families are hidden from the browsing list.
+SOUND_WINDOW = 10.0      # seconds per window; the model truncates past 10.24
 SOUND_HOP = 5.0          # seconds between windows
 SOUND_WINDOW_MIN = 0.25  # a window has "seen" a sound at this score
 SOUND_WINDOW_KEEP = 0.35 # ...and needs this, in two windows, to be recorded
