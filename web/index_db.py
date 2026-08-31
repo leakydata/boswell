@@ -547,11 +547,19 @@ AMBIENT_SOUNDS = {
     # archive" with something that never happened.
     "Vehicle", "Aircraft", "Fixed-wing aircraft, airplane",
     "Propeller, airscrew", "Engine",
-    # Costume four, found by playing the five-clip oddities to their owner:
-    # both Patter clips were the fan, and both Arrow clips were the fan or a
-    # television. Neither had anything to do with rain or archery. The memory
-    # note written after costume three said to expect a fourth; it took two
-    # days.
+    # Neither of these names an event that happens here, but not for the
+    # reason first recorded -- see below, the first account of them was wrong.
+    #
+    # Played one at a time, whole, to the person who was there:
+    #   Patter  typing and shuffling paper; and fan, typing, and a click he
+    #           thought was setting down an empty cup
+    #   Arrow   a YouTube video, then a click that genuinely does sound like an
+    #           arrow hitting a target, then the dog whining; and fan with him
+    #           breathing out
+    #
+    # So they are the desk and the room -- keyboard, paper, a cup, a click, the
+    # fan -- collected under two names that suggest rain and archery. Every
+    # source is already ambient, so the names belong here too.
     "Patter", "Arrow",
 }
 

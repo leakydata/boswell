@@ -279,8 +279,8 @@ whether the bar is in the right place.
 | Typing | 4 of 251 | 0.35 | 4/4 real, including one with a 0.53 fan reading |
 | Music | 4 of 46 | 0.35 | 3/4 clearly music; the fourth was video audio he did not call music |
 | Sigh | 4 of 7 | 0.46 | 3/4 real sighs; the fourth was a throat clearing with distortion |
-| Arrow | 2 of 5 | 0.67 | 0/2 — a television, and the fan |
-| Patter | 2 of 5 | 0.56 | 0/2 — the fan, both times |
+| Arrow | 2 of 5 | 0.67 | 0/2 — a click that does sound like an arrow, and the fan |
+| Patter | 2 of 5 | 0.56 | 0/2 — typing and paper; fan, typing and a cup set down |
 | Typewriter | 2 of 5 | 0.71 | 2/2 real, and neither is a typewriter: it is the dog's claws on lino |
 
 **14 of 16 on the four common labels**, spread deliberately across the
@@ -289,8 +289,18 @@ is in a sensible place — not that the error rate is 12%.
 
 The bottom six were sampled precisely because they looked wrong, and were:
 0 of 6 by name. Two kinds of wrong, needing different handling. Arrow and
-Patter were a television and the fan, so they join the other fan costumes in
-the hidden list. Typewriter was real both times and is not a typewriter — it
+Patter are the desk and the room — keyboard, paper, a cup set down, a click,
+the fan — collected under names that suggest rain and archery, so they are
+hidden.
+
+Those two were also checked twice, and the first check was wrong. Played as
+six clips in a row with counted beeps, their owner reported both Patter clips
+as the fan; played one at a time, whole and named, the first was typing and
+shuffling paper and the second was fan, typing and a cup. The conclusion did
+not change and the reasons in the code did, which is worse than it sounds --
+the wrong reason had already been committed to three files as fact. Six clips
+with counted beeps is more than anyone can hold; one clip, named, whole, is
+slower and actually answerable. Typewriter was real both times and is not a typewriter — it
 is a dog's claws on kitchen lino. Suppressing that would throw away a true
 signal about the room; leaving it alone would put a typewriter in a house that
 has none. The label stays, since it is what the model said and what the filter
