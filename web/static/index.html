@@ -3840,6 +3840,15 @@ function nearestName(typed){
   return best;
 }
 
+/* The answers that are not a person's name, offered on an empty field so a
+   line of television does not have to be given one. Written the same way every
+   time so the archive can be asked "what did the TV say" and answer. */
+const NOT_A_PERSON = [
+  ["TV", "Speech from a television or a video — not someone in the room"],
+  ["Someone else", "A real person, but not one worth enrolling"],
+  ["Not speech", "The transcriber heard words that were not there"],
+];
+
 /* Suggestions under the line editor's name field, same behaviour as the
    namer's: narrowed as you type, and clicking one fills the field. */
 function renderNameSuggestions(){
@@ -3848,7 +3857,25 @@ function renderNameSuggestions(){
   box.innerHTML = "";
   const t = normName($("edNewName").value);
   const hits = namerPeople.filter(n => !t || normName(n).includes(t));
-  if (!t){ return; }                       // empty field: do not wall it off
+
+  /* Words that came out of a screen are the commonest thing on a line that
+     nobody said, and until now the only way to record that was to invent a
+     name -- which fragments the moment two of them are typed differently, and
+     "TV", "tv" and "Television" are three different labels to anything reading
+     this later.
+     These pin one agreed label. Pinning never touches the voiceprint store, so
+     it puts no person and no voiceprint anywhere; it just says who, or what,
+     said this line. */
+  if (!t){
+    for (const [label, why] of NOT_A_PERSON){
+      const b = document.createElement("button");
+      b.textContent = label;
+      b.title = why;
+      b.onclick = () => { $("edNewName").value = label; renderNameSuggestions(); };
+      box.appendChild(b);
+    }
+    return;                                // empty field: do not wall it off
+  }
   if (!hits.length){
     const d = document.createElement("div");
     d.className = "hint";

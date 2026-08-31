@@ -1222,3 +1222,57 @@ class TestLinesWithNobodyBehindThem:
         block = page[i:i + 500]
         assert "editLine(" in block
         assert "nameSpeaker(" not in block
+
+
+class TestAnswersThatAreNotAName:
+    """What to put on a line of television.
+
+    Pinning a name to a line never touches the voiceprint store -- an embedding
+    describes a whole diarized cluster, not one line -- so it is the right
+    mechanism for "this came out of a screen". The weakness was free text: TV,
+    tv and Television are three labels to anything reading the archive later,
+    and the archive is meant to be read by something that cannot ask.
+
+    So the empty field offers the answers that are not a person, written the
+    same way every time.
+    """
+
+    def _page(self):
+        import os
+        here = os.path.dirname(__file__)
+        with open(os.path.join(here, "..", "web", "static", "index.html"),
+                  encoding="utf-8") as f:
+            return f.read()
+
+    def test_the_non_person_answers_exist(self):
+        page = self._page()
+        i = page.index("const NOT_A_PERSON")
+        block = page[i:i + 400]
+        for label in ('"TV"', '"Someone else"', '"Not speech"'):
+            assert label in block
+
+    def test_they_are_offered_when_the_field_is_empty(self):
+        """That is when someone has no name to give, which is the whole case."""
+        page = self._page()
+        i = page.index("function renderNameSuggestions")
+        block = page[i:i + 1400]
+        assert "NOT_A_PERSON" in block
+        assert "if (!t){" in block
+
+    def test_typing_still_narrows_to_real_people(self):
+        page = self._page()
+        i = page.index("function renderNameSuggestions")
+        block = page[i:i + 1400]
+        assert "namerPeople.filter" in block
+
+    def test_pinning_never_enrols_a_voiceprint(self):
+        """The property that makes this safe for a television."""
+        import os
+        here = os.path.dirname(__file__)
+        with open(os.path.join(here, "..", "web", "server.py"),
+                  encoding="utf-8") as f:
+            server = f.read()
+        i = server.index('if "speaker_name" in body:')
+        block = server[i:i + 700]
+        assert "does NOT touch the voiceprint database" in block
+        assert "speaker_store" not in block
