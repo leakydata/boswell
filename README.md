@@ -59,6 +59,29 @@ enrols their voiceprint, and the People tab shows what each one was built from.*
 
 > Screenshots use synthetic speech, not real recordings.
 
+## What it does that is unusual
+
+- **Every voiceprint is kept, none are averaged.** A person sounds different in
+  a quiet room, outdoors, and at seven in the morning; matching takes the
+  closest single reference, so each label adds a condition rather than diluting
+  one, and someone with eleven references is not eleven times more likely to
+  win.
+- **Impure audio can be labelled and can never be a reference.** A slot whose
+  own turns disagree still takes a name — by hand, or automatically when one
+  voice in it dominates — and its words stay searchable. It just never becomes
+  the thing other voices are measured against. What can be salvaged is: it is
+  enrolled from the turns that agree with each other rather than refused
+  outright.
+- **A second model names what else was in the room.** 527 everyday sound
+  classes, so the archive is searchable by what happened and not only by what
+  was said: the day the dog barked, the clip with the turkey in it.
+- **People have profiles that can be refined later**, and renaming one carries
+  out to every clip that mentions it — so an identity can start as "voice #90"
+  and become "Adam Savage, YouTuber" a week later without leaving stale labels
+  behind.
+- **Nothing is deleted without a manifest**, and the thresholds were measured
+  rather than chosen. Where a number is still a guess, it says so.
+
 ## Status
 
 Working prototype. Every stage below has been run end-to-end on real hardware
@@ -244,12 +267,31 @@ Narrower was not more sensitive, only noisier: a bark is loud enough to carry
 a ten-second window, and the extra passes bought nothing but chances to be
 wrong. 68 ms a clip is 0.7% of what transcribing the same clip costs.
 
-What it is used for: finding things (`Recordings` has a sound filter, `Heard`
-lists everything that was not speech or room noise, rarest first, with a player
-on each), knowing a silent clip held a voice, and deciding what is safe to
-delete. Tags can be marked wrong on a clip — the correction survives
-re-transcription and reaches every view, including the one that decides
-deletability.
+**What it is for.** An archive of everything you said is searchable by what was
+said. This makes it searchable by what *happened*: the day the dog barked, the
+clip with the turkey in it, the morning the microwave went off. Ask the
+recordings list for `Dog` and you get the 26 clips with a dog in them, without
+anyone having tagged a thing.
+
+The **Heard** page is the other direction — not "find me X" but "what is in
+here that I do not know about". Everything that was neither speech nor room
+noise, rarest first, with a player on each, because a turkey heard once is why
+you open that page and Music heard forty-six times is not. This archive holds a
+horse, a police siren, a sewing machine, a cat and a fart, none of which anyone
+would have thought to search for.
+
+It also decides what is safe to delete, which is the job with consequences.
+**Clear out** groups every silent clip by the exact set of sounds heard in it
+and lets you tick the ones that mean nothing. By set, never by tag: "delete
+anything tagged Typing" would take the clip that is typing *and* a dog, and the
+dog is why that clip exists. Anything with a voice in it never appears there at
+all.
+
+And a tag can be marked wrong. The tagger can be defensible and still useless —
+a falsetto to the dog came back as "Pigeon, dove", which it honestly resembled,
+and which puts a person's voice in front of you under the name of a bird. The
+correction survives re-transcription and reaches every view, including the one
+that decides deletability.
 
 Two bars, because browsing and searching want different ones. A tag is
 searchable at 0.20 and browsable at 0.35: 624 clips carry Vehicle and four of
@@ -757,22 +799,55 @@ Diarization gives per-file labels (`SPEAKER_00`) that mean nothing across
 recordings. Tapping a speaker chip attaches a name, and every later clip
 resolves that voice on its own.
 
-Enrolment is a running mean in embedding space, not training: no model is ever
-retrained, and what improves is the reference vector each new voice is compared
-against. It works from the first sample, sharpens with each label, and costs no
-GPU time.
+**Nothing is averaged.** Every sighting of a voice is kept as its own
+voiceprint, and matching takes the single closest one. That is the whole
+design, and it exists because a person does not have *a* voice: they have a
+voice in a quiet room, a voice outdoors, a voice over a bad connection, and a
+voice at seven in the morning. An average of those is a vector describing
+nobody, and it gets worse every time it is fed something new. A set of them
+covers conditions instead, and each new label adds a condition rather than
+diluting one.
 
-Because the reference is an average, a bad sample degrades it, so two checks
-run before anything is enrolled:
+Top-1 against the set, then. Somebody with eleven references is not eleven
+times more likely to win -- the best single reference wins, so a well-covered
+person and a newly-named one are compared on the same footing.
+
+No model is ever retrained. What improves is the set of references, so it works
+from the first sample and costs no GPU time.
+
+Three checks stand between audio and a permanent reference:
 
 - **Length.** Under 5 seconds of a voice in a clip is refused. Short speech
   makes an unreliable embedding, and a bad reference is permanent.
-- **Purity.** A diarizer slot whose own turns disagree with each other is
-  refused for automatic enrolment. It is usually two people run together, and a
-  voiceprint pooled from two voices is indistinguishable from a real one
-  afterwards -- right length, right neighbours, quietly wrong forever. Naming
-  one by hand still works, because a person listening can hear what the model
-  cannot.
+- **Purity.** A diarizer slot whose own turns disagree with each other never
+  becomes a reference. That is enforced in `_references`, not at the point of
+  naming, because naming is not the only way in: enrolment refuses an impure
+  slot, and naming a whole *cluster* used to turn every voiceprint in it into a
+  reference regardless -- 280 of them were sitting in this archive waiting for
+  that. The guard was on the door and not on the room.
+- **Foreign pins.** Naming a voice that has a line pinned to somebody else does
+  not enrol either. The impurity check cannot see that case: diarization was
+  confident and simply wrong, and the pin is a listener saying so. Nine lines of
+  one comedian with one line pinned to another enrolled 29.7 seconds as the
+  first of them, the second included.
+
+**Impure audio can still be labelled.** This is the distinction the store is
+built on and it is worth stating on its own: a label is correctable, a
+reference is not. So a slot whose turns disagree can be named by hand, can be
+named automatically when one voice in it dominates and matches a clean
+reference, and its words are attributed, searchable and exportable like
+anything else. It simply never becomes the thing other voices are measured
+against.
+
+And it is not thrown away. A slot that will not separate is enrolled from its
+**core** -- the turn most like the rest, and the turns that agree with it --
+rather than from the vector pyannote pooled over the disagreeing turns too.
+Whatever drags a slot's coherence down is in the turns that disagree, and those
+are what the core leaves out, so the result cannot be a blend of two people,
+which is the only thing the check ever protected against. On this archive that
+recovered 1889 slots that were previously unusable, from 25 voices holding 38%
+of all the speech -- including a narrator saying "welcome back to Cody's Lab"
+across 34 clips who could be named and never learned.
 
 There is deliberately **no resemblance check**. The previous design refused any
 sample scoring below 0.55 against the person already enrolled, which rejected
@@ -782,6 +857,59 @@ A sample that resembles nothing already held is the valuable one.
 Every reference is kept individually, so the **People** tab lists them, groups
 the ones that arrived together from naming a voice, and can put a whole group
 back if the name was wrong.
+
+### Profiles
+
+A name answers "who said this". It was also being asked to carry what kind of
+thing they are, for want of anywhere else to put it: six of the ten names in
+this archive ended in "YouTube". That makes the name wrong -- a comedian who
+appears on somebody's channel is not called "Danny Polishchuk YouTube" --
+invites two spellings of one person, and hides the category from search.
+
+So a person has a profile: a `role` (YouTuber, comedian, housemate) and a
+`note`, kept apart from `kind`, which answers a different question entirely and
+has only two useful answers. The profile touches no matching. It travels out
+through the MCP, where a reader given "Danny Polishchuk" and nothing else
+cannot tell a housemate from a comedian on a channel playing in the background,
+and the difference changes what the words mean.
+
+A profile starts as just a name. Asking for a role and a note while naming
+would put two optional questions in front of the one that matters, and the
+answer to "who is this" is usually a name. The rest is added whenever, and
+**renaming carries out to the recordings**: the transcripts hold the name as a
+copy, so a rename that changed only the store left every clip still saying the
+old thing. The resolved name, the pinned lines and the candidate lists all move
+together, the last so the queue stops offering a name nobody has any more.
+
+That is what makes an identity refinable. "Voice #90" becomes "Adam", becomes
+"Adam Savage", gains "role: YouTuber, Tested" a week later, and every clip he
+ever spoke in follows.
+
+### Answers that are not a name
+
+Three of them, offered wherever a name is asked for:
+
+| | means | learned? |
+|---|---|---|
+| **Media** | a television, a video, a radio — a speaker, not the room | **yes** |
+| **Someone else** | a real person, not worth identifying | no |
+| **Not speech** | not a voice at all | no |
+
+Only Media is learned, deliberately: a channel is a real recurring voice, so
+matching it again is what stops the same one being asked about twice. The other
+two contradict themselves if enrolled -- building a permanent reference for
+somebody just declared not worth identifying, or putting a voiceprint of
+not-a-voice into the set that gets compared against real people.
+
+The spelling is the contract, enforced in the server rather than the browser so
+it holds however the name arrives, and a test compares the two lists: "Media"
+typed as "TV" is a different person with none of this applying.
+
+An enrolled channel may write its own name onto a clip, at a higher bar than a
+person -- 0.80 and a strong margin against 0.75 and 0.15. The asymmetry is the
+point: a real person labelled as a channel has their words filed as television
+and drops out of the queue that would have caught it. Measured over 681
+media-topped slots, the caution costs six slots out of 387.
 
 Coverage matters more than quantity. The thresholds are derived rather than
 guessed -- 1642 same-speaker and 2141 different-speaker pairs, harvested from
@@ -894,6 +1022,9 @@ cell. The BQ25101's HICHG pin selects 100 mA, exposed as a switch. Only enable
 it on a cell rated for that current.
 
 ## Status light
+
+See [What the status light means](#what-the-status-light-means) for the
+current vocabulary; the rest of this section is about power and brightness.
 
 The LED is roughly 2 mA against a whole-device budget near 8 mA, so it is worth
 controlling. Brightness is real PWM — average current tracks duty cycle almost
