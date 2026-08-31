@@ -265,11 +265,20 @@ up", which is the whole difficulty: the model is not being stupid, a fan
 blowing into a microphone genuinely resembles a prop engine. It is simply
 useless for finding things, which is the only thing the tags are for.
 
-Where it is reliable, checked the same way. Four clips tagged Dog were played
-to their owner across the confidence range — 0.89, 0.74, 0.55 and 0.37, the
-last being the weakest of the 26 that clear the bar. All four were real, and
-two of them were whining rather than barking, which the model still called a
-dog. So the 0.35 bar holds: the clip nearest to it is not a false positive.
+Where it is reliable, checked the same way — played to the person who was
+there, across the confidence range rather than at the top of it, with the
+weakest clip above the bar always included because that is the one that says
+whether the bar is in the right place.
+
+| label | sampled | weakest tested | verdict |
+|---|---|---|---|
+| Dog | 4 of 26 | 0.37 | 4/4 real; two were whining, not barking |
+| Typing | 4 of 251 | 0.35 | 4/4 real, including one with a 0.53 fan reading |
+
+So 0.35 holds twice over. The typing case settles something the dog case could
+not: the clip with the strongest fan of the four was still real typing, so the
+fan does not contaminate every label — it produces its own, and the model can
+tell a keyboard from it.
 
 That is the shape of this model on this hardware. It is trustworthy about
 events that happen — a bark, a whine, a microwave, a cupboard — and unreliable
