@@ -509,3 +509,57 @@ class TestImpureNeverEnrolls:
         # anybody is, and that is what keeps it reachable in the queue.
         cluster = store.new_person()
         assert store.add_voiceprint(cluster, v, origin="auto", impure=True)["ok"]
+
+
+class TestQuietClipsAreLifted:
+    """The gain applied before transcription, and its refusals.
+
+    A quiet recording is the ordinary case for a device worn on a shirt, and
+    measured on 60 clips that already transcribe, lifting one gains words on
+    the quiet ones (+12 mean below -30 dBFS) and does nothing to the loud ones
+    (+1.0). The refusals matter as much as the lift: it must never attenuate
+    audio that is already loud, and must never scale digital silence, which
+    would raise a noise floor into the decoder's hearing and get a stock
+    phrase written over a room where nobody spoke.
+    """
+
+    def test_a_quiet_clip_is_brought_up(self):
+        import pipeline
+        # 0.1 peak needs 8.9x, inside the cap. A tenth of this would need 89x
+        # and come back capped instead, which is the next test.
+        a = (np.sin(np.linspace(0, 400, 16000)) * 0.1).astype(np.float32)
+        assert abs(float(np.abs(pipeline.normalise(a)).max())
+                   - pipeline.ASR_PEAK) < 1e-3
+
+    def test_a_loud_clip_is_left_exactly_alone(self):
+        import pipeline
+        a = (np.sin(np.linspace(0, 400, 16000)) * 0.95).astype(np.float32)
+        assert pipeline.normalise(a) is a
+
+    def test_silence_is_not_scaled_into_noise(self):
+        import pipeline
+        a = np.zeros(16000, dtype=np.float32)
+        assert pipeline.normalise(a) is a
+
+    def test_the_gain_is_capped(self):
+        """Below the cap there is only noise floor, and amplifying that invites
+        the decoder to write something over a room where nobody spoke."""
+        import pipeline
+        a = (np.sin(np.linspace(0, 400, 16000)) * 0.001).astype(np.float32)
+        out = pipeline.normalise(a)
+        peak = float(np.abs(out).max())
+        assert peak < pipeline.ASR_PEAK, "must not reach full scale from noise"
+        assert abs(peak - 0.001 * pipeline.ASR_MAX_GAIN) < 1e-3
+
+    def test_it_is_one_scalar_over_the_whole_clip(self):
+        """Per-part gain would invent a level difference the room never had."""
+        import pipeline
+        a = np.concatenate([np.full(8000, 0.01),
+                            np.full(8000, 0.0005)]).astype(np.float32)
+        out = pipeline.normalise(a)
+        assert abs(float(out[:8000].max() / out[8000:].max())
+                   - float(a[:8000].max() / a[8000:].max())) < 1e-3
+
+    def test_empty_input_does_not_raise(self):
+        import pipeline
+        assert len(pipeline.normalise(np.zeros(0, dtype=np.float32))) == 0

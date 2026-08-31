@@ -165,7 +165,9 @@ XIAO nRF52840 Sense
                 ▼
 Host (Linux + CUDA)
     → ADPCM decode → WAV
+    → level normalise              never attenuates, capped at 30 dB
     → WhisperX large-v3            transcript + word timestamps
+    → AST / AudioSet               527 everyday sound classes
     → pyannote diarization         SPEAKER_00 / SPEAKER_01
     → voiceprint match             → real names
     → chunk on pauses & turns

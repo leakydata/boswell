@@ -811,6 +811,57 @@ def calibration_report():
         c.close()
 
 
+# The wearable records at whatever level the room offers, and a lot of the
+# archive is quiet: half the clips sit below -30 dBFS, some below -40. Whisper
+# does normalise its own features, so this should not matter, and measured, it
+# does. Paired on 60 clips that already transcribe -- same model, same session,
+# the only difference the gain -- 23 gained words, 29 were unchanged, 8 lost
+# some. Split by level it is not ambiguous:
+#
+#     quiet (< -30 dBFS)   n=39   mean word change  +12.0
+#     loud  (>= -30 dBFS)  n=21   mean word change   +1.0
+#
+# It helps what is broken and leaves what works alone. On clips that held no
+# transcript at all but that AST said held a voice, it recovered speech in 21
+# of 31, 267 words. The control matters more than that number: on 31 clips AST
+# said held NO voice, the same treatment produced 3 words total -- "Thank you."
+# and "Okay.", the decoder's two stock phrases on room tone, both of which
+# is_hallucinated_silence already removes. So the gain is not manufacturing
+# conversation, which was the thing worth being afraid of.
+#
+# What did NOT work, recorded so it is not tried again: the clip that started
+# this holds a fan blowing into the microphone, 98.5% of its energy below
+# 100 Hz. A high-pass looked obviously right and was wrong -- the decoder's
+# output rewrote itself at every cutoff ("a really big jet" at 120 Hz, "being
+# an empty intent" at 300 Hz), which is what hallucination looks like, and a
+# listener said the filtered audio was harder to follow, not easier.
+# DeepFilterNet was worse again: it took the rumble for signal and returned
+# hiss. The level was the problem the whole time, not the spectrum.
+ASR_PEAK = 0.89          # leave headroom; the alignment model dislikes clipping
+ASR_MAX_GAIN = 32.0      # ~30 dB. Beyond this there is nothing but noise floor.
+
+
+def normalise(audio):
+    """Bring a quiet recording up to a workable level. Never attenuates.
+
+    A single scalar over the whole array, so nothing about the audio changes
+    except how loud it is: no band is favoured, the noise rises with the voice,
+    and one clip's gain cannot vary across itself. That last point is why this
+    is applied to a whole concatenated conversation at once rather than clip by
+    clip -- per-clip gain would lift a near-silent gap to match a loud turn and
+    invent a level difference the room never had.
+    """
+    if audio is None or not len(audio):
+        return audio
+    peak = float(np.abs(audio).max())
+    if not np.isfinite(peak) or peak <= 0:
+        return audio                      # digital silence; scaling it is noise
+    gain = min(ASR_PEAK / peak, ASR_MAX_GAIN)
+    if gain <= 1.0:
+        return audio                      # already loud enough; leave it alone
+    return (audio * gain).astype(audio.dtype)
+
+
 def is_hallucinated_silence(segments):
     """Whisper writing a phrase over room tone, with no voice to back it.
 
@@ -1015,7 +1066,7 @@ class Worker:
         import whisperx
         self._load()
         path = os.path.join(DATA, clip)
-        audio = whisperx.load_audio(path)
+        audio = normalise(whisperx.load_audio(path))
 
         res = self._asr.transcribe(audio, batch_size=16)
         model_a, meta = self._align
@@ -1362,7 +1413,7 @@ class Worker:
             return {"ok": False, "error": "every clip here has been edited by "
                                           "hand; nothing to redo"}
 
-        audio = np.concatenate([x["audio"] for x in loaded])
+        audio = normalise(np.concatenate([x["audio"] for x in loaded]))
         self.notify("log", text=(f"re-transcribing {len(loaded)} clip(s), "
                                  f"{len(audio) / 16000 / 60:.0f} min, in one pass"))
         res = self._asr.transcribe(audio, batch_size=16)
@@ -1491,7 +1542,14 @@ class Worker:
         # voice rather than an average of two.
         split_vecs = {}
         for wi, win in enumerate(windows):
-            audio = np.concatenate([x["audio"] for x in win])
+            # The same gain the transcriber gets, over the whole window rather
+            # than clip by clip. The embedder is exactly indifferent to it --
+            # measured at cosine 1.0000 across gains of 3x to 9.8x, because it
+            # normalises internally -- so this cannot move a voiceprint. What
+            # it can move is the diarizer's own voice detection, in the same
+            # direction as the transcriber's, which is the point: the two must
+            # agree about where a person is speaking.
+            audio = normalise(np.concatenate([x["audio"] for x in win]))
             base = win[0]["start"]
             self.notify("log", text=(
                 f"diarizing {len(win)} clip(s), "
