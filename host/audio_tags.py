@@ -156,6 +156,10 @@ def main():
                     help="list only the clips found empty by every test")
     ap.add_argument("--delete", action="store_true",
                     help="actually remove them. Requires --deletable.")
+    ap.add_argument("--json", metavar="PATH",
+                    help="write every verdict and its tags here. The printed "
+                         "report truncates to twenty of each, which is enough "
+                         "to look at and not enough to count.")
     a = ap.parse_args()
     if a.delete and not a.deletable:
         sys.exit("--delete only works with --deletable, so the list is seen first")
@@ -209,6 +213,16 @@ def main():
             print(f"  {f:<36} {t} {s:.2f}")
         if not wanted:
             print("  none")
+
+    if a.json:
+        with open(a.json, "w") as fh:
+            json.dump({"keep": [{"clip": f, "why": w, "rms_db": round(r["rms_db"], 1),
+                                 "tags": r["tags"]} for f, w, r in keep],
+                       "empty": [{"clip": f, "why": w, "rms_db": round(r["rms_db"], 1),
+                                  "tags": r["tags"]} for f, w, r in empty],
+                       "not_judged": [{"clip": f, "why": w} for f, w in skipped]},
+                      fh, indent=1)
+        print(f"\nfull record written to {a.json}")
 
     if a.deletable:
         size = sum(os.path.getsize(os.path.join(data, f)) for f, _, _ in empty)
