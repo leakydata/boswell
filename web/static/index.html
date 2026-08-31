@@ -329,6 +329,13 @@ button.sound{font-family:var(--mono);font-size:11.5px;padding:3px 9px;
   min-height:0;border-radius:12px;background:var(--sunk);color:var(--muted);
   border:1px solid transparent}
 button.sound.strong{color:var(--ink);border-color:var(--rule)}
+span.sound{font-family:var(--mono);font-size:11.5px;padding:3px 9px;
+  border-radius:12px;background:var(--sunk);color:var(--muted);
+  display:inline-block;margin-right:5px}
+.tidyrow{gap:12px;align-items:center;cursor:pointer}
+.tidyrow.on{border-color:var(--accent)}
+.tidyrow input{width:18px;height:18px;flex:none;accent-color:var(--accent)}
+.tidytags{flex:1;min-width:0;display:flex;flex-wrap:wrap;gap:4px}
 .pager{display:flex;align-items:center;justify-content:center;gap:14px;
   padding:12px 4px;margin-top:6px}
 .pager.top{margin:0 0 8px;padding-top:4px;border-bottom:1px solid var(--rule)}
@@ -446,6 +453,7 @@ html{scroll-padding-top:120px}
     <button id="tabRec" role="tab" aria-controls="viewRec" aria-selected="false" tabindex="-1">Recordings</button>
     <button id="tabPpl" role="tab" aria-controls="viewPpl" aria-selected="false" tabindex="-1">People</button>
     <button id="tabNotes" role="tab" aria-controls="viewNotes" aria-selected="false" tabindex="-1">Notes</button>
+    <button id="tabTidy" role="tab" aria-controls="viewTidy" aria-selected="false" tabindex="-1">Clear out</button>
   </nav>
 
   <main id="main">
@@ -556,7 +564,7 @@ html{scroll-padding-top:120px}
       <div class="err" id="err"></div>
     </div>
 
-    <div class="card span2">
+  <div class="card span2">
       <h2>Activity</h2>
       <ul id="log" aria-live="polite" aria-relevant="additions"><li>waiting for connection…</li></ul>
     </div>
@@ -796,7 +804,35 @@ html{scroll-padding-top:120px}
     </div>
   </div>
 
+  <div class="view" id="viewTidy" role="tabpanel" aria-labelledby="tabTidy" tabindex="0" hidden>
+    <div class="card">
+      <h2>Clear out recordings that hold nothing</h2>
+      <div style="font-size:13px;color:var(--muted);line-height:1.55">
+        Every group below is a set of recordings with no transcript, grouped by
+        exactly what the sound tagger heard in them. Tick the ones that mean
+        nothing to you. A recording is only ever removed when its
+        <em>whole</em> description is things you ticked — a clip tagged Typing
+        <em>and</em> Dog is not a typing clip, and the dog is why it exists.
+        <br><br>
+        Anything with a voice in it never appears here at all. Every deletion
+        writes a record to <code>data/deleted/</code> first: what was removed,
+        when it was recorded, and what was heard in it.
+      </div>
+      <div class="toolbar2" style="margin-top:12px">
+        <button id="bTidyRefresh">Refresh</button>
+        <span class="count" id="tidyTotal"></span>
+      </div>
+      <div id="tidyList"><div class="empty">loading…</div></div>
+      <div class="toolbar2" style="margin-top:14px">
+        <span class="count" id="tidyChosen">nothing selected</span>
+        <button class="dang" id="bTidyDelete" disabled>Delete these</button>
+      </div>
+    </div>
+  </div>
+
   </main>
+
+
 </div>
 
 <div id="scrim"></div>
@@ -1085,11 +1121,121 @@ async function connect(){
   if (await ensureAuth()) connect();
 })();
 
+/* ---- clearing out ----
+   Deleting a recording cannot be undone and the whole premise of the device is
+   that it was listening while nobody was paying attention. So the rule here is
+   that a clip goes only when its ENTIRE description is things the owner has
+   called uninteresting: ticking "Typing" removes the 70 clips that are nothing
+   but typing, and leaves the one that is typing and a dog. The archive holds a
+   turkey, a cat and four clips of a dog barking, all of them in this list and
+   none of them deletable by ticking a keyboard. */
+let tidyGroups = [];
+const tidyChosen = new Set();
+
+function tidyKey(tags){ return tags.slice().sort().join("\u0000"); }
+
+function syncTidy(){
+  let clips = 0, seconds = 0;
+  for (const g of tidyGroups){
+    if (tidyChosen.has(tidyKey(g.tags))){ clips += g.clips; seconds += g.seconds; }
+  }
+  $("tidyChosen").textContent = clips
+    ? `${clips} recording${clips === 1 ? "" : "s"} selected · ${fmtMins(seconds)}`
+    : "nothing selected";
+  $("bTidyDelete").disabled = clips === 0;
+  $("bTidyDelete").textContent = clips
+    ? `Delete ${clips} recording${clips === 1 ? "" : "s"}` : "Delete these";
+}
+
+async function loadTidy(){
+  const el = $("tidyList");
+  try{
+    tidyGroups = await (await fetch("/api/cleanup/groups")).json();
+  }catch(e){
+    el.innerHTML = '<div class="empty">could not read the archive</div>';
+    return;
+  }
+  tidyChosen.clear();
+  const total = tidyGroups.reduce((a, g) => a + g.clips, 0);
+  $("tidyTotal").textContent = total
+    ? `${total} recording${total === 1 ? "" : "s"} with no words in them, `
+      + `in ${tidyGroups.length} group${tidyGroups.length === 1 ? "" : "s"}`
+    : "";
+  if (!total){
+    el.innerHTML = '<div class="empty">Nothing to clear out — every silent '
+      + 'recording either holds a voice or has never been examined.</div>';
+    syncTidy();
+    return;
+  }
+  el.innerHTML = "";
+  for (const g of tidyGroups){
+    const row = document.createElement("label");
+    row.className = "row tidyrow";
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.onchange = () => {
+      const k = tidyKey(g.tags);
+      box.checked ? tidyChosen.add(k) : tidyChosen.delete(k);
+      row.classList.toggle("on", box.checked);
+      syncTidy();
+    };
+    const tags = document.createElement("span");
+    tags.className = "tidytags";
+    for (const t of g.tags){
+      const chip = document.createElement("span");
+      chip.className = "sound";
+      chip.textContent = t;
+      tags.appendChild(chip);
+    }
+    const n = document.createElement("span");
+    n.className = "count";
+    n.textContent = `${g.clips} clip${g.clips === 1 ? "" : "s"} · ${fmtMins(g.seconds)}`;
+    row.append(box, tags, n);
+    el.appendChild(row);
+  }
+  syncTidy();
+}
+
+on("bTidyRefresh", "click", loadTidy);
+
+let tidyArmed = false;
+on("bTidyDelete", "click", async () => {
+  const sets = tidyGroups.filter(g => tidyChosen.has(tidyKey(g.tags)))
+                         .map(g => g.tags);
+  if (!sets.length) return;
+  const clips = tidyGroups.filter(g => tidyChosen.has(tidyKey(g.tags)))
+                          .reduce((a, g) => a + g.clips, 0);
+  /* Two presses, because the first one is a click and the second is a
+     decision. Nothing here can be got back. */
+  if (!tidyArmed){
+    tidyArmed = true;
+    $("bTidyDelete").textContent = `Really delete ${clips}? This cannot be undone`;
+    setTimeout(() => { tidyArmed = false; syncTidy(); }, 6000);
+    return;
+  }
+  tidyArmed = false;
+  $("bTidyDelete").disabled = true;
+  $("bTidyDelete").textContent = "deleting…";
+  try{
+    const r = await fetch("/api/cleanup/delete", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({sets})});
+    const b = await r.json().catch(() => ({}));
+    if (!r.ok){ log(b.detail || "could not delete"); }
+    else {
+      log(`removed ${b.removed} recording(s), ${(b.bytes/1e6).toFixed(0)} MB `
+          + `— listed in data/deleted/${b.manifest}`);
+    }
+  }catch(e){ log("could not reach the server"); }
+  loadTidy();
+});
+
 /* ---- tabs ---- */
 let current = null;
 function showTab(which){
   for (const [t, v, k] of [["tabDev","viewDev","dev"],["tabRec","viewRec","rec"],
-                           ["tabPpl","viewPpl","ppl"],["tabNotes","viewNotes","notes"]]){
+                           ["tabPpl","viewPpl","ppl"],["tabNotes","viewNotes","notes"],
+                           ["tabTidy","viewTidy","tidy"]]){
     const on = which === k;
     $(t).setAttribute("aria-selected", on);
     // Roving tabindex: one stop for the whole tablist, then arrow keys move
@@ -1101,8 +1247,10 @@ function showTab(which){
   if (which === "rec") loadClips();
   if (which === "ppl"){ loadPeople(); loadVocab(); loadVoices(); pollBulk(); }
   if (which === "notes"){ loadAgent(); loadItems(); loadTopics(); loadDuplicates(); }
+  if (which === "tidy") loadTidy();
 }
-const TABS = [["tabDev","dev"],["tabRec","rec"],["tabPpl","ppl"],["tabNotes","notes"]];
+const TABS = [["tabDev","dev"],["tabRec","rec"],["tabPpl","ppl"],
+              ["tabNotes","notes"],["tabTidy","tidy"]];
 for (const [id, key] of TABS) $(id).onclick = () => showTab(key);
 for (const [id] of TABS){
   $(id).addEventListener("keydown", e => {

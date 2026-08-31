@@ -812,3 +812,79 @@ class TestWhatElseWasHeard:
         cols = {r[1] for r in c.execute("PRAGMA table_info(clips)")}
         c.close()
         assert "sounds" in cols
+
+
+class TestClearingOutWhatHoldsNothing:
+    """Deleting by what was heard, and the rule that makes it safe.
+
+    A clip goes only when its ENTIRE description is things the owner called
+    uninteresting. "Delete anything tagged Typing" would take the clip that is
+    typing AND a dog, and the dog is the reason that clip exists -- this
+    archive really does hold a turkey, a cat, and four clips of a dog barking,
+    every one of them in the same silent-clip pool as seventy clips of nothing
+    but a keyboard.
+    """
+
+    def _db(self, tmp_path, monkeypatch):
+        import index_db
+        monkeypatch.setattr(index_db, "DB_PATH", str(tmp_path / "index.db"))
+        monkeypatch.setattr(index_db, "_local", type(index_db._local)())
+        return index_db
+
+    def _add(self, db, name, sounds, has_speech=0, voice_tag=0.0):
+        c = db._conn()
+        c.execute("""INSERT INTO clips(name, seconds, modified, status,
+                                       has_speech, edited, speakers, preview,
+                                       indexed_at, voice_tag, sounds)
+                     VALUES(?,30.0,1000.0,'done',?,0,'[]','',1000.0,?,?)""",
+                  (name, has_speech, voice_tag,
+                   "\n".join(sounds) if sounds else None))
+        c.commit()
+
+    def test_clips_are_grouped_by_their_whole_tag_set(self, tmp_path, monkeypatch):
+        db = self._db(tmp_path, monkeypatch)
+        self._add(db, "a.wav", ["Typing", "Computer keyboard"])
+        self._add(db, "b.wav", ["Computer keyboard", "Typing"])   # same set
+        self._add(db, "c.wav", ["Typing", "Dog"])
+        groups = {tuple(sorted(g["tags"])): g["clips"] for g in db.cleanup_groups()}
+        assert groups[("Computer keyboard", "Typing")] == 2
+        assert groups[("Dog", "Typing")] == 1
+
+    def test_choosing_typing_does_not_take_the_dog(self, tmp_path, monkeypatch):
+        """The whole reason this works by set and not by tag."""
+        db = self._db(tmp_path, monkeypatch)
+        self._add(db, "keys.wav", ["Typing"])
+        self._add(db, "dog.wav", ["Typing", "Dog"])
+        picked = db.clips_for_sound_sets([["Typing"]])
+        assert [n for names in picked for n in names] == ["keys.wav"]
+
+    def test_a_voice_keeps_a_clip_out_entirely(self, tmp_path, monkeypatch):
+        """Excluded at the source, so no choice made in the interface can
+        reach one."""
+        db = self._db(tmp_path, monkeypatch)
+        self._add(db, "quiet.wav", ["Typing"], voice_tag=0.4)
+        assert db.cleanup_groups() == []
+        assert db.clips_for_sound_sets([["Typing"]]) == []
+
+    def test_a_clip_with_words_is_never_offered(self, tmp_path, monkeypatch):
+        db = self._db(tmp_path, monkeypatch)
+        self._add(db, "spoken.wav", ["Typing"], has_speech=1)
+        assert db.cleanup_groups() == []
+
+    def test_an_unexamined_clip_is_never_offered(self, tmp_path, monkeypatch):
+        """No tags means nothing has listened to it, which is not the same as
+        nothing being in it."""
+        db = self._db(tmp_path, monkeypatch)
+        self._add(db, "unknown.wav", [])
+        assert db.cleanup_groups() == []
+
+    def test_a_set_that_no_longer_exists_selects_nothing(self, tmp_path, monkeypatch):
+        db = self._db(tmp_path, monkeypatch)
+        self._add(db, "a.wav", ["Typing"])
+        assert db.clips_for_sound_sets([["Didgeridoo"]]) == []
+
+    def test_order_of_the_chosen_tags_does_not_matter(self, tmp_path, monkeypatch):
+        db = self._db(tmp_path, monkeypatch)
+        self._add(db, "a.wav", ["Typing", "Computer keyboard"])
+        assert db.clips_for_sound_sets([["Computer keyboard", "Typing"]]) \
+            == [["a.wav"]]

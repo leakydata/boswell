@@ -435,3 +435,54 @@ def sound_vocabulary(limit=40):
                 counts[n] = counts.get(n, 0) + 1
     out = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
     return [{"name": n, "clips": k} for n, k in out[:limit]]
+
+
+# A voice at any strength keeps a clip out of the cleanup entirely. Lower than
+# SOUND_FLOOR on purpose: the floor decides what is worth showing, this decides
+# what is safe to destroy, and those are not the same threshold.
+CLEANUP_VOICE_FLOOR = 0.05
+
+
+def cleanup_groups():
+    """Silent clips, grouped by the exact set of sounds heard in them.
+
+    The set, not the individual tags. "Delete anything tagged Typing" would
+    take a clip tagged Typing AND Dog, and the dog is the reason that clip
+    exists. Only a clip whose whole description is things you have called
+    uninteresting can be uninteresting.
+
+    Anything with a voice in it is excluded here rather than filtered later,
+    so no combination of choices in the interface can reach one.
+    """
+    c = _conn()
+    rows = c.execute(
+        """SELECT name, seconds, sounds, voice_tag FROM clips
+           WHERE has_speech = 0
+             AND (voice_tag IS NULL OR voice_tag < ?)""",
+        (CLEANUP_VOICE_FLOOR,)).fetchall()
+    groups = {}
+    for r in rows:
+        names = tuple(sorted(n for n in (r["sounds"] or "").split("\n") if n))
+        if not names:
+            continue          # nothing was heard and nothing examined it; keep
+        g = groups.setdefault(names, {"tags": list(names), "clips": 0,
+                                      "seconds": 0.0, "names": []})
+        g["clips"] += 1
+        g["seconds"] += float(r["seconds"] or 0)
+        if len(g["names"]) < 200:
+            g["names"].append(r["name"])
+    out = sorted(groups.values(), key=lambda g: -g["clips"])
+    for g in out:
+        g["seconds"] = round(g["seconds"], 1)
+    return out
+
+
+def clips_for_sound_sets(sets):
+    """Names of the silent clips whose whole tag set is one of `sets`.
+
+    Recomputed here rather than trusting a list of names from the browser: the
+    caller is about to delete them.
+    """
+    want = {tuple(sorted(s)) for s in sets}
+    return [g["names"] for g in cleanup_groups()
+            if tuple(sorted(g["tags"])) in want]

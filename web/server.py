@@ -13,6 +13,7 @@ reimplement in a few dozen lines.
 
 import io
 import asyncio
+import datetime
 import json
 import re
 import os
@@ -1421,6 +1422,90 @@ async def api_clips(limit: int = 1000):
             if r["name"] == worker.busy:
                 r["status"] = "running"
     return rows
+
+
+@app.get("/api/cleanup/groups")
+async def api_cleanup_groups():
+    """Silent clips, grouped by the exact set of sounds heard in them.
+
+    This is the menu. Not a list of things that could be deleted -- a list of
+    what is actually on the disk, so the choice is made against the archive
+    rather than against a guess about it. Anything holding a voice never
+    appears.
+    """
+    return index_db.cleanup_groups()
+
+
+@app.post("/api/cleanup/delete")
+async def api_cleanup_delete(body: dict):
+    """Remove the silent clips whose whole tag set is one of the chosen ones.
+
+    The sets are re-resolved to names here rather than taking a list of files
+    from the browser, because this deletes recordings and the browser's idea
+    of which ones is a round trip old. A manifest goes to data/deleted/ first:
+    every name, when it was recorded, what was heard in it, and how big it
+    was. Deleting audio is irreversible and the point of the device is that it
+    was listening when nobody was paying attention.
+    """
+    sets = body.get("sets") or []
+    if not sets:
+        raise HTTPException(400, "nothing selected")
+    groups = {tuple(sorted(g["tags"])): g for g in index_db.cleanup_groups()}
+    chosen, names = [], []
+    for s_ in sets:
+        key = tuple(sorted(s_))
+        g = groups.get(key)
+        if not g:
+            continue          # the archive moved on; skip rather than guess
+        chosen.append(g)
+        names.extend(g["names"])
+    if not names:
+        raise HTTPException(409, "those groups are no longer on disk")
+
+    manifest, freed = [], 0
+    for n in names:
+        wav = os.path.join(DATA, n)
+        if not os.path.exists(wav):
+            continue
+        size = os.path.getsize(wav)
+        tags = []
+        try:
+            tags = (json.load(open(pipeline.transcript_path(n)))
+                    .get("sounds") or [])[:6]
+        except Exception:
+            pass
+        manifest.append({"clip": n, "bytes": size, "tags": tags,
+                         "recorded": datetime.datetime.fromtimestamp(
+                             os.path.getmtime(wav)).isoformat(timespec="seconds")})
+        freed += size
+
+    os.makedirs(os.path.join(DATA, "deleted"), exist_ok=True)
+    mp = os.path.join(DATA, "deleted", f"removed_{int(time.time())}.json")
+    with open(mp, "w") as fh:
+        json.dump({"removed": datetime.datetime.now().isoformat(timespec="seconds"),
+                   "why": "no transcript, no voice, and every sound in them was "
+                          "chosen as uninteresting",
+                   "sets": [g["tags"] for g in chosen],
+                   "count": len(manifest), "bytes": freed,
+                   "clips": manifest}, fh, indent=1)
+
+    for x in manifest:
+        n = x["clip"]
+        for path in (os.path.join(DATA, n), pipeline.transcript_path(n),
+                     os.path.join(DATA, "times", n + ".json")):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+        try:
+            index_db.remove_clip(n)
+        except Exception:
+            pass
+
+    device.event("log", text=f"removed {len(manifest)} silent clip(s), "
+                            f"{freed/1e6:.0f} MB")
+    return {"removed": len(manifest), "bytes": freed,
+            "manifest": os.path.basename(mp)}
 
 
 @app.get("/api/sounds")
