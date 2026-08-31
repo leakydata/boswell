@@ -3860,8 +3860,9 @@ function nearestName(typed){
    line of television does not have to be given one. Written the same way every
    time so the archive can be asked "what did the TV say" and answer. */
 const NOT_A_PERSON = [
-  ["TV", "A television or a video, not someone in the room. Learned, so the "
-       + "same one is not asked about twice."],
+  ["Media", "A television, a video, a radio — anything out of a speaker "
+          + "rather than someone in the room. Learned, so the same one is not "
+          + "asked about twice."],
   ["Someone else", "A real person, but not one worth identifying. Labels the "
                  + "words; learns no voiceprint."],
   ["Not speech", "Not a voice at all — the transcriber heard words that were "
@@ -3880,7 +3881,7 @@ function renderNameSuggestions(){
   /* Words that came out of a screen are the commonest thing on a line that
      nobody said, and until now the only way to record that was to invent a
      name -- which fragments the moment two of them are typed differently, and
-     "TV", "tv" and "Television" are three different labels to anything reading
+     "Media", "media" and "TV" are three different labels to anything reading
      this later.
      These pin one agreed label. Pinning never touches the voiceprint store, so
      it puts no person and no voiceprint anywhere; it just says who, or what,

@@ -1248,7 +1248,7 @@ class TestAnswersThatAreNotAName:
         page = self._page()
         i = page.index("const NOT_A_PERSON")
         block = page[i:i + 400]
-        for label in ('"TV"', '"Someone else"', '"Not speech"'):
+        for label in ('"Media"', '"Someone else"', '"Not speech"'):
             assert label in block
 
     def test_they_are_offered_when_the_field_is_empty(self):
@@ -1289,17 +1289,17 @@ class TestAnswersThatAreNotAName:
 
 
 class TestTheLabelsThatAreNotPeople:
-    """"TV", "Someone else", "Not speech" — offered in two places, enforced in
-    a third.
+    """"Media", "Someone else", "Not speech" — offered in two places, enforced
+    in a third.
 
     Naming a voice enrols a voiceprint, unlike pinning a line, so a person
-    called TV would be built out of every screen voice in the house and would
-    sit in the reference set competing to name real people. The server marks
+    called Media would be built out of every screen and radio voice in the
+    house and would sit in the reference set competing to name real people. The server marks
     these media on the way through: still matched, so the same television is
     not asked about twice, and capped at "uncertain" so it can never put its
     label on anybody by itself.
 
-    The spelling is the contract. "TV" typed as "Television" is a different
+    The spelling is the contract. "Media" typed as "TV" is a different
     person and none of the enforcement applies, so the browser's list and the
     server's list must agree, and this is what says so.
     """
@@ -1361,11 +1361,13 @@ class TestWhichNonPersonLabelsLearn:
         block = re.search(r"NEVER_ENROL_NAMES = \(([^)]*)\)", s).group(1)
         assert set(re.findall(r'"([^"]+)"', block)) == {"Someone else", "Not speech"}
 
-    def test_tv_is_deliberately_not_in_that_list(self):
+    def test_media_is_deliberately_not_in_that_list(self):
+        """A television is a real recurring voice; matching it again is the
+        point of learning it."""
         import re
         s = self._server()
         block = re.search(r"NEVER_ENROL_NAMES = \(([^)]*)\)", s).group(1)
-        assert "TV" not in re.findall(r'"([^"]+)"', block)
+        assert "Media" not in re.findall(r'"([^"]+)"', block)
 
     def test_the_gate_runs_before_the_voiceprint_is_looked_at(self):
         """It must refuse by name, not by whether a vector happens to exist.

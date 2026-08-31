@@ -114,7 +114,12 @@ PREFS_PATH = os.path.join(DATA, "prefs.json")
 # Labels that answer "who said this" without naming a person. Kept in one
 # place because the interface offers them, the server enforces what they mean,
 # and a second spelling of any of them would be a different person.
-NOT_A_PERSON_NAMES = ("TV", "Someone else", "Not speech")
+# "Media" rather than "TV" because it is also a video, a radio, a podcast
+# leaking out of somebody's phone -- anything from a speaker rather than from
+# the room. It is also the word the store already uses for this (KIND_MEDIA),
+# so the label a person picks and the mechanism it triggers stop being two
+# different vocabularies for one idea.
+NOT_A_PERSON_NAMES = ("Media", "Someone else", "Not speech")
 
 # Of those, the ones that must never become a voiceprint. TV is absent on
 # purpose: a television is a real recurring voice and matching it again is what
@@ -3010,9 +3015,9 @@ async def api_label(body: dict):
         # is the worst thing that can go into a reference set, because it will
         # sit there being compared against real people.
         #
-        # Only "TV" is learned, and that is deliberate: a television is a real
-        # recurring voice, so matching it again is what stops the same one
-        # being asked about twice.
+        # Only "Media" is learned, and that is deliberate: a television or a
+        # radio is a real recurring voice, so matching it again is what stops
+        # the same one being asked about twice.
         reason = ("this labels the words and learns nothing from the audio, "
                   "which is the point of it")
     elif vec is None:
@@ -3072,12 +3077,12 @@ async def api_label(body: dict):
 
     # Some answers are not a person, and must never behave like one.
     #
-    # "TV", "Someone else" and "Not speech" are offered in the interface so a
+    # "Media", "Someone else" and "Not speech" are offered in the interface so a
     # voice that nobody needs to identify can be labelled and got out of the
     # way. They go through naming like any other label, because the point is
-    # that the words get attributed -- but a person called TV, built from
-    # every screen voice in the house, is exactly the thing that must not sit
-    # in the reference set competing to name real people.
+    # that the words get attributed -- but a person called Media, built from
+    # every screen and radio voice in the house, is exactly the thing that must
+    # not sit in the reference set competing to name real people.
     #
     # Marking it media is what the store already has for this: it stays
     # visible, stays searchable, keeps matching future television so the same

@@ -413,20 +413,20 @@ def test_an_unknown_kind_is_still_refused(db):
 
 
 def test_a_label_that_is_not_a_person_cannot_name_anybody(db):
-    """"TV" is offered in the interface as an answer to "who is speaking", and
-    the server marks it media on the way through.
+    """"Media" is offered in the interface as an answer to "who is speaking",
+    and the server marks it media on the way through.
 
     Naming a voice enrols a voiceprint, so without that a person called TV
-    would be assembled from every screen voice in the house and would sit in
+    would be assembled from every screen and radio voice in the house and would sit in
     the reference set competing to name real people. Media is what stops it:
     still matched, so the same television is not asked about twice, and capped
     at uncertain so it never confers its label by itself.
     """
-    tv = db.person_id_for("TV")
+    tv = db.person_id_for("Media")
     db.add_voiceprint(tv, vec(77), origin="manual")
     db.set_kind(tv, db.KIND_MEDIA)
 
     r = db.match(vec(77))
     assert r["name"] is None, "media must not name anything on its own"
-    assert r["candidates"] and r["candidates"][0]["name"] == "TV", \
+    assert r["candidates"] and r["candidates"][0]["name"] == "Media", \
         "but it should still be offered as the closest thing"
