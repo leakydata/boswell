@@ -116,6 +116,11 @@ PREFS_PATH = os.path.join(DATA, "prefs.json")
 # and a second spelling of any of them would be a different person.
 NOT_A_PERSON_NAMES = ("TV", "Someone else", "Not speech")
 
+# Of those, the ones that must never become a voiceprint. TV is absent on
+# purpose: a television is a real recurring voice and matching it again is what
+# stops it being asked about twice.
+NEVER_ENROL_NAMES = ("Someone else", "Not speech")
+
 PREF_KEYS = ("armed", "vad", "backlog_mode", "gain", "led_level", "led_mode",
              "fast_charge", "mic_power_save", "rate16",
              "agent_enabled", "agent_model", "agent_idle_seconds")
@@ -2991,7 +2996,26 @@ async def api_label(body: dict):
     enrolled, reason, count = False, None, None
     vec = (t.get("embeddings") or {}).get(spk)
     impure = bool((t.get("speakers", {}).get(spk) or {}).get("impure"))
-    if vec is None:
+    if name in NEVER_ENROL_NAMES:
+        # Two of the three non-person answers must not teach the matcher
+        # anything, and for opposite reasons.
+        #
+        # "Someone else" means a real person who is not worth identifying.
+        # Enrolling one is the contradiction of the label: it builds a
+        # reference for somebody the person labelling has just said they do
+        # not want identified, and every future voice near it gets that name
+        # offered.
+        #
+        # "Not speech" means it was not a voice. A voiceprint of not-a-voice
+        # is the worst thing that can go into a reference set, because it will
+        # sit there being compared against real people.
+        #
+        # Only "TV" is learned, and that is deliberate: a television is a real
+        # recurring voice, so matching it again is what stops the same one
+        # being asked about twice.
+        reason = ("this labels the words and learns nothing from the audio, "
+                  "which is the point of it")
+    elif vec is None:
         reason = "no voiceprint was extracted for this speaker"
     elif impure:
         # Naming is attribution; enrolment is a permanent reference. That
@@ -3069,6 +3093,10 @@ async def api_label(body: dict):
             speaker_store.set_kind(pid, speaker_store.KIND_MEDIA)
         except Exception as e:
             print(f"could not mark {name!r} as media: {e}", flush=True)
+        # Belt and braces on the two that learn nothing: if a voiceprint ever
+        # reaches them by another path, it is not a reference for anybody.
+        if name in NEVER_ENROL_NAMES and enrolled:
+            print(f"unexpected: {name!r} enrolled a voiceprint", flush=True)
 
     device.event("log", text=(f"named {spk} as {name}"
                               + (f", voiceprint now {count} sample(s)" if enrolled

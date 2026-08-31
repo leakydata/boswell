@@ -1333,3 +1333,50 @@ class TestTheLabelsThatAreNotPeople:
         _, page = self._files()
         # the line editor's empty-field branch, and the voice namer's chips
         assert page.count("NOT_A_PERSON") >= 3
+
+
+class TestWhichNonPersonLabelsLearn:
+    """Three answers, and only one of them should teach the matcher anything.
+
+    Described by the person using it: "Someone else would be somebody talking
+    that is not important, and Not speech would be for things that were not
+    speech". Both were being enrolled, which contradicts each label in a
+    different way — "not worth identifying" followed by building a reference
+    for them, and a voiceprint of something that is not a voice sitting in the
+    reference set being compared against real people.
+
+    TV is learned on purpose: a television is a real recurring voice, so
+    matching it again is what stops the same one being asked about twice.
+    """
+
+    def _server(self):
+        import os
+        here = os.path.dirname(__file__)
+        with open(os.path.join(here, "..", "web", "server.py"), encoding="utf-8") as f:
+            return f.read()
+
+    def test_two_of_the_three_never_enrol(self):
+        import re
+        s = self._server()
+        block = re.search(r"NEVER_ENROL_NAMES = \(([^)]*)\)", s).group(1)
+        assert set(re.findall(r'"([^"]+)"', block)) == {"Someone else", "Not speech"}
+
+    def test_tv_is_deliberately_not_in_that_list(self):
+        import re
+        s = self._server()
+        block = re.search(r"NEVER_ENROL_NAMES = \(([^)]*)\)", s).group(1)
+        assert "TV" not in re.findall(r'"([^"]+)"', block)
+
+    def test_the_gate_runs_before_the_voiceprint_is_looked_at(self):
+        """It must refuse by name, not by whether a vector happens to exist."""
+        s = self._server()
+        i = s.index("enrolled, reason, count = False, None, None")
+        block = s[i:i + 900]
+        gate = block.index("if name in NEVER_ENROL_NAMES:")
+        novec = block.index("elif vec is None:")
+        assert gate < novec, "the name check must come first"
+
+    def test_all_three_are_still_marked_media(self):
+        s = self._server()
+        i = s.index("if name in NOT_A_PERSON_NAMES:")
+        assert "KIND_MEDIA" in s[i:i + 400]

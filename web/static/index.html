@@ -3860,9 +3860,12 @@ function nearestName(typed){
    line of television does not have to be given one. Written the same way every
    time so the archive can be asked "what did the TV say" and answer. */
 const NOT_A_PERSON = [
-  ["TV", "Speech from a television or a video — not someone in the room"],
-  ["Someone else", "A real person, but not one worth enrolling"],
-  ["Not speech", "The transcriber heard words that were not there"],
+  ["TV", "A television or a video, not someone in the room. Learned, so the "
+       + "same one is not asked about twice."],
+  ["Someone else", "A real person, but not one worth identifying. Labels the "
+                 + "words; learns no voiceprint."],
+  ["Not speech", "Not a voice at all — the transcriber heard words that were "
+               + "not there. Labels the line; learns nothing."],
 ];
 
 /* Suggestions under the line editor's name field, same behaviour as the
