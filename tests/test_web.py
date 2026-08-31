@@ -1170,3 +1170,55 @@ class TestSoundsThatAreRightAndWronglyNamed:
         """The filter searches what the model said, not what it meant."""
         db = self._index(tmp_path, monkeypatch, [["Typewriter", 0.72, 0.0]])
         assert [r["name"] for r in db.sound_vocabulary()] == ["Typewriter"]
+
+
+class TestLinesWithNobodyBehindThem:
+    """A transcript line the diarizer could not attribute.
+
+    In the clip view these rendered no label element at all -- an unexplained
+    gap where every other line carries a name, and no way to put one there,
+    because the only clickable label was the one that did not exist. Reported
+    as "some lines have no name label at all, or none that is visible".
+
+    Not a rare glitch either: it is what distant speech looks like from here,
+    a television or someone through a doorway, and those clips are exactly the
+    ones worth labelling by hand.
+    """
+
+    def _page(self):
+        import os
+        here = os.path.dirname(__file__)
+        with open(os.path.join(here, "..", "web", "static", "index.html"),
+                  encoding="utf-8") as f:
+            return f.read()
+
+    def test_a_line_without_a_speaker_still_gets_a_label(self):
+        page = self._page()
+        i = page.index("const who = s.speaker")
+        block = page[i:i + 700]
+        assert '"no voice matched"' in block, \
+            "an unattributed line must say so rather than render nothing"
+        assert 'wholine noone' in block
+
+    def test_the_empty_string_branch_is_gone(self):
+        """The old code ended that ternary with "", which is the bug."""
+        page = self._page()
+        i = page.index("const who = s.speaker")
+        block = page[i:i + 700]
+        # the ternary's else-branch must produce a button, not nothing
+        assert "\n      : \"\";" not in block
+
+    def test_a_pinned_name_wins_over_the_placeholder(self):
+        """Once a name is pinned to the line it does have an answer."""
+        page = self._page()
+        i = page.index("const who = s.speaker")
+        block = page[i:i + 700]
+        assert "s.speaker_name || \"no voice matched\"" in block
+
+    def test_it_opens_the_line_editor_rather_than_the_voice_namer(self):
+        """There is no voice to rename; the name goes on the line."""
+        page = self._page()
+        i = page.index('if (w && !s.speaker){')
+        block = page[i:i + 500]
+        assert "editLine(" in block
+        assert "nameSpeaker(" not in block

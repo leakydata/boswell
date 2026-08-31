@@ -329,6 +329,8 @@ button.sound{font-family:var(--mono);font-size:11.5px;padding:3px 9px;
   min-height:0;border-radius:12px;background:var(--sunk);color:var(--muted);
   border:1px solid transparent}
 button.sound.strong{color:var(--ink);border-color:var(--rule)}
+.who.noone{border-style:dashed;border-color:var(--rule);color:var(--faint);
+  background:transparent}
 .soundwrap{display:inline-flex;align-items:stretch;gap:0}
 .soundwrap button.sound{border-top-right-radius:0;border-bottom-right-radius:0;
   flex:0 0 auto}
@@ -3672,11 +3674,19 @@ async function renderTranscript(name){
     const d = document.createElement("div");
     d.className = "seg";
     const col = s.speaker ? colorOf(spkColors[s.speaker] || "var(--accent)") : "";
+    /* A line with no speaker used to render no label at all: an unexplained
+       gap where every other line has a name, and no way to put one there.
+       The diarizer failing to attribute a line is a fact about the recording
+       -- distant speech, a television, someone through a doorway -- and worth
+       saying, especially since a name can still be pinned to the line itself.
+       A pinned name shows instead, because then it does have an answer. */
     const who = s.speaker
       ? `<button class="who wholine" style="border-color:${col};color:${col};` +
         `background:transparent" aria-label="Name this voice">` +
         `${esc(lineLabel(s))}</button> `
-      : "";
+      : `<button class="who wholine noone" aria-label="No voice was matched to ` +
+        `this line — click to name it">` +
+        `${esc(s.speaker_name || "no voice matched")}</button> `;
     if (s.edited) d.classList.add("wasedited");
     d.innerHTML = `<button class="t" data-at="${s.start}" ` +
                   `aria-label="Play from ${s.start.toFixed(0)} seconds">${s.start.toFixed(0)}s</button>` +
@@ -3689,7 +3699,14 @@ async function renderTranscript(name){
        when a video plays over the end of a clip, the line editor pins a name
        to one line instead. */
     const w = d.querySelector(".wholine");
-    if (w){
+    if (w && !s.speaker){
+      /* Nothing to rename -- there is no voice behind this line -- but a name
+         can be pinned to the line, which is what the editor does. */
+      w.title = s.speaker_name
+        ? `"${s.speaker_name}" is pinned to this line — click to change it`
+        : "The diarizer found no voice for this line. Click to put a name on it.";
+      w.onclick = (e) => { e.stopPropagation(); editLine(name, i, s, ids, named); };
+    } else if (w){
       /* Clicking a label edits whatever produced that label.
          
          It always opened the namer for the whole voice, so a line pinned to
