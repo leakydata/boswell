@@ -82,6 +82,11 @@ def tag(path, fe, model, dev, labels, topk=6):
         a = a.mean(axis=1)
     if not len(a):
         return None
+    # The extractor needs a 25 ms analysis window, and the archive holds files
+    # shorter than that -- one of 320 samples, a fifth of a second's twentieth.
+    # Too short to say anything about, so it is not judged and never deleted.
+    if len(a) < int(0.20 * sr):
+        return "tooshort"
     rms = float(np.sqrt(np.mean(a ** 2)))
     # The older clips are 8 kHz -- ADPCM through the early firmware -- and the
     # model wants 16. Resampled rather than skipped: those are the recordings
@@ -92,9 +97,12 @@ def tag(path, fe, model, dev, labels, topk=6):
         a = torchaudio.functional.resample(
             torch.from_numpy(np.ascontiguousarray(a)), sr, 16000).numpy()
         sr = 16000
-    with torch.no_grad():
-        x = fe(a, sampling_rate=sr, return_tensors="pt").to(dev)
-        p = torch.sigmoid(model(**x).logits[0]).cpu()
+    try:
+        with torch.no_grad():
+            x = fe(a, sampling_rate=sr, return_tensors="pt").to(dev)
+            p = torch.sigmoid(model(**x).logits[0]).cpu()
+    except Exception:
+        return None
     top = torch.topk(p, topk)
     return {"rms_db": 20 * np.log10(rms + 1e-12),
             "tags": [(labels[i.item()], float(v)) for v, i in
@@ -158,11 +166,20 @@ def main():
     todo = todo[:a.limit]
 
     fe, model, dev, labels = load_model()
-    keep, empty, wanted = [], [], []
+    keep, empty, wanted, skipped = [], [], [], []
     data = os.path.join(ROOT, "data")
     for i, f in enumerate(todo, 1):
-        r = tag(os.path.join(data, f), fe, model, dev, labels)
+        # One unreadable file must not end a run over a thousand of them.
+        try:
+            r = tag(os.path.join(data, f), fe, model, dev, labels)
+        except Exception as e:
+            skipped.append((f, f"{type(e).__name__}: {str(e)[:60]}"))
+            continue
+        if r == "tooshort":
+            skipped.append((f, "shorter than the model's analysis window"))
+            continue
         if r is None:
+            skipped.append((f, "unreadable"))
             continue
         v, why = verdict(r)
         (empty if v == "empty" else keep).append((f, why, r))
@@ -172,7 +189,14 @@ def main():
         if i % 25 == 0:
             print(f"  … {i}/{len(todo)}", flush=True)
 
-    print(f"\nkeep : {len(keep)}   empty: {len(empty)}")
+    print(f"\nkeep : {len(keep)}   empty: {len(empty)}   "
+          f"not judged: {len(skipped)}")
+    if skipped:
+        print("\nnot judged, and therefore never deleted:")
+        for f, why in skipped[:8]:
+            print(f"  {f:<36} {why}")
+        if len(skipped) > 8:
+            print(f"  … and {len(skipped) - 8} more")
     print("\nthe ones worth keeping, and why:")
     for f, why, _ in keep[:20]:
         print(f"  {f:<36} {why}")
