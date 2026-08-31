@@ -250,7 +250,10 @@ engine. A filter is a question and can afford the low bar; a list of "what is
 in this archive" is a claim and cannot.
 
 Its limits, measured. It misses a quiet laugh entirely — 0.000 in every
-window, on a clip whose owner confirms he laughed. It hedges across
+window, on a clip whose owner confirms he laughed. That is probably about
+capture rather than capability: the same model finds sighs on this hardware at
+0.46 to 0.82, and a sigh is no louder than a laugh. Worth re-checking after
+anything that improves what reaches the microphone. It hedges across
 neighbouring classes rather than committing (Dog, Animal and Domestic animals
 within 0.16 of each other). It describes a window rather than an instant. And
 it keeps finding this room's fan and naming it something else.
@@ -275,6 +278,11 @@ whether the bar is in the right place.
 | Dog | 4 of 26 | 0.37 | 4/4 real; two were whining, not barking |
 | Typing | 4 of 251 | 0.35 | 4/4 real, including one with a 0.53 fan reading |
 | Music | 4 of 46 | 0.35 | 3/4 clearly music; the fourth was video audio he did not call music |
+| Sigh | 4 of 7 | 0.46 | 3/4 real sighs; the fourth was a throat clearing with distortion |
+
+**14 of 16 across four labels.** Small, and spread deliberately across the
+confidence range rather than taken from the top of it, so it says the 0.35 bar
+is in a sensible place — not that the error rate is 12%.
 
 So 0.35 holds, with Music the softest of the three — a video playing is a
 plausible thing to hear music in and a plausible thing to be wrong about, and
@@ -286,10 +294,13 @@ like it might not be. Per window on a clip whose music the listener placed at
 the start of what he was played: 0.033, 0.013, 0.357, 0.403, 0.017 across the
 five windows. The music really is absent from the first ten seconds and
 present from ten to twenty-five, and the peak is a peak rather than the
-argmax of five similar numbers. The typing case settles something the dog case could
-not: the clip with the strongest fan of the four was still real typing, so the
-fan does not contaminate every label — it produces its own, and the model can
-tell a keyboard from it.
+argmax of five similar numbers. Two of these settle something the dog case could not. The typing clip with the
+strongest fan reading of its four was real typing, and the sigh clip picked out
+as most likely to be the fan — Mechanical fan and Hum alongside, a transcript
+of just "Hmm." — was a real sigh. So "a fan is present, doubt the tag" is not a
+usable rule. The fan produces its own labels rather than corrupting other ones,
+which is exactly why the suppression list names classes instead of discounting
+anything heard beside a fan.
 
 That is the shape of this model on this hardware. It is trustworthy about
 events that happen — a bark, a whine, a microwave, a cupboard — and unreliable
