@@ -614,6 +614,7 @@ html{scroll-padding-top:120px}
         <button id="bVoiceRecheck">Recheck against named people</button>
         <button id="bCompact">Compact voiceprints</button>
         <button id="bVoiceMedia">Show tagged media</button>
+        <button id="bVoiceIgnored">Show set aside</button>
         <button id="bVoiceRefresh">Refresh</button>
       </div>
       <div id="voiceQueue"><div class="empty">loading…</div></div>
@@ -1354,6 +1355,10 @@ async function loadPeople(){
    answer about it, and a day's videos would otherwise bury the handful of real
    people worth naming. */
 let showMedia = false;
+/* Voices dismissed as not worth naming. Off by default -- that is the point
+   of dismissing them -- but reachable, because a decision you cannot review
+   is one you will stop trusting yourself to make. */
+let showIgnored = false;
 /* A voice does not carry from one day to the next on this hardware -- measured,
    0.82 within the hour against 0.52 a day later -- so naming somebody once does
    not settle them. What keeps the archive labelled is a couple of minutes a day
@@ -1366,12 +1371,14 @@ async function loadVoices(){
   try{
     const q = await (await fetch(
       `/api/voices/queue?limit=40&include_media=${showMedia}`
+      + `&include_ignored=${showIgnored}`
       + `&days=${recentOnly ? 2 : 0}`)).json();
     $("voiceCount").textContent = q.length
       ? `${q.length} unnamed voice${q.length === 1 ? "" : "s"}` : "";
     if (!q.length){
       el.innerHTML = '<div class="empty">'
-        + (showMedia ? 'Nothing tagged as media yet.'
+        + (showIgnored ? 'Nothing has been set aside yet.'
+           : showMedia ? 'Nothing tagged as media yet.'
            : recentOnly ? 'Nobody new in the last two days. Nothing to do.'
            : 'No unidentified voices. Run a scan if new recordings have come in.')
         + '</div>';
@@ -1386,7 +1393,9 @@ async function loadVoices(){
       const head = document.createElement("div");
       head.style.cssText = "display:flex;gap:10px;align-items:baseline;flex-wrap:wrap";
       const who = document.createElement("strong");
-      who.textContent = `Unknown voice #${v.person_id}`;
+      who.textContent = (v.kind === "ignored" ? "Set aside · voice #"
+                         : v.kind === "media" ? "Media · voice #"
+                         : "Unknown voice #") + v.person_id;
       const stat = document.createElement("span");
       stat.className = "count";
       stat.textContent = `${fmtMins(v.seconds)} across ${v.clips} clip`
@@ -1484,6 +1493,34 @@ async function loadVoices(){
       };
       bar.appendChild(media);
 
+      /* The third answer, and the one that was missing.
+         "It's a video" is for a voice worth recognising again -- a channel
+         you watch, whose words are worth having. This is for the rest: a
+         television in the next room, a video scrolled past, somebody else's
+         phone call. There is nobody to name and there never will be, and
+         without a way to say so those voices came back every day asking.
+         Nothing is deleted: the voiceprints stay, so one dismissed today can
+         be named next month with all its evidence intact. */
+      const skip = document.createElement("button");
+      const wasIgnored = v.kind === "ignored";
+      skip.textContent = wasIgnored ? "Put back in the queue" : "Not worth naming";
+      skip.title = wasIgnored
+        ? "Return this voice to the queue with everything it has collected"
+        : "A TV, a video, a stranger — no name now, and none later. "
+          + "Keeps the recordings, adds no person, makes no voiceprint.";
+      skip.onclick = async () => {
+        skip.disabled = true;
+        try{
+          await fetch(`/api/voices/${v.person_id}/kind`, {
+            method:"POST", headers:{"Content-Type":"application/json"},
+            body: JSON.stringify({kind: wasIgnored ? null : "ignored"})});
+          log(wasIgnored ? `voice #${v.person_id} back in the queue`
+                         : `voice #${v.person_id} set aside — not worth naming`);
+          loadVoices();
+        }catch(e){ skip.disabled = false; }
+      };
+      bar.appendChild(skip);
+
       /* One click for a candidate the matcher already thinks is likely. */
       for (const cand of v.candidates.slice(0, 2)){
         const b = document.createElement("button");
@@ -1567,8 +1604,19 @@ on("bCompact", "click", async () => {
 
 on("bVoiceMedia", "click", () => {
   showMedia = !showMedia;
+  if (showMedia) { showIgnored = false; syncIgnoredButton(); }
   $("bVoiceMedia").textContent = showMedia ? "Show unidentified people"
                                            : "Show tagged media";
+  loadVoices();
+});
+
+function syncIgnoredButton(){
+  $("bVoiceIgnored").textContent = showIgnored ? "Hide set aside"
+                                              : "Show set aside";
+}
+on("bVoiceIgnored", "click", () => {
+  showIgnored = !showIgnored;
+  syncIgnoredButton();
   loadVoices();
 });
 /* Naming somebody teaches the matcher conditions it could not recognise
@@ -2122,6 +2170,23 @@ async function loadClips(){
       return;
     }
     el.innerHTML = "";
+    /* What this list turned out to be, said before it wastes anybody's time.
+       Its owner listened through the most confident of them and found the
+       tagger right every time and the words gone every time: a television in
+       another room, or himself talking quietly in the kitchen. So it is a
+       record that somebody was speaking, which is worth having, and not a
+       queue of recoverable speech, which is what it looked like. */
+    if (clipFilter === "missed"){
+      const note = document.createElement("div");
+      note.className = "empty";
+      note.style.cssText = "text-align:left;margin-bottom:10px";
+      note.textContent = "These held a voice the transcriber could not read — "
+        + "checked by ear, they are usually a television in another room or "
+        + "someone speaking quietly at a distance, with nothing intelligible "
+        + "in them. Kept as a record that somebody was talking. Clips recorded "
+        + "after the microphone gain was raised should not land here.";
+      el.appendChild(note);
+    }
     let lastDay = null;
     $("bSelAll").onclick = () => {
       clips.forEach(c => selected.add(c.name));

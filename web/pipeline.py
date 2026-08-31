@@ -389,7 +389,8 @@ def clip_recorded_at(name):
     return int(m.group(1)) if m else None
 
 
-def labelling_queue(limit=50, include_media=False, since=None):
+def labelling_queue(limit=50, include_media=False, since=None,
+                    include_ignored=False):
     """Unnamed voices worth someone's attention, most speech first.
 
     Each entry carries what it would take to settle it in one look: how much
@@ -402,7 +403,7 @@ def labelling_queue(limit=50, include_media=False, since=None):
     c = sdb._conn()
     try:
         out = []
-        clusters = sdb.unknown_clusters(c, include_media)
+        clusters = sdb.unknown_clusters(c, include_media, include_ignored)
         # Recent-first when a window is given. Identity has to be re-earned
         # every day -- a voice that matched yesterday will not match today --
         # so the useful unit of work is "who turned up since I last looked",

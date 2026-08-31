@@ -870,8 +870,29 @@ CLUSTER_MIN = 0.75
 KIND_PERSON = "person"
 KIND_MEDIA = "media"
 
+# A voice that is not going to be identified, and does not need to be.
+#
+# Media is for a voice off a screen that is worth recognising -- a named
+# YouTube channel keeps its words searchable and tells the queue "this is
+# probably another one of those". This is the other case: a television in the
+# next room, a video somebody scrolled past, a stranger on a phone. There is
+# nothing to learn from it and no one to name, and it was still appearing in
+# the queue every day asking to be named, which is the one thing that makes a
+# labelling queue useless -- work that cannot be finished.
+#
+# It stays unnamed on purpose. _references admits only named people, so an
+# ignored cluster can never confer a name on anything and never becomes
+# somebody's stored reference. But it stays visible to _best_unknown, so the
+# next occurrence of the same voice joins it and is dismissed with it rather
+# than arriving as a fresh stranger. That is the whole difference between
+# dismissing a voice and dismissing a clip.
+#
+# Nothing is deleted. The voiceprints are all still there, so a voice ignored
+# today can be named next month and the evidence for it is intact.
+KIND_IGNORED = "ignored"
 
-def unknown_clusters(c=None, include_media=False):
+
+def unknown_clusters(c=None, include_media=False, include_ignored=False):
     """Recurring voices nobody has named, biggest first.
 
     Media is excluded by default. Knowing a voice came off a screen is a
@@ -882,8 +903,14 @@ def unknown_clusters(c=None, include_media=False):
     own = c is None
     c = c or _conn()
     try:
-        where = "p.name IS NULL" if include_media else \
-                f"p.name IS NULL AND (p.kind IS NULL OR p.kind != '{KIND_MEDIA}')"
+        hidden = ([] if include_media else [KIND_MEDIA]) + \
+                 ([] if include_ignored else [KIND_IGNORED])
+        if hidden:
+            where = ("p.name IS NULL AND (p.kind IS NULL OR p.kind NOT IN ("
+                     + ",".join("?" * len(hidden)) + "))")
+            args = tuple(hidden)
+        else:
+            where, args = "p.name IS NULL", ()
         rows = c.execute(f"""
             SELECT p.id, p.kind, COUNT(v.id) AS prints,
                    COALESCE(SUM(v.seconds), 0) AS seconds,
@@ -893,7 +920,7 @@ def unknown_clusters(c=None, include_media=False):
             WHERE {where}
             GROUP BY p.id
             ORDER BY seconds DESC, prints DESC
-        """).fetchall()
+        """, args).fetchall()
         return [dict(r) for r in rows]
     finally:
         if own:
@@ -909,9 +936,16 @@ def set_kind(person_id, kind, c=None):
     talking, and that is a complete and useful answer. Tagging it media retires
     it from the queue, stops it competing for identity, and keeps its words
     searchable.
+
+    KIND_IGNORED is the same move for a voice not worth recognising at all.
+    Both leave the queue; the difference is that media keeps a name and goes on
+    being suggested, and ignored keeps neither. Either can be undone by setting
+    the kind back to None, which returns the cluster to the queue with every
+    voiceprint it accumulated while it was out.
     """
-    if kind not in (KIND_PERSON, KIND_MEDIA, None):
-        raise ValueError(f"kind must be person, media or None -- got {kind!r}")
+    if kind not in (KIND_PERSON, KIND_MEDIA, KIND_IGNORED, None):
+        raise ValueError(
+            f"kind must be person, media, ignored or None -- got {kind!r}")
     own = c is None
     c = c or _conn()
     try:

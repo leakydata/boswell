@@ -330,3 +330,83 @@ def test_renaming_a_slot_replaces_rather_than_accumulates(db, tmp_path, monkeypa
         assert owner == "Bob", "it belongs to whoever was named last"
     finally:
         c.close()
+
+
+# ---------------------------------------------------------------- setting aside
+#
+# Media is for a voice off a screen worth recognising again -- a channel whose
+# words are worth having, and which the queue can then say "probably another
+# one of those" about. This is the other case, and it was missing: a television
+# in the next room, a video scrolled past, a stranger on a phone. Without a
+# third answer those came back to the queue every day asking to be named, and a
+# queue that cannot be finished stops being used.
+
+
+def test_setting_a_voice_aside_retires_it(db):
+    a = db.new_person()
+    b = db.new_person()
+    db.add_voiceprint(a, vec(30), origin="auto")
+    db.add_voiceprint(b, vec(31), origin="auto")
+    db.set_kind(b, db.KIND_IGNORED)
+
+    assert [c["id"] for c in db.unknown_clusters()] == [a]
+    assert {c["id"] for c in db.unknown_clusters(include_ignored=True)} == {a, b}
+
+
+def test_a_voice_set_aside_never_names_anything(db):
+    """It stays unnamed, and only named people are references -- so a dismissed
+    voice cannot put a label on anybody, today or later."""
+    alice = db.person_id_for("Alice")
+    db.add_voiceprint(alice, vec(40), origin="manual")
+    b = db.new_person()
+    db.add_voiceprint(b, vec(32), origin="auto")
+    db.set_kind(b, db.KIND_IGNORED)
+
+    # Its own vector back, with a real named person in the store so there is
+    # something for match() to rank. The dismissed cluster must not be in it.
+    r = db.match(vec(32))
+    assert r.get("name") is None
+    assert b not in [c["person_id"] for c in r.get("candidates", [])]
+
+
+def test_the_same_voice_lands_back_in_it(db):
+    """Otherwise every rerun of the same television arrives as a stranger and
+    the queue fills up with the thing that was just dismissed."""
+    b = db.new_person()
+    db.add_voiceprint(b, vec(33), origin="auto")
+    db.set_kind(b, db.KIND_IGNORED)
+
+    again = db.ingest_unknown(near(vec(33), 0.95), clip="later.wav",
+                              speaker="SPEAKER_00", seconds=30)
+    assert again.get("person_id") == b
+
+
+def test_setting_aside_is_undoable_and_keeps_what_it_collected(db):
+    b = db.new_person()
+    db.add_voiceprint(b, vec(34), origin="auto")
+    db.set_kind(b, db.KIND_IGNORED)
+    db.add_voiceprint(b, near(vec(34), 0.95), origin="auto")
+
+    assert db.set_kind(b, None)
+    back = [c for c in db.unknown_clusters() if c["id"] == b]
+    assert back and back[0]["prints"] == 2
+
+
+def test_media_and_set_aside_hide_independently(db):
+    m, i = db.new_person(), db.new_person()
+    db.add_voiceprint(m, vec(35), origin="auto")
+    db.add_voiceprint(i, vec(36), origin="auto")
+    db.set_kind(m, db.KIND_MEDIA)
+    db.set_kind(i, db.KIND_IGNORED)
+
+    assert db.unknown_clusters() == []
+    assert {c["id"] for c in db.unknown_clusters(include_media=True)} == {m}
+    assert {c["id"] for c in db.unknown_clusters(include_ignored=True)} == {i}
+    assert {c["id"] for c in db.unknown_clusters(include_media=True,
+                                                include_ignored=True)} == {m, i}
+
+
+def test_an_unknown_kind_is_still_refused(db):
+    b = db.new_person()
+    with pytest.raises(ValueError):
+        db.set_kind(b, "dog")

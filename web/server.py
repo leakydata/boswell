@@ -2514,7 +2514,7 @@ async def api_compact(body: dict | None = None):
 
 @app.get("/api/voices/queue")
 async def api_voices_queue(limit: int = 50, include_media: bool = False,
-                           days: float = 0):
+                           days: float = 0, include_ignored: bool = False):
     """Unnamed voices, most speech first, with everything needed to settle one.
 
     `days` narrows it to voices heard recently. Because identity does not carry
@@ -2525,7 +2525,8 @@ async def api_voices_queue(limit: int = 50, include_media: bool = False,
     since = (time.time() - days * 86400) if days else None
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(
-        None, pipeline.labelling_queue, limit, include_media, since)
+        None, pipeline.labelling_queue, limit, include_media, since,
+        include_ignored)
 
 
 @app.post("/api/voices/{person_id}/name")
@@ -2574,11 +2575,20 @@ async def api_voices_kind(person_id: int, body: dict):
     complete answer -- it retires the voice from the queue and stops it
     competing for identity, without asking you to identify a stranger in a
     video you half-watched.
+
+    'ignored' is the third answer, for a voice there is no point recognising
+    at all: a television in the next room, a video scrolled past, somebody
+    else's phone call. It leaves the queue like media does but keeps no name
+    and never becomes anybody's reference. Setting the kind back to null
+    returns it to the queue with everything it collected while it was gone,
+    so nothing here is a decision that cannot be taken back.
     """
     import speaker_store
     kind = body.get("kind")
-    if kind not in (speaker_store.KIND_PERSON, speaker_store.KIND_MEDIA, None):
-        raise HTTPException(400, "kind must be 'person', 'media' or null")
+    if kind not in (speaker_store.KIND_PERSON, speaker_store.KIND_MEDIA,
+                    speaker_store.KIND_IGNORED, None):
+        raise HTTPException(
+            400, "kind must be 'person', 'media', 'ignored' or null")
     if not speaker_store.set_kind(person_id, kind):
         raise HTTPException(404, "no such voice")
     device.event("log", text=f"voice {person_id} tagged {kind or 'undecided'}")

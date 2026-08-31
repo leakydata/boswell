@@ -78,7 +78,42 @@
  * costs 32 kB of the 210 kB free. */
 #define RING_SAMPLES    16384         // ~1.02 s at 16 kHz
 
-static const int  DEFAULT_GAIN   = 50;   // +5 dB; measured ~26% peak in-room
+static const int  DEFAULT_GAIN   = 66;   // +13 dB. See below.
+/* Raised from 50 (+5 dB) after measuring what the host actually received.
+ *
+ * Level decides how much of a conversation survives, and not subtly. Across
+ * 2471 clips, taking only those a sound tagger agreed held a voice:
+ *
+ *     below -45 dBFS   4 clips     50% got words   median  2 words
+ *     -45 to -40      56 clips     73% got words   median 13 words
+ *     -40 to -35     171 clips     91% got words   median 25 words
+ *     -35 to -30     524 clips     99% got words   median 56 words
+ *
+ * The archive's median sat at -35.5, on the edge of that cliff, and had been
+ * drifting down: -27.6 dBFS on the first day, -36.2 nine days later. Its
+ * owner listened to three clips the transcriber had given up on and could
+ * make out a few words in one and none in the other two -- he was there, and
+ * he was speaking, in all three.
+ *
+ * +8 dB moves the median to -27.5 and is where the cost stops being free.
+ * Simulated over every clip on disk, by how many would then clip past 1% of
+ * their samples, and how many of those were already transcribing:
+ *
+ *     +4 dB    6 clips    4 already working
+ *     +6 dB    9 clips    4 already working
+ *     +8 dB   10 clips    4 already working     <- here
+ *    +10 dB   13 clips    6 already working
+ *    +12 dB   24 clips   11 already working
+ *
+ * So four working clips out of 2484 pay for six hundred quiet ones. Beyond
+ * +8 the price starts rising and the benefit does not.
+ *
+ * This is the PDM peripheral's GAINL/GAINR, applied inside the decimation
+ * filter before the output is truncated to 16 bits -- so unlike a multiply on
+ * the host it recovers real detail. A clip at -50 dBFS is using about eight
+ * of its sixteen bits, and what falls off the bottom cannot be got back.
+ * 0x00 is -20 dB, 0x28 (40) is 0 dB, 0x50 (80) is +20 dB, half a dB a step.
+ */
 static const bool DEFAULT_16K    = false;   // start at 8 kHz for BT 4.0
 static const bool DEFAULT_VAD    = false;   // stream everything until tuned
 static const int  DEFAULT_VAD_TH = 1120;  // measured: otsu split +3 dB
