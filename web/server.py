@@ -260,10 +260,17 @@ class Device:
             "battery_mv": 0, "battery_pct": 0, "charging": False,
             "fast_charge": False, "mic_running": True,
             "vad": False,
+            # The slider in the interface was a fixed 50 that never read the
+            # device, so it showed +5 dB while the microphone was running at
+            # +13 -- a control that lies about the setting it controls. The
+            # info packet is full to its last byte, and this does not need one:
+            # the gain is set from here and remembered here. Seeded from the
+            # remembered preferences below, which is where the real value is.
+            "gain": 50,
         }
         # Anything remembered from a previous run wins over the defaults
         # above, so a restart resumes rather than resets.
-        for k in ("vad", "backlog_mode", "led_level", "led_mode"):
+        for k in ("vad", "backlog_mode", "led_level", "led_mode", "gain"):
             if k in PREFS:
                 self.state[k] = PREFS[k]
         self.relay: WebSocket | None = None
@@ -844,6 +851,8 @@ class Device:
         g = max(0, min(80, g))
         if await self._ctrl(0x03, g):
             self.remember(gain=g)
+            self.state["gain"] = g
+            self.publish()
             self.event("log", text=f"gain set to {g}")
 
     async def set_led(self, level: int, pulse: bool):

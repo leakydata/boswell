@@ -51,12 +51,36 @@ h1,h2,h3{text-wrap:balance}
 body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);
   line-height:1.5;-webkit-font-smoothing:antialiased;
   padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom)}
-.wrap{max-width:860px;margin:0 auto;padding:20px 16px 40px}
-header{display:flex;align-items:baseline;justify-content:space-between;gap:12px;
-  padding-bottom:14px;border-bottom:2px solid var(--ink);margin-bottom:20px}
+/* Shell: a top bar across the width, a sidebar that stays put, content in
+   what is left.
+   It was an 860px column centred in the window, which on a desktop monitor
+   meant two wide empty margins and a section switcher that scrolled away the
+   moment you started reading -- the switcher being the one control you want
+   while you are deep in a list. The column is still bounded, at 1600px,
+   because a transcript set in 3000px of window is unreadable in a different
+   way. Below 900px it collapses back to exactly what it was: one column, tabs
+   across the top. */
+.wrap{max-width:1600px;margin:0 auto;padding:0 18px 40px;
+  display:grid;column-gap:24px;
+  grid-template-columns:210px minmax(0, 1fr);
+  grid-template-areas:"top top" "side main"}
+header{grid-area:top;
+  display:flex;align-items:baseline;justify-content:space-between;gap:12px;
+  padding:16px 0 14px;border-bottom:2px solid var(--ink);margin-bottom:20px;
+  position:sticky;top:0;z-index:20;background:var(--paper)}
+main#main{grid-area:main;min-width:0}
+@media(max-width:900px){
+  .wrap{display:block;padding:0 16px 40px}
+  header{padding-top:20px}
+}
 h1{font-size:26px;font-weight:600;letter-spacing:-.03em;margin:0}
 h1 span{color:var(--accent)}
 .ver{font-family:var(--mono);font-size:11px;color:var(--faint)}
+.topstate{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.topstate .pill{font-family:var(--mono);font-size:11.5px;color:var(--muted);
+  display:inline-flex;align-items:center;gap:6px;letter-spacing:.02em}
+.topstate .pill i{width:8px;height:8px;border-radius:50%;display:inline-block}
+.topstate .pill b{font-weight:600}
 .grid{display:grid;gap:14px;grid-template-columns:1fr}
 @media(min-width:700px){.grid{grid-template-columns:1fr 1fr}.span2{grid-column:1/-1}}
 .card{background:var(--surface);border:1px solid var(--rule);border-radius:8px;padding:16px}
@@ -123,10 +147,18 @@ input[type=range]{flex:1;accent-color:var(--accent);height:34px}
 .err{color:var(--bad);font-family:var(--mono);font-size:12.5px;margin-top:10px}
 
 /* tabs */
-nav.tabs{display:flex;gap:4px;margin-bottom:18px;background:var(--sunk);
-  padding:4px;border-radius:8px}
-nav.tabs button{flex:1;min-height:42px;padding:9px;border:none;background:transparent;
-  border-radius:6px;font-weight:600;font-size:14.5px;color:var(--muted)}
+nav.tabs{grid-area:side;display:flex;flex-direction:column;gap:4px;
+  background:var(--sunk);padding:4px;border-radius:8px;
+  /* Sticky under the header, so the section switcher is reachable from
+     anywhere in a 1300-clip list without scrolling back up. */
+  position:sticky;top:74px;align-self:start;margin-bottom:18px}
+nav.tabs button{min-height:42px;padding:9px 12px;border:none;background:transparent;
+  border-radius:6px;font-weight:600;font-size:14.5px;color:var(--muted);
+  text-align:left;width:100%}
+@media(max-width:900px){
+  nav.tabs{flex-direction:row;position:static;margin-bottom:18px}
+  nav.tabs button{flex:1;text-align:center;padding:9px}
+}
 nav.tabs button[aria-selected=true]{background:var(--surface);color:var(--ink);
   box-shadow:0 1px 3px #0002}
 .view[hidden]{display:none}
@@ -389,11 +421,20 @@ html{scroll-padding-top:120px}
 <div class="wrap">
   <header>
     <h1>Bos<span>well</span></h1>
-    <span class="ver"><span id="ver">disconnected</span> · build __BUILD__</span>
+    <!-- The top bar had a title and a build number and two feet of empty
+         space. What belongs there is the answer to "is it recording?", which
+         until now was only on the Device tab -- so reading a transcript meant
+         leaving it to find out whether anything was still being captured. -->
+    <span class="topstate">
+      <span class="pill" id="capState" hidden><i></i><b></b></span>
+      <span class="pill" id="battState" hidden></span>
+      <span class="ver"><span id="ver">disconnected</span> · build __BUILD__</span>
+    </span>
   </header>
 
   <a class="skip" href="#main">Skip to content</a>
-  <nav class="tabs" role="tablist" aria-label="Sections">
+  <nav class="tabs" role="tablist" aria-label="Sections"
+       aria-orientation="vertical">
     <button id="tabDev" role="tab" aria-controls="viewDev" aria-selected="true" tabindex="0">Device</button>
     <button id="tabRec" role="tab" aria-controls="viewRec" aria-selected="false" tabindex="-1">Recordings</button>
     <button id="tabPpl" role="tab" aria-controls="viewPpl" aria-selected="false" tabindex="-1">People</button>
@@ -884,6 +925,26 @@ function paint(s){
                             + "arriving now is being saved"
                           : `${s.rate/1000} kHz · ADPCM · ${s.frames} frames`;
   $("ver").textContent = s.connected ? "XIAO-MIC" : "disconnected";
+
+  /* Live state in the top bar, in the same words and the same colours the
+     device's own light uses -- so what is on screen and what is on the strap
+     agree without translation. */
+  const cap = $("capState");
+  cap.hidden = !s.connected && !s.scanning;
+  if (!cap.hidden){
+    const st = !s.connected ? ["waiting", "#4a90e0"]
+             : s.armed ? (s.backlog_bytes > 2048 ? ["catching up", "#4ad0d0"]
+                                                 : ["recording", "#5ad07a"])
+             : ["paused", "#e05a5a"];
+    cap.querySelector("i").style.background = st[1];
+    cap.querySelector("b").textContent = st[0];
+    cap.style.color = st[1];
+  }
+  const bat = $("battState");
+  bat.hidden = !s.connected || !s.battery_pct;
+  if (!bat.hidden){
+    bat.textContent = `${s.battery_pct}%${s.charging ? " ⚡" : ""}`;
+  }
   $("frames").textContent = s.frames;
   $("lost").textContent = s.lost;
   $("rate").textContent = s.rate ? (s.rate/1000) + " kHz" : "—";
@@ -937,6 +998,13 @@ function paint(s){
   $("bSave").disabled = !s.connected;
   $("bDis").disabled = !s.connected && !s.scanning;
   $("gain").disabled = !s.connected;
+  /* Show what the microphone is actually set to, not the slider's default.
+     Skipped while the slider has focus so it does not fight a drag -- the
+     same rule the brightness slider below already follows. */
+  if (typeof s.gain === "number" && document.activeElement !== $("gain")){
+    $("gain").value = s.gain;
+    $("gainv").textContent = gainLabel(s.gain);
+  }
   $("bConn").disabled = s.connected || s.scanning;
   $("bDiscard").disabled = !s.connected;
   $("blmode").setAttribute("aria-checked", !!s.backlog_mode);
@@ -1022,8 +1090,12 @@ for (const [id] of TABS){
   $(id).addEventListener("keydown", e => {
     const i = TABS.findIndex(([t]) => t === id);
     let j = null;
-    if (e.key === "ArrowRight") j = (i + 1) % TABS.length;
-    else if (e.key === "ArrowLeft") j = (i - 1 + TABS.length) % TABS.length;
+    /* The tablist is vertical on a desktop and horizontal on a phone, so both
+       axes move between tabs rather than only the one that matches whichever
+       layout happens to be showing. */
+    if (e.key === "ArrowRight" || e.key === "ArrowDown") j = (i + 1) % TABS.length;
+    else if (e.key === "ArrowLeft" || e.key === "ArrowUp")
+      j = (i - 1 + TABS.length) % TABS.length;
     else if (e.key === "Home") j = 0;
     else if (e.key === "End") j = TABS.length - 1;
     if (j === null) return;
@@ -3698,10 +3770,17 @@ $("bDis").onclick  = () => { send({cmd:"disconnect"}); log("disconnected"); };
 $("bArm").onclick  = () => send({cmd:"arm", on: !armed});
 $("bSave").onclick = () => send({cmd:"save"});
 
+/* One place that turns a register value into something readable, so the label
+   under the slider and the label written when it moves cannot disagree.
+   0x28 (40) is 0 dB and a step is half a decibel. */
+function gainLabel(v){
+  const db = (v - 40) * 0.5;
+  return `${v} · ${db >= 0 ? "+" : ""}${db.toFixed(1)} dB`;
+}
 const gain = $("gain");
 gain.oninput = () => {
   const v = +gain.value;
-  $("gainv").textContent = `${v} · ${(v-40)*0.5 >= 0 ? "+" : ""}${((v-40)*0.5).toFixed(1)} dB`;
+  $("gainv").textContent = gainLabel(v);
 };
 gain.onchange = () => send({cmd:"gain", value:+gain.value});
 
