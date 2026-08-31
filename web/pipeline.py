@@ -891,8 +891,36 @@ class Worker:
         # Custom words are applied afterwards instead, in apply_vocabulary().
         # That fixes the same mistakes -- including terms split across words --
         # and cannot cause audio to go missing.
+        # The voice-activity gate, lowered from the library's default.
+        #
+        # WhisperX passes vad_onset 0.500 and this never overrode it, so audio
+        # below that never reached Whisper at all -- the log line is "No active
+        # speech found in audio" and the clip ends up with no transcript. An
+        # audio tagger run over the 1380 clips holding no transcript found 79
+        # with a person talking in them, at confidences up to 0.79.
+        #
+        # They are not unusually quiet. Median -35.0 dBFS against -31.9 for
+        # clips that transcribe fine, and -50.5 for genuinely empty ones: three
+        # decibels below what works, fifteen above silence. The default is
+        # tuned for a closer microphone than a wearable at conversational
+        # distance.
+        #
+        # Measured both directions before changing it, because a lower gate
+        # trades missed speech for invented speech -- Whisper writes "Thank
+        # you." over room tone, which is why HALLUCINATION_CHARS exists:
+        #
+        #     onset   speech recovered      invented on ambient
+        #     0.500   3 of 8,  7 words      1 of 30, 2 words
+        #     0.350   6 of 8, 26 words      1 of 30, 2 words
+        #     0.200   8 of 8, 32 words      1 of 30, 2 words
+        #
+        # The false-positive rate does not move, and the one case is a two-word
+        # stock phrase the silence filter already catches. So the trade is not
+        # a trade.
         self._asr = whisperx.load_model("large-v3", "cuda",
-                                        compute_type="float16", language="en")
+                                        compute_type="float16", language="en",
+                                        vad_options={"vad_onset": 0.200,
+                                                     "vad_offset": 0.150})
         self._align = whisperx.load_align_model(language_code="en", device="cuda")
         token = os.environ.get("HF_TOKEN")
         if token:
