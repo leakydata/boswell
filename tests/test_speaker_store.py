@@ -430,3 +430,50 @@ def test_a_label_that_is_not_a_person_cannot_name_anybody(db):
     assert r["name"] is None, "media must not name anything on its own"
     assert r["candidates"] and r["candidates"][0]["name"] == "Media", \
         "but it should still be offered as the closest thing"
+
+
+def test_media_may_name_itself_when_it_is_unmistakable(db):
+    """A channel enrolled by name should label its own clips.
+
+    The cap on media exists so a voice off a screen cannot quietly acquire a
+    person's name. Once the channels are enrolled deliberately, that inverts:
+    writing "NileRed YouTube" on a clip matching NileRed's own voiceprint is
+    the answer, and refusing left 500 slots recognised and unlabelled.
+    """
+    chan = db.person_id_for("NileRed YouTube")
+    db.add_voiceprint(chan, vec(90), origin="manual")
+    db.set_kind(chan, db.KIND_MEDIA)
+    person = db.person_id_for("Nathan")
+    db.add_voiceprint(person, vec(300), origin="manual")
+
+    r = db.match(vec(90))
+    assert r["name"] == "NileRed YouTube"
+    assert r["decision"] == "matched"
+
+
+def test_a_middling_media_match_still_only_suggests(db):
+    """Higher than the person bar, because a person labelled as a channel has
+    their words filed as television and drops out of the queue."""
+    chan = db.person_id_for("NileRed YouTube")
+    db.add_voiceprint(chan, vec(91), origin="manual")
+    db.set_kind(chan, db.KIND_MEDIA)
+    other = db.person_id_for("Dan")
+    db.add_voiceprint(other, vec(301), origin="manual")
+
+    # close enough for a person, short of what a channel needs
+    r = db.match(near(vec(91), 0.78))
+    assert r["decision"] == "uncertain"
+    assert r["name"] is None
+    assert r["candidates"][0]["name"] == "NileRed YouTube"
+
+
+def test_a_narrow_win_over_a_person_is_refused(db):
+    """The failure being guarded: a real person overtaken by a channel."""
+    chan = db.person_id_for("Codys Lab YouTube")
+    db.add_voiceprint(chan, vec(92), origin="manual")
+    db.set_kind(chan, db.KIND_MEDIA)
+    person = db.person_id_for("Nathan")
+    db.add_voiceprint(person, near(vec(92), 0.93), origin="manual")
+
+    r = db.match(vec(92))
+    assert r["decision"] != "matched", "too close to a person to write a name"

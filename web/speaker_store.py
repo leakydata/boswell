@@ -101,6 +101,12 @@ MATCH_LOW = 0.55
 
 MARGIN_MIN = 0.15
 MARGIN_STRONG = 0.25
+
+# What a media voice must reach before it may write its own name onto a clip.
+# Higher than MATCH_HIGH because mislabelling a person as a channel is worse
+# than leaving a channel unlabelled: their words become television and the
+# queue that would have caught it stops asking.
+MEDIA_SPEAKS_FOR_ITSELF = 0.80
 # A second way in, for a match the absolute bar refuses and the evidence does
 # not.
 #
@@ -419,7 +425,32 @@ def match(vec, c=None):
         # out of a speaker. So it stays visible, stays one click from being
         # confirmed, and is capped at "uncertain".
         if decision == "matched" and top.get("kind") == KIND_MEDIA:
-            decision = "uncertain"
+            # ...unless it is unmistakably that same media voice again.
+            #
+            # The rule above exists so a voice off a screen cannot quietly
+            # acquire a person's name. Enrolling the channels by name inverts
+            # the situation: putting "NileRed YouTube" on a clip that matches
+            # NileRed's own voiceprint is not identity theft, it is the answer,
+            # and refusing to write it left 500 slots across 277 clips
+            # recognised and unlabelled, waiting for somebody to confirm what
+            # the matcher already knew.
+            #
+            # The asymmetry is why the bar is higher than for a person. A real
+            # person labelled as a channel has their words filed as television
+            # and drops out of the queue that would have caught it. Measured
+            # over the 681 media-topped slots in the archive, that caution is
+            # nearly free -- the matches are not marginal:
+            #
+            #     0.75 / 0.15 (the person rule)   387 slots
+            #     0.80 / 0.25 (this)              381 slots
+            #     0.85 / 0.30                     380 slots
+            #
+            # Six slots buy a much wider berth, and the closest a real person
+            # came to being overtaken was a gap of 0.23.
+            sure = (top["score"] >= MEDIA_SPEAKS_FOR_ITSELF
+                    and margin is not None and margin >= MARGIN_STRONG)
+            if not sure:
+                decision = "uncertain"
 
         return {"decision": decision,
                 "candidates": ranked[:3],
