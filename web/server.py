@@ -239,6 +239,22 @@ def parse_info(info):
     return out
 
 
+def names_pinned_elsewhere(segments, speaker, name):
+    """Names given by hand to lines inside one diarized slot, other than `name`.
+
+    A pin is a listener saying "this line is somebody else" about audio the
+    diarizer put in one voice. That is evidence the slot's pooled voiceprint
+    covers more than one person, and it is evidence of a kind the impurity
+    check cannot see: diarization was confident and coherent, and simply wrong.
+
+    Returned sorted so the message reads the same way twice.
+    """
+    return sorted({x["speaker_name"] for x in (segments or [])
+                   if x.get("speaker") == speaker
+                   and x.get("speaker_name")
+                   and x["speaker_name"] != name})
+
+
 def reconcile_capture(device_streaming, armed):
     """What to say to a device whose capture state disagrees with ours.
 
@@ -2318,7 +2334,21 @@ async def api_split(name: str):
         # Only a real diarized slot has a voiceprint. A group gathered from
         # pinned names does not, and must not borrow the merged slot's -- that
         # vector describes both voices, which is what went wrong upstream.
-        emb = t.get("embeddings", {}).get(spk)
+        # A slot that was divided has no voiceprint that belongs to either
+        # half. The comment above says a group gathered from pinned names must
+        # not borrow the merged vector, and that was half the rule: the
+        # REMAINDER must not keep it either. It describes the whole slot,
+        # including the seconds that have just been taken out of it.
+        #
+        # What that cost, on the clip that exposed it: nine lines of Ryan Long
+        # and one pinned to Danny Polishchuk, split into a 24.6 s clip and a
+        # 5.1 s clip -- and the 24.6 s one inherited the 29.7 s vector, Danny
+        # included. Enrol from that and Ryan's reference set carries five
+        # seconds of somebody else for good.
+        divided = len(speakers) > 1 and any(
+            label_of(x) == spk for x in segs) and any(
+            label_of(x) != spk and x.get("speaker") == spk for x in segs)
+        emb = None if divided else t.get("embeddings", {}).get(spk)
         json.dump({"clip": out_name, "created": time.time(), "segments": new_segs,
                    "speakers": {spk: (t.get("speakers", {}).get(spk)
                                       or {"name": None, "score": 0.0})},
@@ -3001,6 +3031,20 @@ async def api_label(body: dict):
     enrolled, reason, count = False, None, None
     vec = (t.get("embeddings") or {}).get(spk)
     impure = bool((t.get("speakers", {}).get(spk) or {}).get("impure"))
+    # A slot with lines pinned to somebody else is not this person's audio.
+    #
+    # The impurity guard catches a slot the diarizer itself found incoherent.
+    # It does not catch this: diarization was perfectly confident, one voice,
+    # and a listener disagreed about part of it and said so by pinning a name.
+    # Enrolling the pooled vector then teaches the matcher that those seconds
+    # are this person -- and the pin is the evidence that they are not.
+    #
+    # Found on a clip of nine lines of Ryan Long with one line pinned to Danny
+    # Polishchuk: naming the slot enrolled 29.7 seconds as Ryan, Danny's five
+    # included. The name still applies to every line, as it always has. Only
+    # the learning is refused, and splitting by voice gives clean audio to
+    # learn from instead.
+    pinned_elsewhere = names_pinned_elsewhere(t.get("segments", []), spk, name)
     if name in NEVER_ENROL_NAMES:
         # Two of the three non-person answers must not teach the matcher
         # anything, and for opposite reasons.
@@ -3020,6 +3064,12 @@ async def api_label(body: dict):
         # the same one being asked about twice.
         reason = ("this labels the words and learns nothing from the audio, "
                   "which is the point of it")
+    elif pinned_elsewhere:
+        who = " and ".join(pinned_elsewhere)
+        reason = (f"some lines here are {who}, so this voice's recording is not "
+                  f"all {name}. The name is applied; nothing was learned from "
+                  f"the audio. Split by voice, then name the clip that is only "
+                  f"{name}.")
     elif vec is None:
         reason = "no voiceprint was extracted for this speaker"
     elif impure:

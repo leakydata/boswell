@@ -1438,3 +1438,59 @@ class TestNamingVoicesInBulk:
         i = page.index('on("bVoiceConfirmAll", "click"')
         block = page[i:i + 900]
         assert "voiceConfirmArmed" in block and "Really name" in block
+
+
+class TestASlotWithSomebodyElsePinnedInIt:
+    """Naming a voice must not learn from audio a listener has said is not
+    theirs.
+
+    The impurity check catches a slot the diarizer itself found incoherent. It
+    cannot catch this one: diarization was confident, one voice, and a person
+    listening disagreed about part of it and said so by pinning a name.
+
+    On the clip that exposed it, nine lines were Ryan Long and one was pinned
+    Danny Polishchuk. Naming the slot enrolled 29.7 seconds as Ryan with
+    Danny's five inside it -- and re-diarizing the audio afterwards found two
+    speakers in it, the louder matching Danny at 0.87.
+    """
+
+    def _f(self):
+        import sys, os
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "web"))
+        import server
+        return server.names_pinned_elsewhere
+
+    def test_a_foreign_pin_is_reported(self):
+        segs = [{"speaker": "SPEAKER_00", "speaker_name": None},
+                {"speaker": "SPEAKER_00", "speaker_name": "Danny Polishchuk"}]
+        assert self._f()(segs, "SPEAKER_00", "Ryan Long") == ["Danny Polishchuk"]
+
+    def test_a_pin_agreeing_with_the_name_is_not(self):
+        segs = [{"speaker": "SPEAKER_00", "speaker_name": "Ryan Long"}]
+        assert self._f()(segs, "SPEAKER_00", "Ryan Long") == []
+
+    def test_pins_in_another_slot_are_not_this_slot_s_problem(self):
+        segs = [{"speaker": "SPEAKER_01", "speaker_name": "Danny Polishchuk"}]
+        assert self._f()(segs, "SPEAKER_00", "Ryan Long") == []
+
+    def test_several_are_listed_once_and_in_order(self):
+        segs = [{"speaker": "S", "speaker_name": "Zoe"},
+                {"speaker": "S", "speaker_name": "Amy"},
+                {"speaker": "S", "speaker_name": "Amy"}]
+        assert self._f()(segs, "S", "Ryan Long") == ["Amy", "Zoe"]
+
+    def test_an_empty_transcript_is_not_an_error(self):
+        assert self._f()([], "SPEAKER_00", "Ryan Long") == []
+        assert self._f()(None, "SPEAKER_00", "Ryan Long") == []
+
+    def test_the_name_still_applies_only_the_learning_stops(self):
+        """The distinction the store is built on: a label is correctable, a
+        reference is not."""
+        import os
+        here = os.path.dirname(__file__)
+        with open(os.path.join(here, "..", "web", "server.py"), encoding="utf-8") as f:
+            server = f.read()
+        i = server.index("elif pinned_elsewhere:")
+        block = server[i:i + 500]
+        assert "The name is applied" in block
+        assert "Split by voice" in block
