@@ -1016,3 +1016,57 @@ class TestSoundRowsGrewAThirdField:
         db = self._index(tmp_path, monkeypatch, [[], ["Dog", 0.56, 8.0]])
         row = db._conn().execute("SELECT sounds FROM clips").fetchone()
         assert (row["sounds"] or "").split("\n") == ["Dog"]
+
+
+class TestSureVersusMerelyPossible:
+    """Two bars, because browsing and searching want different ones.
+
+    624 clips carry Vehicle and four of them clear 0.35: the rest is this
+    machine's fan being mistaken for a distant engine. A browsing list built
+    from the low bar is mostly that mistake; a filter built from it can still
+    turn up the real ones, and a filter is a question rather than a claim.
+    """
+
+    def _index(self, tmp_path, monkeypatch, sounds):
+        import json, index_db, soundfile as sf, numpy as np
+        monkeypatch.setattr(index_db, "DB_PATH", str(tmp_path / "index.db"))
+        monkeypatch.setattr(index_db, "_local", type(index_db._local)())
+        data = tmp_path / "data"
+        (data / "transcripts").mkdir(parents=True)
+        monkeypatch.setattr(index_db, "DATA", str(data))
+        wav = data / "c.wav"
+        sf.write(str(wav), np.zeros(16000, dtype="float32"), 16000)
+        tp = data / "transcripts" / "c.json"
+        tp.write_text(json.dumps({"clip": "c.wav", "segments": [],
+                                  "sounds": sounds, "sounds_removed": []}))
+        index_db.upsert_clip("c.wav", transcript_path=str(tp), wav_path=str(wav))
+        return index_db
+
+    def test_a_weak_tag_is_searchable_but_not_browsable(self, tmp_path, monkeypatch):
+        db = self._index(tmp_path, monkeypatch, [["Vehicle", 0.22, 4.0]])
+        assert [r["name"] for r in db.sound_vocabulary()] == ["Vehicle"]
+        assert db.notable_sounds() == [], "0.22 is not a claim that a car went by"
+
+    def test_a_confident_tag_reaches_both(self, tmp_path, monkeypatch):
+        db = self._index(tmp_path, monkeypatch, [["Dog", 0.56, 8.0]])
+        assert [r["name"] for r in db.sound_vocabulary()] == ["Dog"]
+        assert [g["tag"] for g in db.notable_sounds()] == ["Dog"]
+
+    def test_the_fan_wearing_a_stethoscope_is_room_noise(self, tmp_path, monkeypatch):
+        """75 clips claimed a heartbeat; 70 of them also had Hum and 55 a fan.
+        There is no heartbeat."""
+        db = self._index(tmp_path, monkeypatch,
+                         [["Heart sounds, heartbeat", 0.55, 20.0],
+                          ["Heart murmur", 0.40, 20.0],
+                          ["Throbbing", 0.45, 20.0]])
+        assert db.notable_sounds() == []
+
+    def test_the_column_is_added_to_an_existing_database(self, tmp_path, monkeypatch):
+        import sqlite3, index_db
+        monkeypatch.setattr(index_db, "DB_PATH", str(tmp_path / "index.db"))
+        monkeypatch.setattr(index_db, "_local", type(index_db._local)())
+        index_db._conn()
+        c = sqlite3.connect(str(tmp_path / "index.db"))
+        cols = {r[1] for r in c.execute("PRAGMA table_info(clips)")}
+        c.close()
+        assert "sounds_strong" in cols

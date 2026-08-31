@@ -214,10 +214,19 @@ delete. Tags can be marked wrong on a clip — the correction survives
 re-transcription and reaches every view, including the one that decides
 deletability.
 
-Its limits, measured: it misses a quiet laugh entirely (0.000 in every window),
-it hedges across neighbouring classes rather than committing (Dog, Animal and
-Domestic animals within 0.16 of each other), and it describes a window rather
-than an instant.
+Two bars, because browsing and searching want different ones. A tag is
+searchable at 0.20 and browsable at 0.35: 624 clips carry Vehicle and four of
+them clear 0.35, the rest being this machine's fan mistaken for a distant
+engine. A filter is a question and can afford the low bar; a list of "what is
+in this archive" is a claim and cannot.
+
+Its limits, measured. It misses a quiet laugh entirely — 0.000 in every
+window, on a clip whose owner confirms he laughed. It hedges across
+neighbouring classes rather than committing (Dog, Animal and Domestic animals
+within 0.16 of each other). It describes a window rather than an instant. And
+it hears this room's fan as a body: 75 clips came back with a heartbeat in
+them, 70 of those also carrying Hum, 65 Throbbing and 43 Heart murmur, so that
+cluster is treated as room noise rather than as an event.
 
 ### What the status light means
 

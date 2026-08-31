@@ -74,6 +74,14 @@ def _ensure(c):
     if "sounds" not in have:
         c.execute("ALTER TABLE clips ADD COLUMN sounds TEXT")
         c.commit()
+    # The same names again, but only the ones the tagger was actually sure of.
+    # Browsing wants this and searching does not: 624 clips carry Vehicle and
+    # four of them clear 0.35, so a list built from the low bar is mostly a
+    # fan being mistaken for a distant engine, while a filter built from it can
+    # still turn up the real ones.
+    if "sounds_strong" not in have:
+        c.execute("ALTER TABLE clips ADD COLUMN sounds_strong TEXT")
+        c.commit()
     c.commit()
 
 
@@ -98,6 +106,7 @@ def upsert_clip(name, transcript_path=None, wav_path=None):
     segs = []
     voice_tag = None
     sounds = None
+    sounds_strong = None
     if os.path.exists(tp):
         try:
             t = json.load(open(tp))
@@ -134,23 +143,26 @@ def upsert_clip(name, transcript_path=None, wav_path=None):
             voice_tag = max([v for n, v in kept if n in VOICE_TAGS] or [0.0])
             heard = [n for n, v in kept if v >= SOUND_FLOOR]
             sounds = "\n".join(heard) if heard else None
+            sure = [n for n, v in kept if v >= SOUND_STRONG]
+            sounds_strong = "\n".join(sure) if sure else None
         except Exception:
             status = "error"
 
     c.execute("""INSERT INTO clips(name, seconds, modified, status, has_speech,
                                    edited, speakers, preview, indexed_at,
-                                   voice_tag, sounds)
-                 VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                                   voice_tag, sounds, sounds_strong)
+                 VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
                  ON CONFLICT(name) DO UPDATE SET
                    seconds=excluded.seconds, modified=excluded.modified,
                    status=excluded.status, has_speech=excluded.has_speech,
                    edited=excluded.edited, speakers=excluded.speakers,
                    preview=excluded.preview, indexed_at=excluded.indexed_at,
                    voice_tag=excluded.voice_tag,
-                   sounds=excluded.sounds""",
+                   sounds=excluded.sounds,
+                   sounds_strong=excluded.sounds_strong""",
               (name, seconds, os.path.getmtime(wav), status, has_speech,
                edited, json.dumps(speakers), preview, time.time(), voice_tag,
-               sounds))
+               sounds, sounds_strong))
     c.execute("DELETE FROM segments WHERE clip = ?", (name,))
     if segs:
         c.executemany(
@@ -429,6 +441,11 @@ def missed_voice(limit=200, floor=0.05):
 # treats as a real event rather than ambient noise.
 SOUND_FLOOR = 0.20
 
+# And the bar for saying a sound is really in there, rather than that the
+# model would not rule it out. The same 0.35 the windowed listener requires
+# before it will record a sound it heard in only part of a clip.
+SOUND_STRONG = 0.35
+
 
 def sound_vocabulary(limit=40):
     """Every sound the archive actually contains, commonest first.
@@ -507,6 +524,13 @@ AMBIENT_SOUNDS = {
     "Inside, small room", "Inside, large room or hall", "Outside, urban or manmade",
     "Tick", "Tick-tock", "Clock",
     "Computer keyboard", "Typing", "Mouse", "Clicking", "Writing",
+    # This machine's fan, as heard by a model that was never told there was a
+    # fan. 75 clips came back with a heartbeat in them; 70 of those also had
+    # Hum, 65 Throbbing, 55 Mechanical fan and 43 Heart murmur. There is no
+    # heartbeat. It is low-frequency rumble wearing a stethoscope, and left in
+    # the notable list it is the single commonest thing the archive claims to
+    # contain that never happened.
+    "Heart sounds, heartbeat", "Heart murmur", "Throbbing",
 }
 
 
@@ -520,11 +544,11 @@ def notable_sounds(min_score=0.15):
     import json as _json
     c = _conn()
     rows = c.execute(
-        "SELECT name, seconds, modified, sounds, preview FROM clips "
-        "WHERE sounds IS NOT NULL").fetchall()
+        "SELECT name, seconds, modified, sounds_strong, preview FROM clips "
+        "WHERE sounds_strong IS NOT NULL").fetchall()
     by_tag = {}
     for r in rows:
-        names = [n for n in (r["sounds"] or "").split("\n") if n]
+        names = [n for n in (r["sounds_strong"] or "").split("\n") if n]
         notable = [n for n in names
                    if n not in AMBIENT_SOUNDS and n not in VOICE_TAGS]
         if not notable:
