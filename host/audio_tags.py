@@ -147,6 +147,56 @@ def candidates():
     return out
 
 
+def backfill(limit):
+    """Tag what was recorded before tagging existed.
+
+    Every clip, not only the silent ones. A tag on a clip that already has a
+    transcript is what makes "the day the dog barked" findable, and the audio
+    it describes may not be on disk forever -- the tags are cheap now and
+    impossible later.
+    """
+    import atomicio
+    data = os.path.join(ROOT, "data")
+    todo = []
+    for f in sorted(os.listdir(data)):
+        if not f.endswith(".wav"):
+            continue
+        tp = pipeline.transcript_path(f)
+        if not os.path.exists(tp):
+            continue
+        try:
+            t = json.load(open(tp))
+        except Exception:
+            continue
+        if t.get("sounds") is None:
+            todo.append((f, tp, t))
+    todo = todo[:limit]
+    print(f"{len(todo)} transcript(s) without sound tags\n")
+    if not todo:
+        return
+
+    fe, model, dev, labels = load_model()
+    done = failed = 0
+    for i, (f, tp, t) in enumerate(todo, 1):
+        try:
+            r = tag(os.path.join(data, f), fe, model, dev, labels,
+                    topk=10)
+        except Exception:
+            r = None
+        if r in (None, "tooshort"):
+            # Recorded as an empty list rather than left absent, so a rerun
+            # does not keep retrying the files that cannot be tagged.
+            t["sounds"] = []
+            failed += 1
+        else:
+            t["sounds"] = [[n, round(v, 3)] for n, v in r["tags"] if v >= 0.02]
+            done += 1
+        atomicio.write_json(tp, t, indent=2, allow_nan=False)
+        if i % 200 == 0:
+            print(f"  … {i}/{len(todo)}", flush=True)
+    print(f"\ntagged {done}, could not tag {failed}")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--limit", type=int, default=200)
@@ -156,6 +206,11 @@ def main():
                     help="list only the clips found empty by every test")
     ap.add_argument("--delete", action="store_true",
                     help="actually remove them. Requires --deletable.")
+    ap.add_argument("--backfill", action="store_true",
+                    help="write sound tags into every transcript that lacks "
+                         "them, including clips that do have speech. New clips "
+                         "are tagged during transcription; this is for what was "
+                         "already recorded.")
     ap.add_argument("--json", metavar="PATH",
                     help="write every verdict and its tags here. The printed "
                          "report truncates to twenty of each, which is enough "
@@ -163,6 +218,9 @@ def main():
     a = ap.parse_args()
     if a.delete and not a.deletable:
         sys.exit("--delete only works with --deletable, so the list is seen first")
+
+    if a.backfill:
+        return backfill(a.limit)
 
     todo = candidates()
     print(f"{len(todo)} clip(s) hold no transcript; examining "

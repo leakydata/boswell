@@ -831,6 +831,26 @@ def is_hallucinated_silence(segments):
     return sum(len(x.get("text", "")) for x in segments) <= HALLUCINATION_CHARS
 
 
+# Everyday sound classes, from AST fine-tuned on AudioSet.
+#
+# Added because half the archive by size held no transcript, and the only way
+# to know whether that meant silence or a missed conversation was to ask
+# something other than a speech model. It answered that -- 79 clips held a
+# person talking -- and then kept answering: dogs, an owl, a turkey, typing,
+# clicking, wind.
+#
+# Kept for every clip rather than only the silent ones, because it costs
+# almost nothing (0.04 s and 0.4 GB, against roughly ten seconds a clip for
+# transcription) and cannot be recovered later if the audio rotates away. What
+# it is eventually FOR is undecided: searching for the day the dog barked,
+# telling room tone from wind before deleting either, or spotting Music and
+# Television, which is the automatic media detection this project gave up on
+# for want of a signal. Storing it now keeps all of those open.
+SOUND_MODEL = "MIT/ast-finetuned-audioset-10-10-0.4593"
+SOUND_KEEP = 10          # tags stored per clip
+SOUND_FLOOR = 0.02       # below this the label carries no information
+
+
 class Worker:
     def __init__(self, notify=None, on_transcript=None):
         self.q: queue.Queue = queue.Queue()
@@ -849,6 +869,7 @@ class Worker:
         self._asr = None
         self._align = None
         self._diar = None
+        self._sound = None
         threading.Thread(target=self._run, daemon=True).start()
 
     def submit(self, clip):
@@ -936,6 +957,17 @@ class Worker:
             # rather than as a feature that never ran.
             self.notify("log", text="NO HF_TOKEN — transcribing without "
                                     "speaker labels; nobody can be named")
+        # Small enough to keep resident beside the others: 0.4 GB against the
+        # card's 25, and 0.04 s a clip against transcription's ten.
+        try:
+            from transformers import (AutoFeatureExtractor,
+                                      AutoModelForAudioClassification)
+            fe = AutoFeatureExtractor.from_pretrained(SOUND_MODEL)
+            sm = AutoModelForAudioClassification.from_pretrained(SOUND_MODEL)
+            sm = sm.to("cuda").eval()
+            self._sound = (fe, sm, sm.config.id2label)
+        except Exception as e:
+            self.notify("log", text=f"sound tagging unavailable: {str(e)[:80]}")
         self.notify("log", text="models ready")
 
     def _run(self):
@@ -953,6 +985,31 @@ class Worker:
                 self.notify("log", text=f"transcription failed: {str(e)[:120]}")
             finally:
                 self.busy = None
+
+    def tag_sounds(self, audio, sr=16000):
+        """What is audible in this clip, whether or not anyone spoke.
+
+        Returns [(label, score), ...] strongest first, or None if the model is
+        not loaded. Independent of the speech path on purpose: a model that
+        only knows about speech cannot tell an empty room from a dog.
+        """
+        if self._sound is None:
+            return None
+        import torch
+        fe, model, labels = self._sound
+        a = np.asarray(audio, dtype=np.float32).ravel()
+        if a.size < int(0.20 * sr):
+            return None          # shorter than the model's analysis window
+        try:
+            with torch.no_grad():
+                x = fe(a, sampling_rate=sr, return_tensors="pt").to("cuda")
+                p = torch.sigmoid(model(**x).logits[0]).cpu()
+        except Exception:
+            return None
+        top = torch.topk(p, SOUND_KEEP)
+        return [[labels[i.item()], round(float(v), 3)]
+                for v, i in zip(top.values, top.indices)
+                if float(v) >= SOUND_FLOOR]
 
     def _process(self, clip):
         import whisperx
@@ -1016,11 +1073,17 @@ class Worker:
                 f"{' '.join(x['text'] for x in segs)[:40]!r} as silence"))
             segs = []
 
+        # What was audible, speech or not. Written for every clip including
+        # the ones with no transcript at all -- those are the ones it has most
+        # to say about.
+        sounds = self.tag_sounds(audio)
+
         os.makedirs(TRANSCRIPTS, exist_ok=True)
         atomicio.write_json(transcript_path(clip),
                             {"clip": clip, "created": time.time(),
                              "segments": segs, "speakers": names,
-                             "embeddings": embeddings},
+                             "embeddings": embeddings,
+                             "sounds": sounds},
                             indent=2, allow_nan=False)
 
         try:
