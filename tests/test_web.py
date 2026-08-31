@@ -674,3 +674,78 @@ class TestTheMissedVoiceQueue:
         cols = {r[1] for r in c.execute("PRAGMA table_info(clips)")}
         c.close()
         assert "voice_tag" in cols
+
+
+class TestTheTailOfARecording:
+    """A segment cannot begin where the audio ends.
+
+    Whisper writes one there anyway on the last window. Measured across 4693
+    segments in 1154 clips: dropping those that start within 0.10 s of the end
+    removes 9 segments, the longest 10 characters -- "Thank you." five times,
+    "you" twice, "No." once. At 0.25 s it would take 28, the longest 87
+    characters, and real sentences start appearing. So the margin is small on
+    purpose.
+    """
+
+    def test_a_segment_at_the_very_end_is_dropped(self):
+        import pipeline
+        segs = [{"start": 30.0, "end": 30.0, "text": "Thank you."}]
+        assert pipeline.drop_tail_segments(segs, 30.06) == []
+
+    def test_ordinary_speech_is_kept(self):
+        import pipeline
+        segs = [{"start": 12.0, "end": 14.0, "text": "Good Lord, that motor."}]
+        assert len(pipeline.drop_tail_segments(segs, 30.0)) == 1
+
+    def test_a_line_just_inside_the_margin_survives(self):
+        import pipeline
+        segs = [{"start": 29.5, "end": 30.0, "text": "Yeah."}]
+        assert len(pipeline.drop_tail_segments(segs, 30.0)) == 1
+
+    def test_an_unknown_duration_changes_nothing(self):
+        import pipeline
+        segs = [{"start": 30.0, "end": 30.0, "text": "Thank you."}]
+        assert pipeline.drop_tail_segments(segs, 0) == segs
+        assert pipeline.drop_tail_segments(segs, None) == segs
+
+
+class TestUnattributedSpeech:
+    """A voice was found, and not one line could be given to it.
+
+    Measured: five clips confirmed by the person in the recording as a
+    television or someone on the phone through an open door are 100%
+    unlabelled, and of the 1090 other clips the conversation pass has been
+    over, not one is. So this is a marker for distant speech, and it matters
+    because the words in such a transcript are part real and part guessed --
+    "good lord" and "motor" were genuinely said; the sentence around them was
+    the decoder's.
+    """
+
+    def test_a_voice_with_no_line_attached_is_marked(self):
+        import pipeline
+        segs = [{"text": "Good Lord, shoot that thing's motor.", "speaker": None}]
+        assert pipeline.unattributed(segs, {"SPEAKER_00": [0.1]}) is True
+
+    def test_one_attached_line_is_enough_to_clear_it(self):
+        import pipeline
+        segs = [{"text": "a", "speaker": "SPEAKER_00"}, {"text": "b", "speaker": None}]
+        assert pipeline.unattributed(segs, {"SPEAKER_00": [0.1]}) is False
+
+    def test_no_voice_at_all_is_a_different_thing(self):
+        """That is silence, and is_hallucinated_silence's business, not this."""
+        import pipeline
+        segs = [{"text": "Thank you.", "speaker": None}]
+        assert pipeline.unattributed(segs, {}) is False
+
+    def test_a_clip_with_no_words_is_not_marked(self):
+        import pipeline
+        assert pipeline.unattributed([], {"SPEAKER_00": [0.1]}) is False
+        assert pipeline.unattributed([{"text": "  ", "speaker": None}],
+                                     {"SPEAKER_00": [0.1]}) is False
+
+    def test_it_accepts_plain_evidence_too(self):
+        """The consolidation path knows only whether a turn overlapped."""
+        import pipeline
+        segs = [{"text": "distant words", "speaker": None}]
+        assert pipeline.unattributed(segs, True) is True
+        assert pipeline.unattributed(segs, False) is False

@@ -862,6 +862,52 @@ def normalise(audio):
     return (audio * gain).astype(audio.dtype)
 
 
+# A segment cannot begin where the audio ends. Whisper writes one there
+# anyway, on the last window, and it is always the same handful of phrases.
+#
+# Measured across 4693 segments in 1154 clips, by how close to the end a
+# segment may start before it is dropped:
+#
+#     0.10 s    9 segments, longest 10 chars   "Thank you." x5, "you" x2, "No."
+#     0.25 s   28 segments, longest 87 chars   real sentences appear
+#
+# So 0.10 removes decoder residue and nothing else, and 0.25 would start
+# costing speech. Kept deliberately small for that reason.
+TAIL_MARGIN = 0.10
+
+
+def drop_tail_segments(segments, duration):
+    """Remove segments that begin at or past the end of the audio."""
+    if not duration or duration <= 0:
+        return segments
+    return [x for x in segments
+            if float(x.get("start") or 0.0) < duration - TAIL_MARGIN]
+
+
+def unattributed(segments, voices):
+    """Words with nobody to attach them to, though a voice was there.
+
+    The diarizer found somebody, and then not one line could be given to
+    them. Measured, that is a specific thing and not a glitch: five clips
+    confirmed by the person in the recording as a television, or someone on
+    the phone through an open bedroom door a distance from the microphone,
+    are 100% unlabelled -- and of the 1090 other clips the conversation pass
+    has been over, not one is.
+
+    It is worth recording because of what such a transcript is like. Asked
+    about one of them he said he could make out only a few words, and that
+    "good lord" and "motor" really were among them: the decoder gets the loud
+    words right and writes plausible English across the gaps. That is a
+    different failure from a phrase invented over silence -- there is real
+    speech in it -- and it must not reach a reader looking as certain as a
+    line spoken into the microphone.
+    """
+    segments = [x for x in (segments or []) if (x.get("text") or "").strip()]
+    if not segments or not voices:
+        return False
+    return not any(x.get("speaker") for x in segments)
+
+
 def is_hallucinated_silence(segments, voices=None):
     """Whisper writing a phrase over room tone, with no voice to back it.
 
@@ -1118,6 +1164,9 @@ class Worker:
                 if all(isinstance(x[k], (int, float)) and math.isfinite(x[k])
                        for k in ("start", "end"))]
 
+        # ...and any the decoder wrote past the end of the recording.
+        segs = drop_tail_segments(segs, len(audio) / 16000.0)
+
         # Whisper writes a phrase over silence, and the diarizer is the check.
         #
         # Nine clips in the archive had a transcript of exactly one segment
@@ -1144,12 +1193,19 @@ class Worker:
         # to say about.
         sounds = self.tag_sounds(audio)
 
+        far = unattributed(segs, embeddings)
+        if far:
+            self.notify("log", text=(
+                f"{clip}: a voice was found but no line could be attributed "
+                f"to it — distant or muffled speech, wording approximate"))
+
         os.makedirs(TRANSCRIPTS, exist_ok=True)
         atomicio.write_json(transcript_path(clip),
                             {"clip": clip, "created": time.time(),
                              "segments": segs, "speakers": names,
                              "embeddings": embeddings,
-                             "sounds": sounds},
+                             "sounds": sounds,
+                             "unattributed": far},
                             indent=2, allow_nan=False)
 
         try:
@@ -1753,7 +1809,18 @@ class Worker:
             # the decoder wrote there is one short stock phrase it is room tone
             # rather than speech -- the same test _process applies, applied
             # here because this path rewrites the same field.
-            if is_hallucinated_silence(t.get("segments") or [], embeddings):
+            #
+            # The evidence has to be per clip. `embeddings` above belongs to
+            # the whole conversation and is written into every clip in it, so
+            # handing the guard that would mean no clip inside a conversation
+            # could ever be judged silent: the guard would be switched off on
+            # this path while appearing to run. What it needs is whether the
+            # diarizer put any voice inside THIS clip's span.
+            voiced_here = any(
+                min(item["end"], turn["end"]) - max(item["start"], turn["start"]) > 0.0
+                for turn in turns)
+            t["unattributed"] = unattributed(t.get("segments") or [], voiced_here)
+            if is_hallucinated_silence(t.get("segments") or [], voiced_here):
                 self.notify("log", text=(
                     f"{item['clip']}: no voice found after re-diarizing; "
                     f"discarding "

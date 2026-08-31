@@ -2923,8 +2923,20 @@ async function renderTranscript(name){
     const note = document.createElement("div");
     note.className = "empty";
     note.style.textAlign = "left";
-    note.textContent = "No speakers were identified in this clip, so there is "
-      + "nobody to name yet. Press Transcribe to try again.";
+    /* Two different things look the same here, and telling the user the wrong
+       one wastes their time. "Press Transcribe again" is right when nothing
+       was ever found; it is useless advice when a voice WAS found and simply
+       could not be pinned to any line, which is what distant speech does --
+       a television, or somebody on the phone through an open door. Running it
+       again will not change that, and the words themselves want a caveat: the
+       loud ones are real and the sentences around them are the decoder's. */
+    note.textContent = t.unattributed
+      ? "A voice was found here, but no line could be attributed to it — "
+        + "usually speech at a distance, such as a television or someone "
+        + "talking in another room. Expect the loud words to be real and the "
+        + "sentences around them to be approximate."
+      : "No speakers were identified in this clip, so there is "
+        + "nobody to name yet. Press Transcribe to try again.";
     $("dSpeakers").appendChild(note);
   }
   for (const id of ids){

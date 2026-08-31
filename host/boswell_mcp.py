@@ -234,13 +234,26 @@ def get_clip(clip: str) -> dict:
     if not t:
         return {"error": f"no transcript for {clip}"}
     who = {k: (v or {}).get("name") for k, v in (t.get("speakers") or {}).items()}
-    return {
+    out = {
         "clip": clip,
         "when": _fmt_time(t.get("created")),
         "segments": [{"start": s.get("start"), "end": s.get("end"),
                       "speaker": who.get(s.get("speaker")) or s.get("speaker"),
                       "text": s.get("text")} for s in (t.get("segments") or [])],
     }
+    # A reader that cannot tell these apart will quote guessed words as though
+    # they were said. The words are not invented -- there is real speech under
+    # them -- but only the loud ones survive the distance intact.
+    if t.get("unattributed"):
+        out["caveat"] = ("A voice was found in this clip but no line could be "
+                         "attributed to it, which is what speech at a distance "
+                         "looks like -- a television, or someone talking in "
+                         "another room. Treat prominent words as real and the "
+                         "sentences around them as approximate. Do not quote "
+                         "this as verbatim speech.")
+    if t.get("sounds"):
+        out["sounds"] = [[n, v] for n, v in t["sounds"][:6]]
+    return out
 
 
 @server.tool(description="Who the system can recognise by voice, and how many "
