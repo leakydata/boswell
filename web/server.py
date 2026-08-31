@@ -1423,6 +1423,17 @@ async def api_clips(limit: int = 1000):
     return rows
 
 
+@app.get("/api/sounds")
+async def api_sounds(limit: int = 40):
+    """Every sound the archive contains, commonest first.
+
+    From what is actually there rather than from AudioSet's 527 classes: a
+    menu offering Didgeridoo to somebody whose recordings hold a dog, a
+    keyboard and a fan is a menu nobody reads.
+    """
+    return index_db.sound_vocabulary(limit)
+
+
 @app.get("/api/search")
 async def api_search(q: str, limit: int = 200):
     """Full text across every segment, with the matching lines returned."""

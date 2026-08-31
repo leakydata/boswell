@@ -322,6 +322,13 @@ audio.voiceclip{display:block;width:100%;height:34px}
 .ledkey .ledgrp{display:block;color:var(--ink);font-weight:600;font-size:12px;
   letter-spacing:.04em;text-transform:uppercase;margin-top:6px}
 .ledkey .ledgrp:first-child{margin-top:0}
+.sounds{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:10px}
+.sounds .cnt{font-family:var(--mono);font-size:11.5px;color:var(--faint);
+  text-transform:uppercase;letter-spacing:.05em;margin-right:2px}
+button.sound{font-family:var(--mono);font-size:11.5px;padding:3px 9px;
+  min-height:0;border-radius:12px;background:var(--sunk);color:var(--muted);
+  border:1px solid transparent}
+button.sound.strong{color:var(--ink);border-color:var(--rule)}
 .pager{display:flex;align-items:center;justify-content:center;gap:14px;
   padding:12px 4px;margin-top:6px}
 .pager.top{margin:0 0 8px;padding-top:4px;border-bottom:1px solid var(--rule)}
@@ -585,6 +592,9 @@ html{scroll-padding-top:120px}
         <option value="conv">Conversations</option>
         <option value="day">By day</option>
         <option value="flat">All clips</option>
+      </select>
+      <select class="filter" id="fSound" aria-label="Filter by what was heard">
+        <option value="">Any sound</option>
       </select>
       <select class="filter" id="fPerPage" aria-label="How many to show per page">
         <option value="25">25 per page</option>
@@ -1770,7 +1780,7 @@ on("bVoiceScan", "click", async () => {
 });
 
 /* ---- recordings ---- */
-let clipFilter = "all", dateFilter = "all", query = "";
+let clipFilter = "all", dateFilter = "all", query = "", soundFilter = "";
 
 /* Paging, and why it is not just a slice.
    Nine days of recording is already 1339 clips, and the day the archive is
@@ -1867,6 +1877,24 @@ function on(id, event, fn){
 let groupMode = "conv";
 on("fContent", "change", () => {
   clipFilter = $("fContent").value; resetPages(); loadClips();
+});
+/* Filled from the archive, once, after the first clip list loads. */
+async function loadSoundFilter(){
+  const sel = $("fSound");
+  if (sel.dataset.built) return;
+  try{
+    const rows = await (await fetch("/api/sounds?limit=40")).json();
+    for (const r of rows){
+      const o = document.createElement("option");
+      o.value = r.name;
+      o.textContent = `${r.name} (${r.clips})`;
+      sel.appendChild(o);
+    }
+    sel.dataset.built = "1";
+  }catch(e){ /* the filter simply stays as "any sound" */ }
+}
+on("fSound", "change", () => {
+  soundFilter = $("fSound").value; resetPages(); loadClips();
 });
 on("fPerPage", "change", () => {
   pageSize = parseInt($("fPerPage").value, 10) || 0;
@@ -2355,6 +2383,7 @@ async function loadClips(){
        days at the current rate, and the fix then is to push the date filter
        into the query rather than to raise this again. */
     const all = await (await fetch("/api/clips?limit=" + CLIP_FETCH_LIMIT)).json();
+    loadSoundFilter();
     // has_speech is null until a clip is transcribed; an unknown clip is not
     // the same as a silent one, so it stays out of both filtered views.
     // "Silent, but a voice was heard": the sound tagger found a person
@@ -2369,7 +2398,8 @@ async function loadClips(){
         : clipFilter === "missed" ? (c.has_speech === false &&
                                      (c.voice_tag || 0) >= MISSED_VOICE_FLOOR)
         : c.has_speech === false)
-      .filter(c => inDateRange(c.modified));
+      .filter(c => inDateRange(c.modified))
+      .filter(c => !soundFilter || (c.sounds || []).includes(soundFilter));
     if (clipFilter === "missed"){
       clips.sort((a, b) => (b.voice_tag || 0) - (a.voice_tag || 0));
     }
@@ -3221,6 +3251,40 @@ async function renderTranscript(name){
   const ids = [...new Set(t.segments.map(s => s.speaker).filter(Boolean))];
   assignSpeakerColors(ids);
   $("dSpeakers").innerHTML = "";
+
+  /* What was audible besides the words.
+     A second model, trained on a different task, listens to every clip and
+     names what it hears from 527 everyday classes. It has been running on all
+     of them for a while and had nowhere to appear, which made it look like
+     nothing was happening -- and it is the reason a silent clip can be told
+     from an empty one, and why 1177 clips could be deleted with confidence.
+     Shown above the speakers because it applies to the clip, not to a person,
+     and clicking one asks the archive for everything else that sounds like
+     it. */
+  const heard = (t.sounds || []).filter(x => x[1] >= 0.10).slice(0, 8);
+  if (heard.length){
+    const row = document.createElement("div");
+    row.className = "sounds";
+    const lab = document.createElement("span");
+    lab.className = "cnt";
+    lab.textContent = "heard:";
+    row.appendChild(lab);
+    for (const [n, v] of heard){
+      const b = document.createElement("button");
+      b.className = "sound" + (v >= 0.4 ? " strong" : "");
+      b.textContent = `${n} ${Number(v).toFixed(2)}`;
+      b.title = `Show every recording with ${n} in it`;
+      b.onclick = () => {
+        clipGoBack();
+        $("fSound").value = n;
+        soundFilter = n;
+        resetPages();
+        loadClips();
+      };
+      row.appendChild(b);
+    }
+    $("dSpeakers").appendChild(row);
+  }
   /* A transcript with words but nobody in it looks like a diarization that
      found one anonymous speaker. It usually means diarization never ran, and
      with no speaker chips there is nothing to tap to add a name -- so say so

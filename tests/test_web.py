@@ -749,3 +749,66 @@ class TestUnattributedSpeech:
         segs = [{"text": "distant words", "speaker": None}]
         assert pipeline.unattributed(segs, True) is True
         assert pipeline.unattributed(segs, False) is False
+
+
+class TestWhatElseWasHeard:
+    """The sound tags, as something you can search rather than something the
+    archive merely knows.
+
+    A second model listens to every clip and names what it hears from 527
+    everyday classes. It had been running on all of them for weeks with
+    nowhere to appear, which is indistinguishable from not running at all --
+    and it is what tells a silent clip from an empty one.
+    """
+
+    def _db(self, tmp_path, monkeypatch):
+        import index_db
+        monkeypatch.setattr(index_db, "DB_PATH", str(tmp_path / "index.db"))
+        monkeypatch.setattr(index_db, "_local", type(index_db._local)())
+        return index_db
+
+    def _add(self, db, name, sounds):
+        c = db._conn()
+        c.execute("""INSERT INTO clips(name, seconds, modified, status,
+                                       has_speech, edited, speakers, preview,
+                                       indexed_at, sounds)
+                     VALUES(?,30.0,1000.0,'done',1,0,'[]','',1000.0,?)""",
+                  (name, "\n".join(sounds) if sounds else None))
+        c.commit()
+
+    def test_the_menu_comes_from_the_archive(self, tmp_path, monkeypatch):
+        """Not from AudioSet's 527 classes. A menu offering Didgeridoo to
+        somebody whose recordings hold a dog and a keyboard is unusable."""
+        db = self._db(tmp_path, monkeypatch)
+        self._add(db, "a.wav", ["Dog", "Speech"])
+        self._add(db, "b.wav", ["Speech"])
+        names = [r["name"] for r in db.sound_vocabulary()]
+        assert names == ["Speech", "Dog"], "commonest first"
+        assert "Didgeridoo" not in names
+
+    def test_it_counts_clips_not_occurrences(self, tmp_path, monkeypatch):
+        db = self._db(tmp_path, monkeypatch)
+        self._add(db, "a.wav", ["Dog"])
+        self._add(db, "b.wav", ["Dog"])
+        assert db.sound_vocabulary()[0] == {"name": "Dog", "clips": 2}
+
+    def test_a_clip_with_no_tags_is_not_an_empty_name(self, tmp_path, monkeypatch):
+        db = self._db(tmp_path, monkeypatch)
+        self._add(db, "a.wav", [])
+        assert db.sound_vocabulary() == []
+
+    def test_the_names_survive_a_round_trip(self, tmp_path, monkeypatch):
+        """Stored newline-joined; a two-word class must not become two."""
+        db = self._db(tmp_path, monkeypatch)
+        self._add(db, "a.wav", ["Domestic animals, pets", "Computer keyboard"])
+        assert {r["name"] for r in db.sound_vocabulary()} == {
+            "Domestic animals, pets", "Computer keyboard"}
+
+    def test_the_column_is_added_to_an_existing_database(self, tmp_path, monkeypatch):
+        import sqlite3
+        db = self._db(tmp_path, monkeypatch)
+        db._conn()
+        c = sqlite3.connect(str(tmp_path / "index.db"))
+        cols = {r[1] for r in c.execute("PRAGMA table_info(clips)")}
+        c.close()
+        assert "sounds" in cols

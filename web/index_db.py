@@ -68,6 +68,12 @@ def _ensure(c):
     if "voice_tag" not in have:
         c.execute("ALTER TABLE clips ADD COLUMN voice_tag REAL")
         c.commit()
+    # What the sound tagger heard, as names, so "which clips have a dog in
+    # them" is a query. The scores stay in the transcript; this is only for
+    # finding things, and a clip with Dog at 0.11 is not a clip about a dog.
+    if "sounds" not in have:
+        c.execute("ALTER TABLE clips ADD COLUMN sounds TEXT")
+        c.commit()
     c.commit()
 
 
@@ -91,6 +97,7 @@ def upsert_clip(name, transcript_path=None, wav_path=None):
     status, has_speech, edited, speakers, preview = "none", None, 0, [], ""
     segs = []
     voice_tag = None
+    sounds = None
     if os.path.exists(tp):
         try:
             t = json.load(open(tp))
@@ -114,21 +121,26 @@ def upsert_clip(name, transcript_path=None, wav_path=None):
             # Where the two disagree is exactly the list worth looking at.
             voice_tag = max([float(v) for n, v in (t.get("sounds") or [])
                              if n in VOICE_TAGS] or [0.0])
+            heard = [n for n, v in (t.get("sounds") or [])
+                     if float(v) >= SOUND_FLOOR]
+            sounds = "\n".join(heard) if heard else None
         except Exception:
             status = "error"
 
     c.execute("""INSERT INTO clips(name, seconds, modified, status, has_speech,
                                    edited, speakers, preview, indexed_at,
-                                   voice_tag)
-                 VALUES(?,?,?,?,?,?,?,?,?,?)
+                                   voice_tag, sounds)
+                 VALUES(?,?,?,?,?,?,?,?,?,?,?)
                  ON CONFLICT(name) DO UPDATE SET
                    seconds=excluded.seconds, modified=excluded.modified,
                    status=excluded.status, has_speech=excluded.has_speech,
                    edited=excluded.edited, speakers=excluded.speakers,
                    preview=excluded.preview, indexed_at=excluded.indexed_at,
-                   voice_tag=excluded.voice_tag""",
+                   voice_tag=excluded.voice_tag,
+                   sounds=excluded.sounds""",
               (name, seconds, os.path.getmtime(wav), status, has_speech,
-               edited, json.dumps(speakers), preview, time.time(), voice_tag))
+               edited, json.dumps(speakers), preview, time.time(), voice_tag,
+               sounds))
     c.execute("DELETE FROM segments WHERE clip = ?", (name,))
     if segs:
         c.executemany(
@@ -237,7 +249,8 @@ def list_clips(limit=1000):
              # What the sound tagger thought, so the interface can show where
              # it disagrees with the transcriber without a second request.
              "voice_tag": (None if r["voice_tag"] is None
-                           else round(float(r["voice_tag"]), 3))}
+                           else round(float(r["voice_tag"]), 3)),
+             "sounds": (r["sounds"] or "").split("\n") if r["sounds"] else []}
             for r in rows]
 
 
@@ -400,3 +413,25 @@ def missed_voice(limit=200, floor=0.05):
            ORDER BY voice_tag DESC, modified DESC
            LIMIT ?""", (floor, limit)).fetchall()
     return [dict(r) for r in rows]
+
+
+# Below this the tagger is guessing. Chosen to match what the report tool
+# treats as a real event rather than ambient noise.
+SOUND_FLOOR = 0.20
+
+
+def sound_vocabulary(limit=40):
+    """Every sound the archive actually contains, commonest first.
+
+    Built from what is there rather than from AudioSet's 527 classes, because
+    a menu offering Didgeridoo and Theremin to somebody whose recordings
+    contain a dog, a keyboard and a fan is a menu nobody reads.
+    """
+    c = _conn()
+    counts = {}
+    for r in c.execute("SELECT sounds FROM clips WHERE sounds IS NOT NULL"):
+        for n in (r["sounds"] or "").split("\n"):
+            if n:
+                counts[n] = counts.get(n, 0) + 1
+    out = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    return [{"name": n, "clips": k} for n, k in out[:limit]]
