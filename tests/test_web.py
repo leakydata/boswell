@@ -1266,13 +1266,23 @@ class TestAnswersThatAreNotAName:
         assert "namerPeople.filter" in block
 
     def test_pinning_never_enrols_a_voiceprint(self):
-        """The property that makes this safe for a television."""
-        import os
+        """The property that makes this safe to put on a television.
+
+        Asserted against the code rather than against its comment: the first
+        version of this checked for a sentence in the docstring, which wraps,
+        so it failed while the behaviour it described was correct. A test that
+        reads prose is testing the wrong thing anyway.
+        """
+        import os, re
         here = os.path.dirname(__file__)
         with open(os.path.join(here, "..", "web", "server.py"),
                   encoding="utf-8") as f:
             server = f.read()
         i = server.index('if "speaker_name" in body:')
-        block = server[i:i + 700]
-        assert "does NOT touch the voiceprint database" in block
-        assert "speaker_store" not in block
+        # up to the end of that handler
+        block = server[i:server.index("@app.delete", i)]
+        code = "\n".join(l for l in block.splitlines()
+                          if not l.strip().startswith("#"))
+        for enrol in ("speaker_store", "add_voiceprint", "save_speaker",
+                      "ingest_unknown", "name_person"):
+            assert enrol not in code, f"pinning a line must not call {enrol}"
