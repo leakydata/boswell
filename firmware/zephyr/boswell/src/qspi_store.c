@@ -2,6 +2,7 @@
 #include "cfg_store.h"
 #include "rec_crc.h"
 
+#include <errno.h>
 #include <string.h>
 #include <zephyr/device.h>
 #include <zephyr/drivers/flash.h>
@@ -184,9 +185,34 @@ static int erase_ahead(void)
         if (alive_cb) {
             alive_cb();      /* a sector erase alone can run to 100 ms */
         }
+        /* flash_erase refuses an offset that is not on a sector boundary, and
+         * nothing above this retries with a different one -- so an unaligned
+         * cursor is not a failed erase, it is every future erase failing. It
+         * happened: restoring a saved cursor set erased_pos to a byte offset
+         * mid-sector and the device logged 82278 refusals at -EINVAL before
+         * anyone looked. Round up rather than down: the part of the sector
+         * below the cursor is the part already erased and possibly written. */
+        if (erased_pos % SECTOR) {
+            LOG_WRN("erase cursor 0x%x is not on a sector boundary; realigning",
+                    addr_of(erased_pos));
+            erased_pos += SECTOR - (erased_pos % SECTOR);
+            continue;
+        }
         int err = flash_erase(flash_dev, addr_of(erased_pos), SECTOR);
         if (err) {
             LOG_ERR("erase at 0x%x failed (%d)", addr_of(erased_pos), err);
+            if (err == -EINVAL) {
+                /* A rejected argument will be rejected identically forever, so
+                 * retrying is a busy loop that burns battery and reports
+                 * nothing. Give the flash up instead: the store says it is not
+                 * ready, the status light turns yellow, and the host stops
+                 * queueing live audio behind a backlog that cannot drain --
+                 * which was the visible symptom, a device that looked like it
+                 * was catching up for hours and delivered nothing. */
+                LOG_ERR("the flash rejects this erase; giving up on buffering "
+                        "until the next reboot");
+                ready = false;
+            }
             return err;
         }
         int64_t destroyed_through = erased_pos - (int64_t)capacity + SECTOR;
@@ -346,7 +372,15 @@ int qspi_store_init(void)
             if (sane) {
                 w_pos = saved.w_pos;
                 r_pos = saved.r_pos;
-                erased_pos = saved.w_pos;
+                /* The write cursor is a byte offset and is almost never on a
+                 * sector boundary; the erase cursor must be one. Everything
+                 * below the write cursor has already been erased, so the next
+                 * sector to erase is the one above it. Setting this to w_pos
+                 * directly is what stalled a device for a day: every erase
+                 * after that boot was refused with -EINVAL, the backlog could
+                 * never be committed or cleared, and with strict ordering the
+                 * live audio queued behind it never arrived either. */
+                erased_pos = ((saved.w_pos + SECTOR - 1) / SECTOR) * SECTOR;
                 LOG_INF("backlog recovered: %lld B from the previous boot",
                         (long long)pending);
             } else {

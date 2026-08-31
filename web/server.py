@@ -253,7 +253,8 @@ class Device:
             "backlog_seconds": 0.0, "qspi_mb": 0, "imu": False,
             "peak": 0, "rms": 0.0, "level": 0.0, "error": None,
             "clip_seconds": 0.0, "source": None,
-            "recovered_seconds": 0.0, "backlog_mode": 1,
+            "recovered_seconds": 0.0, "recovered_frames": 0,
+            "backlog_mode": 1,
             "steps": 0, "tilt": False, "moving": False, "tap_enabled": True,
             "led_level": 255, "led_mode": 1,
             "ring_overruns": 0,
@@ -485,6 +486,18 @@ class Device:
                                   else max(self._rec_tms_last, t_ms))
             self.state["recovered_seconds"] = round(
                 sum(len(p) for p in self._recovered) / self.state["rate"], 1)
+            self.state["recovered_frames"] += 1
+            # The meter follows whatever audio is arriving, live or replayed.
+            #
+            # It used to move only on the live path, and the device page went
+            # completely still whenever the device was draining flash -- every
+            # counter frozen at zero while recordings were in fact landing on
+            # disk once every thirty seconds. Reported as "is the device
+            # communicating correctly", which is exactly what a dead meter
+            # over working audio means to anybody looking at it.
+            peak = int(np.abs(pcm.astype(np.int32)).max())
+            self.state["peak"] = peak
+            self.state["level"] = round(min(1.0, peak / 32767 * 3), 3)
             return
         self._pcm.append(pcm)
         if self._clip_tms_first is None:
