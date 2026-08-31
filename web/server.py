@@ -2876,6 +2876,33 @@ async def api_voices_kind(person_id: int, body: dict):
     return {"ok": True, "person_id": person_id, "kind": kind}
 
 
+@app.post("/api/voices/{person_id}/profile")
+async def api_voice_profile(person_id: int, body: dict):
+    """Who somebody is, kept apart from how they are matched.
+
+    `kind` decides whether a voice may name itself and at what bar, and has
+    only two useful answers. Everything else worth knowing about a person was
+    going into their name for want of anywhere else -- six of the ten names in
+    this archive ended in "YouTube", which makes the name wrong and the
+    category unsearchable.
+    """
+    import speaker_store
+    if not speaker_store.set_profile(person_id,
+                                     role=body.get("role"),
+                                     note=body.get("note")):
+        raise HTTPException(404, "no such voice")
+    return speaker_store.profile(person_id)
+
+
+@app.get("/api/voices/{person_id}/profile")
+async def api_voice_profile_get(person_id: int):
+    import speaker_store
+    p = speaker_store.profile(person_id)
+    if not p:
+        raise HTTPException(404, "no such voice")
+    return p
+
+
 @app.get("/api/voices/{person_id}/audio")
 async def api_voices_audio(person_id: int, max_seconds: float = 90.0):
     """Just this voice, their turns spliced together.

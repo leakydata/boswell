@@ -90,6 +90,9 @@ def list_speakers():
             "name": p["name"],
             "person_id": p["id"],
             "kind": p.get("kind"),
+            # Who they are, as opposed to how they are matched.
+            "role": p.get("role"),
+            "note": p.get("note"),
             # References that arrived together are described together. A name
             # applied to a cluster can attach hundreds at once, and listing
             # those individually buries the handful made by hand.

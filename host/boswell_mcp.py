@@ -270,6 +270,10 @@ def get_clip(clip: str) -> dict:
 @server.tool(description="Who the system can recognise by voice, and how many "
                          "voiceprints back each of them.")
 def list_people() -> list:
+    # The profile travels with the name. A reader that gets "Danny Polishchuk"
+    # and nothing else cannot tell a housemate from a comedian on a channel
+    # playing in the background, and the difference changes what the words
+    # mean.
     import speaker_store
     c = speaker_store._conn()
     try:
@@ -277,8 +281,15 @@ def list_people() -> list:
         for p in speaker_store.people(c):
             if not p["name"]:
                 continue
-            out.append({"name": p["name"], "voiceprints": p["prints"],
-                        "speech_seconds": round(p["seconds"] or 0, 1)})
+            row = {"name": p["name"], "voiceprints": p["prints"],
+                   "speech_seconds": round(p["seconds"] or 0, 1)}
+            if p.get("kind"):
+                row["kind"] = p["kind"]
+            if p.get("role"):
+                row["role"] = p["role"]
+            if p.get("note"):
+                row["note"] = p["note"]
+            out.append(row)
         return out
     finally:
         c.close()

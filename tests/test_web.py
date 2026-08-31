@@ -1562,3 +1562,56 @@ class TestRescuingASlotThatWillNotSplit:
         i = src.index("vec = split_vecs.get((wi, spk))")
         block = src[i:i + 260]
         assert block.index("core_vecs.get") < block.index("local.get(spk)")
+
+
+class TestOfferingTheRestOfTheClip:
+    """After naming one line, offer the others rather than doing them.
+
+    A name put on a single line is usually true of more than that line -- a
+    video running across the end of a clip, a second person speaking for a
+    stretch -- and doing them one at a time is the same name typed five times
+    with five chances to type it differently.
+
+    Offered, not done: the reason a name went on ONE line is that the others
+    were somebody else, and assuming otherwise would undo the correction just
+    made.
+    """
+
+    def _page(self):
+        import os
+        here = os.path.dirname(__file__)
+        with open(os.path.join(here, "..", "web", "static", "index.html"),
+                  encoding="utf-8") as f:
+            return f.read()
+
+    def test_it_offers_rather_than_acts(self):
+        page = self._page()
+        i = page.index("async function offerTheRestOfTheClip")
+        end = page.index("/* Downloads are blocked", i)
+        block = page[i:end]
+        assert "no, just that one" in block
+        assert "name ${others.length" in block
+
+    def test_it_says_how_many_and_which_name(self):
+        page = self._page()
+        i = page.index("async function offerTheRestOfTheClip")
+        block = page[i:page.index("/* Downloads are blocked", i)]
+        assert "other line" in block and "${pinned}" in block
+
+    def test_it_skips_lines_that_already_carry_that_name(self):
+        page = self._page()
+        i = page.index("async function offerTheRestOfTheClip")
+        block = page[i:page.index("/* Downloads are blocked", i)]
+        assert '(s.speaker_name || "") !== pinned' in block
+
+    def test_it_only_appears_when_a_name_was_pinned(self):
+        page = self._page()
+        assert "if (pinned) offerTheRestOfTheClip(" in page
+
+    def test_nothing_scrolls_smoothly(self):
+        """A smooth scroll does not animate in a tab that is not visible, so
+        the confirmation stays below the fold -- which is the bug the scroll
+        was added to fix. Measured: smooth left it at y=1015 in a 929 px
+        window, instant put it at 826."""
+        page = self._page()
+        assert 'behavior: "smooth"' not in page

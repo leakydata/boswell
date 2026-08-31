@@ -2599,10 +2599,66 @@ async function editLine(name, index, seg, ids, named, onSaved, colorFor){
       closeEditor();
       if (onSaved) await onSaved();
       else await renderTranscript(name);
+      if (pinned) offerTheRestOfTheClip(name, index, pinned, onSaved);
     }catch(e){ $("edErr").textContent = "Could not reach the server"; }
   };
 
   openSheet("editor", "editArea");
+}
+
+/* After naming one line, offer the rest of the clip.
+   
+   A name put on a single line is nearly always true of more than that line --
+   the case it exists for is a video that runs across the end of a clip, or a
+   second person who speaks for a stretch. Doing them one at a time is the same
+   name typed five times, with five chances to type it differently.
+   
+   Offered rather than done: the reason a name went on ONE line is that the
+   others were somebody else, and assuming otherwise would undo the correction
+   that was just made. It says how many and which name before it acts. */
+async function offerTheRestOfTheClip(clip, justDone, pinned, onSaved){
+  let t;
+  try{
+    t = await (await fetch("/api/transcript/" + encodeURIComponent(clip))).json();
+  }catch(e){ return; }
+  const segs = t.segments || [];
+  const others = segs
+    .map((s, i) => ({s, i}))
+    .filter(({s, i}) => i !== justDone
+            && (s.text || "").trim()
+            && (s.speaker_name || "") !== pinned);
+  if (!others.length) return;
+
+  const box = $("dMsg");
+  box.textContent = "";
+  box.style.color = "var(--ink)";
+  const line = document.createElement("span");
+  line.textContent = `${others.length} other line`
+    + `${others.length === 1 ? "" : "s"} in this clip — also `;
+  const go = document.createElement("button");
+  go.className = "pri";
+  go.textContent = `name ${others.length === 1 ? "it" : "them all"} ${pinned}`;
+  go.style.margin = "0 6px";
+  go.onclick = async () => {
+    go.disabled = true;
+    let done = 0;
+    for (const {i} of others){
+      go.textContent = `naming ${done + 1} of ${others.length}…`;
+      try{
+        const r = await fetch("/api/transcript/" + encodeURIComponent(clip), {
+          method: "PATCH", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({index: i, speaker_name: pinned})});
+        if (r.ok) done++;
+      }catch(e){ /* keep going; the rest may still land */ }
+    }
+    box.textContent = `named ${done} more line${done === 1 ? "" : "s"} ${pinned}`;
+    if (onSaved) await onSaved(); else await renderTranscript(clip);
+  };
+  const no = document.createElement("button");
+  no.textContent = "no, just that one";
+  no.onclick = () => { box.textContent = ""; };
+  box.append(line, go, no);
+  box.scrollIntoView({block: "center", behavior: "instant"});
 }
 
 /* Downloads are blocked in some embedded viewers, so export opens the text
@@ -4313,7 +4369,7 @@ $("bSplit").onclick = async () => {
      split that worked was reported as "nothing seemed to happen", which for
      the person pressing the button is the same as not working. */
   box.style.color = "var(--ink)";
-  box.scrollIntoView({block: "center", behavior: "smooth"});
+  box.scrollIntoView({block: "center", behavior: "instant"});
 
   const back = document.createElement("button");
   back.textContent = "Back to all clips";

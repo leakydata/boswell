@@ -205,6 +205,27 @@ def _conn():
     if "kind" not in cols:
         c.execute("ALTER TABLE people ADD COLUMN kind TEXT")
         c.commit()
+    # Who this person is, as distinct from how the matcher should treat them.
+    #
+    # `kind` answers one question -- may this voice name itself, and at what
+    # bar -- and there are only two useful answers, a person in the room or a
+    # voice from a speaker. Everything else somebody knows about a voice was
+    # going into the name for want of anywhere else: six of the ten names in
+    # this archive ended in "YouTube". That makes the name wrong (a comedian
+    # who appears on someone's channel is not called "Danny Polishchuk
+    # YouTube"), makes two spellings of one person likely, and puts a category
+    # where an identity belongs.
+    #
+    # `role` is a short label -- YouTuber, comedian, housemate -- and `note` is
+    # whatever else is worth knowing. Neither touches matching. Both are read
+    # by whatever eventually reads this archive, which cannot ask who somebody
+    # was.
+    if "role" not in cols:
+        c.execute("ALTER TABLE people ADD COLUMN role TEXT")
+        c.commit()
+    if "note" not in cols:
+        c.execute("ALTER TABLE people ADD COLUMN note TEXT")
+        c.commit()
     vcols = {r["name"] for r in c.execute("PRAGMA table_info(voiceprints)")}
     if "source_cluster" not in vcols:
         c.execute("ALTER TABLE voiceprints ADD COLUMN source_cluster INTEGER")
@@ -307,7 +328,7 @@ def people(c=None):
     c = c or _conn()
     try:
         rows = c.execute("""
-            SELECT p.id, p.name, p.kind, p.created,
+            SELECT p.id, p.name, p.kind, p.role, p.note, p.created,
                    COUNT(v.id) AS prints,
                    COALESCE(SUM(v.seconds), 0) AS seconds
             FROM people p LEFT JOIN voiceprints v ON v.person_id = p.id
@@ -1200,3 +1221,39 @@ if __name__ == "__main__":
         label = p["name"] or f"(unidentified #{p['id']})"
         print(f"  {label}: {p['prints']} voiceprint(s), "
               f"{p['seconds']:.0f}s")
+
+
+def set_profile(person_id, role=None, note=None, c=None):
+    """Record who somebody is. Says nothing about how they are matched.
+
+    Passing None leaves a field alone; passing "" clears it.
+    """
+    own = c is None
+    c = c or _conn()
+    try:
+        sets, args = [], []
+        if role is not None:
+            sets.append("role = ?"); args.append(role.strip() or None)
+        if note is not None:
+            sets.append("note = ?"); args.append(note.strip() or None)
+        if not sets:
+            return False
+        args.append(person_id)
+        cur = c.execute(f"UPDATE people SET {', '.join(sets)} WHERE id = ?", args)
+        c.commit()
+        return cur.rowcount > 0
+    finally:
+        if own:
+            c.close()
+
+
+def profile(person_id, c=None):
+    own = c is None
+    c = c or _conn()
+    try:
+        r = c.execute("""SELECT id, name, kind, role, note FROM people
+                         WHERE id = ?""", (person_id,)).fetchone()
+        return dict(r) if r else None
+    finally:
+        if own:
+            c.close()
