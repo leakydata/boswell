@@ -509,3 +509,33 @@ def test_an_emptied_store_is_not_refilled_from_the_legacy_files(db, tmp_path):
     assert again["migrated"] is False
     assert "already" in again["reason"]
     assert c.execute("SELECT COUNT(*) n FROM people").fetchone()["n"] == 0
+
+
+def test_an_impure_voiceprint_never_becomes_a_reference(db):
+    """Impure audio may be labelled; it may not be the thing others are
+    compared against.
+
+    Enrolment refuses an impure slot, which covers naming a voice inside a
+    clip. It did not cover naming a CLUSTER: those voiceprints are already in
+    the store, put there by the scan, and naming the cluster turned every one
+    of them into a reference. The guard was on the door and not on the room.
+    """
+    p = db.person_id_for("Someone")
+    db.add_voiceprint(p, vec(140), origin="manual", impure=True)
+    db.add_voiceprint(p, vec(141), origin="manual")          # a clean one
+
+    # the clean reference is matchable
+    assert db.match(vec(141))["name"] == "Someone"
+    # the impure one is not, even though it is named
+    r = db.match(vec(140))
+    assert r.get("name") is None
+    assert all(c["voiceprint_id"] != 1 or c["score"] < 0.99
+               for c in r.get("candidates", []))
+
+
+def test_an_impure_slot_can_still_be_given_a_name(db):
+    """The half that must keep working: attribution is not enrolment."""
+    p = db.person_id_for("Someone")
+    db.add_voiceprint(p, vec(150), origin="manual")
+    # a clip's impure slot, matched against a clean reference, still resolves
+    assert db.match(near(vec(150), 0.95))["name"] == "Someone"

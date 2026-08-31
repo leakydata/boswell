@@ -307,10 +307,23 @@ def _references(c):
     # that stranger's cluster. Clustering is _best_unknown's job.
     if _cache["version"] == _version:
         return _cache["ids"], _cache["pids"], _cache["M"]
+    # Impure rows are excluded, and this is the only place that can enforce it.
+    #
+    # Enrolment refuses an impure slot, which covers naming a voice in a clip.
+    # It does not cover naming a CLUSTER: those voiceprints are already in the
+    # store, put there by the scan, and giving the cluster a name turned every
+    # one of them into a reference -- 280 of them sitting here waiting for that
+    # to happen. The guard was on the door and not on the room.
+    #
+    # The distinction being kept is the one that matters: impure audio can
+    # RECEIVE a name, from a person or from the matcher, and its words are
+    # attributed and searchable like anything else. It can never BE the thing
+    # other voices are compared against. A label is correctable and a reference
+    # is not.
     rows = c.execute("""
         SELECT v.id, v.person_id, v.vec FROM voiceprints v
         JOIN people p ON p.id = v.person_id
-        WHERE p.name IS NOT NULL AND v.redundant = 0
+        WHERE p.name IS NOT NULL AND v.redundant = 0 AND v.impure = 0
         ORDER BY v.id
     """).fetchall()
     if not rows:

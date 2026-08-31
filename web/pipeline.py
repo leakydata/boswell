@@ -1478,9 +1478,8 @@ class Worker:
         so its numbers are reported rather than dropped.
         """
         n = len(vecs)
-        if n < self.SPLIT_MIN_TURNS:
-            return {"split": False, "reason": "too few usable turns",
-                    "turns": n}
+        if n < 2:
+            return {"split": False, "reason": "too few usable turns", "turns": n}
         M = np.stack(vecs)
         S = M @ M.T
 
@@ -1502,6 +1501,16 @@ class Worker:
         # flag was ever protecting against.
         medoid = int(np.argmax(S.sum(axis=1)))
         core = [i for i in range(n) if float(S[medoid, i]) >= self.CORE_MIN]
+
+        # Splitting needs six turns to mean anything; a core needs two. That
+        # was one test doing both jobs, and it cost the smaller slots
+        # everything: 1258 of them came back "too few usable turns" and were
+        # left unusable, when three turns of which two agree is a perfectly
+        # good reference. The split is still refused below SPLIT_MIN_TURNS --
+        # the core is what is salvaged from the refusal.
+        if n < self.SPLIT_MIN_TURNS:
+            return {"split": False, "reason": "too few usable turns",
+                    "turns": n, "medoid": medoid, "core": core}
 
         # Seed on the two least-alike turns: if the slot holds two people, the
         # furthest-apart pair is one from each.

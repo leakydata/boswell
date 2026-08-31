@@ -1684,3 +1684,42 @@ class TestRenamingReachesTheRecordings:
                       "segments": [{"text": "x", "speaker_name": "Ryan Long"}]},
             "b.wav": {"speakers": {"S": {"name": "Ryan Long"}}, "segments": []}})
         assert server._rename_in_transcripts("Ryan Long", "Ryan") == 2
+
+
+class TestSmallSlotsGetACoreToo:
+    """Splitting needs six turns to mean anything; a core needs two.
+
+    One test was doing both jobs, so _split_slot returned "too few usable
+    turns" before computing anything -- and 1258 slots were left with no
+    reference at all when three turns of which two agree is a perfectly good
+    one. The split is still refused below SPLIT_MIN_TURNS; the core is what
+    gets salvaged from the refusal.
+    """
+
+    def _source(self):
+        import os
+        here = os.path.dirname(__file__)
+        with open(os.path.join(here, "..", "web", "pipeline.py"),
+                  encoding="utf-8") as f:
+            return f.read()
+
+    def test_the_early_return_is_now_at_two_turns(self):
+        src = self._source()
+        i = src.index("n = len(vecs)")
+        block = src[i:src.index("M = np.stack(vecs)", i)]
+        assert "if n < 2:" in block
+        assert "SPLIT_MIN_TURNS" not in block, \
+            "the split threshold must not gate the core"
+
+    def test_a_small_slot_still_refuses_to_split(self):
+        src = self._source()
+        i = src.index("if n < self.SPLIT_MIN_TURNS:")
+        block = src[i:src.index("\n\n", i)]
+        assert '"split": False' in block
+        assert '"too few usable turns"' in block
+
+    def test_but_it_carries_the_core_out(self):
+        src = self._source()
+        i = src.index("if n < self.SPLIT_MIN_TURNS:")
+        block = src[i:src.index("\n\n", i)]
+        assert '"core": core' in block and '"medoid": medoid' in block
