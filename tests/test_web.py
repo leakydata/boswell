@@ -888,3 +888,68 @@ class TestClearingOutWhatHoldsNothing:
         self._add(db, "a.wav", ["Typing", "Computer keyboard"])
         assert db.clips_for_sound_sets([["Computer keyboard", "Typing"]]) \
             == [["a.wav"]]
+
+
+class TestOverrulingASoundTag:
+    """A tag that is wrong is worse than a tag that is missing.
+
+    The tagger can be defensible and still wrong for the purpose: talking to
+    a dog in a falsetto came back as "Pigeon, dove", which it genuinely sounded
+    like, and which is useless when the tags are what you search with, because
+    it puts a person's voice in front of you under the name of a bird.
+
+    So a removal is recorded rather than the tag deleted -- the model's actual
+    output stays, the correction survives re-transcription, and it can be undone.
+    """
+
+    def _db(self, tmp_path, monkeypatch):
+        import index_db
+        monkeypatch.setattr(index_db, "DB_PATH", str(tmp_path / "index.db"))
+        monkeypatch.setattr(index_db, "_local", type(index_db._local)())
+        return index_db
+
+    def _clip(self, tmp_path, monkeypatch, sounds, removed):
+        """A clip on disk, indexed the way the server indexes one."""
+        import json, index_db, soundfile as sf, numpy as np
+        db = self._db(tmp_path, monkeypatch)
+        data = tmp_path / "data"
+        (data / "transcripts").mkdir(parents=True)
+        monkeypatch.setattr(index_db, "DATA", str(data))
+        wav = data / "c.wav"
+        sf.write(str(wav), np.zeros(16000, dtype="float32"), 16000)
+        (data / "transcripts" / "c.json").write_text(json.dumps({
+            "clip": "c.wav", "segments": [], "sounds": sounds,
+            "sounds_removed": removed}))
+        db.upsert_clip("c.wav", transcript_path=str(data / "transcripts" / "c.json"),
+                       wav_path=str(wav))
+        return db
+
+    def test_a_removed_tag_leaves_the_searchable_index(self, tmp_path, monkeypatch):
+        db = self._clip(tmp_path, monkeypatch,
+                        [["Pigeon, dove", 0.24], ["Bird", 0.24]], ["Pigeon, dove"])
+        row = db._conn().execute("SELECT sounds FROM clips").fetchone()
+        assert (row["sounds"] or "").split("\n") == ["Bird"]
+
+    def test_it_is_gone_from_the_menu_too(self, tmp_path, monkeypatch):
+        db = self._clip(tmp_path, monkeypatch,
+                        [["Pigeon, dove", 0.24]], ["Pigeon, dove"])
+        assert db.sound_vocabulary() == []
+        assert db.notable_sounds() == []
+
+    def test_removing_a_voice_tag_changes_what_counts_as_silent(self, tmp_path, monkeypatch):
+        """voice_tag decides which clips are safe to delete, so a correction
+        has to reach it too -- not only the names."""
+        db = self._clip(tmp_path, monkeypatch, [["Speech", 0.8]], ["Speech"])
+        row = db._conn().execute("SELECT voice_tag FROM clips").fetchone()
+        assert row["voice_tag"] == 0.0
+
+    def test_nothing_removed_changes_nothing(self, tmp_path, monkeypatch):
+        db = self._clip(tmp_path, monkeypatch, [["Bird", 0.30]], [])
+        row = db._conn().execute("SELECT sounds FROM clips").fetchone()
+        assert (row["sounds"] or "").split("\n") == ["Bird"]
+
+    def test_a_missing_removal_list_is_not_an_error(self, tmp_path, monkeypatch):
+        """Every transcript written before this existed has no such field."""
+        db = self._clip(tmp_path, monkeypatch, [["Bird", 0.30]], None)
+        row = db._conn().execute("SELECT sounds FROM clips").fetchone()
+        assert (row["sounds"] or "").split("\n") == ["Bird"]

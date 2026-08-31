@@ -119,10 +119,17 @@ def upsert_clip(name, transcript_path=None, wav_path=None):
             # AST's own opinion about whether a person was audible, which is a
             # different question from whether the transcriber wrote anything.
             # Where the two disagree is exactly the list worth looking at.
-            voice_tag = max([float(v) for n, v in (t.get("sounds") or [])
-                             if n in VOICE_TAGS] or [0.0])
-            heard = [n for n, v in (t.get("sounds") or [])
-                     if float(v) >= SOUND_FLOOR]
+            # Tags the owner has said are wrong are gone from every view:
+            # search, filters, the notable-sounds list and the cleanup groups.
+            # A tag is for finding things, so a wrong one is worse than a
+            # missing one -- it puts a clip in front of you under a name that
+            # is not what happened. Kept in the transcript rather than deleted,
+            # so a correction survives re-transcription and can be undone.
+            dropped = set(t.get("sounds_removed") or [])
+            kept = [(n, float(v)) for n, v in (t.get("sounds") or [])
+                    if n not in dropped]
+            voice_tag = max([v for n, v in kept if n in VOICE_TAGS] or [0.0])
+            heard = [n for n, v in kept if v >= SOUND_FLOOR]
             sounds = "\n".join(heard) if heard else None
         except Exception:
             status = "error"
@@ -486,3 +493,46 @@ def clips_for_sound_sets(sets):
     want = {tuple(sorted(s)) for s in sets}
     return [g["names"] for g in cleanup_groups()
             if tuple(sorted(g["tags"])) in want]
+
+
+# Sounds that are the room rather than an event. Present in almost every
+# recording, and no more interesting than the air.
+AMBIENT_SOUNDS = {
+    "Silence", "White noise", "Pink noise", "Noise", "Environmental noise",
+    "Static", "Hum", "Mains hum", "Sine wave", "Sonar",
+    "Wind", "Wind noise (microphone)", "Mechanical fan", "Air conditioning",
+    "Inside, small room", "Inside, large room or hall", "Outside, urban or manmade",
+    "Tick", "Tick-tock", "Clock",
+    "Computer keyboard", "Typing", "Mouse", "Clicking", "Writing",
+}
+
+
+def notable_sounds(min_score=0.15):
+    """Everything the tagger heard that is neither speech nor the room.
+
+    Ordered so the rare things come first. A turkey heard once is the reason
+    to look at this list; Music heard twenty-eight times is not, and sorting
+    by count would bury the turkey under it.
+    """
+    import json as _json
+    c = _conn()
+    rows = c.execute(
+        "SELECT name, seconds, modified, sounds, preview FROM clips "
+        "WHERE sounds IS NOT NULL").fetchall()
+    by_tag = {}
+    for r in rows:
+        names = [n for n in (r["sounds"] or "").split("\n") if n]
+        notable = [n for n in names
+                   if n not in AMBIENT_SOUNDS and n not in VOICE_TAGS]
+        if not notable:
+            continue
+        for n in notable:
+            by_tag.setdefault(n, []).append({
+                "clip": r["name"], "seconds": r["seconds"],
+                "modified": r["modified"], "preview": r["preview"] or "",
+            })
+    out = [{"tag": t, "clips": len(v), "examples": v} for t, v in by_tag.items()]
+    # Rarest first, then alphabetically so the order does not shuffle between
+    # loads for tags with the same count.
+    out.sort(key=lambda g: (g["clips"], g["tag"]))
+    return out

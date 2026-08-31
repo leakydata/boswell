@@ -329,6 +329,15 @@ button.sound{font-family:var(--mono);font-size:11.5px;padding:3px 9px;
   min-height:0;border-radius:12px;background:var(--sunk);color:var(--muted);
   border:1px solid transparent}
 button.sound.strong{color:var(--ink);border-color:var(--rule)}
+.soundwrap{display:inline-flex;align-items:stretch;gap:0}
+.soundwrap button.sound{border-top-right-radius:0;border-bottom-right-radius:0;
+  flex:0 0 auto}
+button.soundx{flex:0 0 auto;min-height:0;padding:3px 8px;font-size:12px;
+  border-radius:0 12px 12px 0;background:var(--sunk);color:var(--faint);
+  border:1px solid transparent;border-left:1px solid var(--paper)}
+button.soundx:hover{color:var(--bad);border-color:var(--rule)}
+.soundwrap.gone button.sound{opacity:.45;text-decoration:line-through}
+.soundwrap.gone button.soundx{color:var(--accent)}
 span.sound{font-family:var(--mono);font-size:11.5px;padding:3px 9px;
   border-radius:12px;background:var(--sunk);color:var(--muted);
   display:inline-block;margin-right:5px}
@@ -336,6 +345,20 @@ span.sound{font-family:var(--mono);font-size:11.5px;padding:3px 9px;
 .tidyrow.on{border-color:var(--accent)}
 .tidyrow input{width:18px;height:18px;flex:none;accent-color:var(--accent)}
 .tidytags{flex:1;min-width:0;display:flex;flex-wrap:wrap;gap:4px}
+.heardgroup{border-top:1px solid var(--rule);padding:12px 0 6px}
+.heardhead{display:flex;align-items:baseline;gap:10px;margin-bottom:8px}
+.heardhead strong{font-size:15px}
+.heardhead button{margin-left:auto;min-height:30px;padding:4px 12px;font-size:13px}
+.heardrow{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+/* Two blanket rules have to be opted out of here, and both are deliberate:
+   audio{display:none} exists because the recordings view drives a hidden
+   player from its own transport, and button{flex:1 1 auto} makes toolbar
+   buttons share a row. Left alone, the players were invisible and every
+   button stretched to a thousand pixels. */
+.heardaudio{display:block;height:32px;flex:1 1 auto;min-width:220px;max-width:520px}
+.heardrow button, .heardhead button{flex:0 0 auto}
+.heardwords{font-size:12.5px;color:var(--muted);margin:2px 0 10px;
+  padding-left:2px}
 .pager{display:flex;align-items:center;justify-content:center;gap:14px;
   padding:12px 4px;margin-top:6px}
 .pager.top{margin:0 0 8px;padding-top:4px;border-bottom:1px solid var(--rule)}
@@ -453,6 +476,7 @@ html{scroll-padding-top:120px}
     <button id="tabRec" role="tab" aria-controls="viewRec" aria-selected="false" tabindex="-1">Recordings</button>
     <button id="tabPpl" role="tab" aria-controls="viewPpl" aria-selected="false" tabindex="-1">People</button>
     <button id="tabNotes" role="tab" aria-controls="viewNotes" aria-selected="false" tabindex="-1">Notes</button>
+    <button id="tabHeard" role="tab" aria-controls="viewHeard" aria-selected="false" tabindex="-1">Heard</button>
     <button id="tabTidy" role="tab" aria-controls="viewTidy" aria-selected="false" tabindex="-1">Clear out</button>
   </nav>
 
@@ -830,6 +854,29 @@ html{scroll-padding-top:120px}
     </div>
   </div>
 
+  <div class="view" id="viewHeard" role="tabpanel" aria-labelledby="tabHeard" tabindex="0" hidden>
+    <div class="card">
+      <h2>Everything that was not speech</h2>
+      <div style="font-size:13px;color:var(--muted);line-height:1.55">
+        What a second model heard in your recordings, from 527 everyday sound
+        classes — the room and the keyboard left out. <strong>Rarest first</strong>:
+        a turkey heard once is why this page is worth opening, and the sound
+        filter in Recordings sorts by count, which buries every one-off under
+        Speech and Typing.
+        <br><br>
+        Press play to hear the clip it came from. The tagger is confident about
+        broad categories and vague about specifics, so treat a name as a lead
+        rather than a fact — and it describes the whole thirty seconds, not a
+        moment in it.
+      </div>
+      <div class="toolbar2" style="margin-top:12px">
+        <button id="bHeardRefresh">Refresh</button>
+        <span class="count" id="heardTotal"></span>
+      </div>
+      <div id="heardList"><div class="empty">loading…</div></div>
+    </div>
+  </div>
+
   </main>
 
 
@@ -1121,6 +1168,93 @@ async function connect(){
   if (await ensureAuth()) connect();
 })();
 
+/* ---- what else was heard ----
+   The sound filter in the recordings list answers "show me the dogs". This
+   answers the question you cannot ask a filter, which is "what is in here that
+   I do not know about" -- and the answer turned out to be a horse, a police
+   siren, a sewing machine, a turkey and a cat, every one of them a single clip
+   sitting below Speech 1080 in a menu sorted by count. */
+async function loadHeard(){
+  const el = $("heardList");
+  let groups;
+  try{
+    groups = await (await fetch("/api/sounds/notable?per_tag=6")).json();
+  }catch(e){
+    el.innerHTML = '<div class="empty">could not read the archive</div>';
+    return;
+  }
+  $("heardTotal").textContent = groups.length
+    ? `${groups.length} sound${groups.length === 1 ? "" : "s"} that were not `
+      + `speech or room noise` : "";
+  if (!groups.length){
+    el.innerHTML = '<div class="empty">Nothing yet beyond speech and room '
+      + 'noise.</div>';
+    return;
+  }
+  el.innerHTML = "";
+  for (const g of groups){
+    const sec = document.createElement("div");
+    sec.className = "heardgroup";
+
+    const h = document.createElement("div");
+    h.className = "heardhead";
+    const name = document.createElement("strong");
+    name.textContent = g.tag;
+    const n = document.createElement("span");
+    n.className = "count";
+    n.textContent = `${g.clips} clip${g.clips === 1 ? "" : "s"}`;
+    const all = document.createElement("button");
+    all.textContent = "Show all";
+    all.title = `Filter the recordings list to ${g.tag}`;
+    all.onclick = () => {
+      showTab("rec");
+      $("fSound").value = g.tag;
+      soundFilter = g.tag;
+      resetPages();
+      loadClips();
+    };
+    h.append(name, n, all);
+    sec.appendChild(h);
+
+    for (const ex of g.examples){
+      const row = document.createElement("div");
+      row.className = "heardrow";
+
+      const when = document.createElement("span");
+      when.className = "count";
+      when.textContent = new Date(ex.modified * 1000).toLocaleString();
+
+      const score = document.createElement("span");
+      score.className = "sound";
+      score.textContent = ex.score == null ? "—" : ex.score.toFixed(2);
+
+      /* preload="none": forty-five of these on one page would otherwise
+         fetch forty-five clips nobody has asked to hear yet. */
+      const au = document.createElement("audio");
+      au.controls = true;
+      au.preload = "none";
+      au.src = "/api/audio/" + encodeURIComponent(ex.clip);
+      au.className = "heardaudio";
+
+      const open = document.createElement("button");
+      open.textContent = "Open";
+      open.onclick = () => { showTab("rec"); rememberScroll(); openClip(ex.clip); };
+
+      const words = document.createElement("div");
+      words.className = "heardwords";
+      words.textContent = ex.preview
+        ? ex.preview.slice(0, 110)
+        : "no transcript — nobody was speaking";
+
+      row.append(score, when, au, open);
+      sec.appendChild(row);
+      sec.appendChild(words);
+    }
+    el.appendChild(sec);
+  }
+}
+on("bHeardRefresh", "click", loadHeard);
+
 /* ---- clearing out ----
    Deleting a recording cannot be undone and the whole premise of the device is
    that it was listening while nobody was paying attention. So the rule here is
@@ -1235,6 +1369,7 @@ let current = null;
 function showTab(which){
   for (const [t, v, k] of [["tabDev","viewDev","dev"],["tabRec","viewRec","rec"],
                            ["tabPpl","viewPpl","ppl"],["tabNotes","viewNotes","notes"],
+                           ["tabHeard","viewHeard","heard"],
                            ["tabTidy","viewTidy","tidy"]]){
     const on = which === k;
     $(t).setAttribute("aria-selected", on);
@@ -1247,10 +1382,11 @@ function showTab(which){
   if (which === "rec") loadClips();
   if (which === "ppl"){ loadPeople(); loadVocab(); loadVoices(); pollBulk(); }
   if (which === "notes"){ loadAgent(); loadItems(); loadTopics(); loadDuplicates(); }
+  if (which === "heard") loadHeard();
   if (which === "tidy") loadTidy();
 }
 const TABS = [["tabDev","dev"],["tabRec","rec"],["tabPpl","ppl"],
-              ["tabNotes","notes"],["tabTidy","tidy"]];
+              ["tabNotes","notes"],["tabHeard","heard"],["tabTidy","tidy"]];
 for (const [id, key] of TABS) $(id).onclick = () => showTab(key);
 for (const [id] of TABS){
   $(id).addEventListener("keydown", e => {
@@ -3409,6 +3545,7 @@ async function renderTranscript(name){
      Shown above the speakers because it applies to the clip, not to a person,
      and clicking one asks the archive for everything else that sounds like
      it. */
+  const gone = new Set(t.sounds_removed || []);
   const heard = (t.sounds || []).filter(x => x[1] >= 0.10).slice(0, 8);
   if (heard.length){
     const row = document.createElement("div");
@@ -3418,18 +3555,49 @@ async function renderTranscript(name){
     lab.textContent = "heard:";
     row.appendChild(lab);
     for (const [n, v] of heard){
+      const wrap = document.createElement("span");
+      wrap.className = "soundwrap" + (gone.has(n) ? " gone" : "");
+
       const b = document.createElement("button");
       b.className = "sound" + (v >= 0.4 ? " strong" : "");
       b.textContent = `${n} ${Number(v).toFixed(2)}`;
-      b.title = `Show every recording with ${n} in it`;
+      b.title = gone.has(n)
+        ? `${n} is marked wrong on this clip`
+        : `Show every recording with ${n} in it`;
       b.onclick = () => {
+        if (gone.has(n)) return;
         clipGoBack();
         $("fSound").value = n;
         soundFilter = n;
         resetPages();
         loadClips();
       };
-      row.appendChild(b);
+
+      /* A tag is what you search with, so one that is wrong is worse than one
+         that is missing: it puts a clip in front of you under a name for
+         something that did not happen. The model is not deleted, only
+         overruled, and the same button puts it back. */
+      const x = document.createElement("button");
+      x.className = "soundx";
+      x.textContent = gone.has(n) ? "↺" : "×";
+      x.title = gone.has(n) ? `Put ${n} back` : `${n} is wrong — remove it`;
+      x.setAttribute("aria-label", x.title);
+      x.onclick = async (e) => {
+        e.stopPropagation();
+        x.disabled = true;
+        try{
+          const r = await fetch(`/api/clip/${encodeURIComponent(name)}/sounds`, {
+            method: "POST", headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({tag: n,
+                                  action: gone.has(n) ? "restore" : "remove"})});
+          if (r.ok) renderTranscript(name);
+          else { const b2 = await r.json().catch(() => ({}));
+                 log(b2.detail || "could not change that tag"); x.disabled = false; }
+        }catch(err){ log("could not reach the server"); x.disabled = false; }
+      };
+
+      wrap.append(b, x);
+      row.appendChild(wrap);
     }
     $("dSpeakers").appendChild(row);
   }

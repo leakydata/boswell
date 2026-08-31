@@ -1424,6 +1424,85 @@ async def api_clips(limit: int = 1000):
     return rows
 
 
+@app.post("/api/clip/{name}/sounds")
+async def api_clip_sounds(name: str, body: dict):
+    """Say that a sound tag on this clip is wrong, or put it back.
+
+    The tagger can be defensible and still wrong for the purpose. Talking to a
+    dog in a falsetto came back as "Pigeon, dove" -- which it genuinely sounded
+    like, and which is useless when the tags are what you search with, because
+    it puts a person's voice in front of you under the name of a bird.
+
+    Recorded as a removal rather than by deleting the tag, so the model's
+    actual output is still there, the correction survives re-transcription, and
+    it can be undone.
+    """
+    tag = (body.get("tag") or "").strip()
+    action = body.get("action", "remove")
+    if not tag:
+        raise HTTPException(400, "no tag given")
+    if action not in ("remove", "restore"):
+        raise HTTPException(400, "action must be remove or restore")
+
+    tp = pipeline.transcript_path(name)
+    if not os.path.exists(tp):
+        raise HTTPException(404, "not transcribed yet")
+    try:
+        t = json.load(open(tp))
+    except Exception:
+        raise HTTPException(500, "could not read the transcript")
+
+    if not any(n == tag for n, _ in (t.get("sounds") or [])):
+        raise HTTPException(404, f"{tag!r} was never heard in this clip")
+
+    removed = list(t.get("sounds_removed") or [])
+    if action == "remove":
+        if tag not in removed:
+            removed.append(tag)
+    else:
+        removed = [x for x in removed if x != tag]
+    t["sounds_removed"] = removed
+    atomicio.write_json(tp, t, indent=2, allow_nan=False)
+
+    try:
+        index_db.upsert_clip(name)
+    except Exception:
+        pass
+    device.event("log", text=(f"{name}: {tag!r} "
+                              + ("marked wrong" if action == "remove"
+                                 else "put back")))
+    return {"ok": True, "clip": name, "removed": removed}
+
+
+@app.get("/api/sounds/notable")
+async def api_sounds_notable(per_tag: int = 6):
+    """What the tagger heard that was neither speech nor the room.
+
+    Rarest first. A turkey heard once is the reason to open this page; Music
+    heard twenty-eight times is not, and the sound filter in the recordings
+    list sorts by count, which puts every one-off at the bottom -- so the
+    interesting things were the least reachable.
+
+    Scores come from the transcripts rather than the index, which keeps only
+    the names. That is a file read per clip, but only for clips that already
+    matched, and there are a hundred and fifty of them rather than fourteen
+    hundred.
+    """
+    groups = index_db.notable_sounds()
+    for g in groups:
+        for ex in g["examples"]:
+            try:
+                t = json.load(open(pipeline.transcript_path(ex["clip"])))
+                ex["score"] = next((round(float(v), 2)
+                                    for n, v in (t.get("sounds") or [])
+                                    if n == g["tag"]), None)
+            except Exception:
+                ex["score"] = None
+        g["examples"].sort(key=lambda e: -(e["score"] or 0))
+        g["examples"] = g["examples"][:per_tag]
+    return groups
+
+
 @app.get("/api/cleanup/groups")
 async def api_cleanup_groups():
     """Silent clips, grouped by the exact set of sounds heard in them.

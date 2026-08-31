@@ -1194,6 +1194,16 @@ class Worker:
         # to say about.
         sounds = self.tag_sounds(audio)
 
+        # A tag the owner has marked wrong stays wrong. _process rewrites the
+        # whole transcript, so without this a re-transcription would quietly
+        # restore every correction the model disagrees with.
+        removed = []
+        try:
+            prev = json.load(open(transcript_path(clip)))
+            removed = list(prev.get("sounds_removed") or [])
+        except Exception:
+            pass
+
         far = unattributed(segs, embeddings)
         if far:
             self.notify("log", text=(
@@ -1206,6 +1216,7 @@ class Worker:
                              "segments": segs, "speakers": names,
                              "embeddings": embeddings,
                              "sounds": sounds,
+                             "sounds_removed": removed,
                              "unattributed": far},
                             indent=2, allow_nan=False)
 
