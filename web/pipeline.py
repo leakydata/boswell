@@ -962,14 +962,27 @@ def is_hallucinated_silence(segments, voices=None):
 SOUND_MODEL = "MIT/ast-finetuned-audioset-10-10-0.4593"
 SOUND_KEEP = 10          # tags stored per clip
 
-# Listening in windows rather than in one gulp. Five seconds is long enough to
-# hold an event and short enough that a two-second bark is most of it; the half
-# overlap means nothing falls between two windows. Eleven passes over a
-# thirty-second clip costs 153 ms against 24 ms for one -- six times as much of
-# a thing that was already free, and 1.3% of what transcribing the same clip
-# costs.
-SOUND_WINDOW = 5.0       # seconds per window
-SOUND_HOP = 2.5          # seconds between windows
+# Listening in windows rather than in one gulp, and how wide.
+#
+# Narrow windows find a short event that a long one averages away, and every
+# extra window is another chance for the model to cross a threshold on noise.
+# Measured both, over 20 clips known to hold a dog and 96 that do not, counting
+# detections of things this house does not contain:
+#
+#     windows            dogs found   heartbeats   ms/clip
+#     whole clip (1)        4/20           0          24
+#     15s / 15s  (2)        8/20           0          27
+#     10s / 10s  (3)        8/20           0          38
+#     10s / 5s   (5)        9/20           0          68     <- here
+#     5s  / 2.5s (11)       8/20           4         156
+#
+# Five ten-second windows is better than eleven five-second ones on every axis
+# that matters: it finds one more dog, invents no heartbeats, and costs less
+# than half as much. Narrower was not more sensitive, only noisier -- a bark is
+# loud enough to carry a ten-second window, and the extra passes bought nothing
+# but chances to be wrong.
+SOUND_WINDOW = 10.0      # seconds per window
+SOUND_HOP = 5.0          # seconds between windows
 SOUND_WINDOW_MIN = 0.25  # a window has "seen" a sound at this score
 SOUND_WINDOW_KEEP = 0.35 # ...and needs this, in two windows, to be recorded
 SOUND_FLOOR = 0.02       # below this the label carries no information

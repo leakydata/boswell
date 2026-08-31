@@ -531,6 +531,22 @@ AMBIENT_SOUNDS = {
     # the notable list it is the single commonest thing the archive claims to
     # contain that never happened.
     "Heart sounds, heartbeat", "Heart murmur", "Throbbing",
+    # The same fan in a different costume, and the reason this list is not a
+    # tidy idea but a record of what one microphone in one room gets wrong.
+    # Widening the windows cured the heartbeats and produced 218 clips of
+    # Vehicle at 0.35 or better, 189 of them also Aircraft, nine of them with
+    # any speech at all, and the most confident recorded at 00:55 and 05:45.
+    # Played back, they are rushing air. A ten-second window of steady rumble
+    # is more convincing as a distant engine than a five-second one, which is
+    # the same failure as the heartbeat: a featureless continuous noise being
+    # given a name.
+    #
+    # These are hidden from the browsing list, not deleted and not unsearchable
+    # -- the sound filter still offers them, so a real car remains findable by
+    # asking. What they must not do is fill a page titled "what is in this
+    # archive" with something that never happened.
+    "Vehicle", "Aircraft", "Fixed-wing aircraft, airplane",
+    "Propeller, airscrew", "Engine",
 }
 
 

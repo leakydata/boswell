@@ -1030,13 +1030,30 @@ static void route_frame(const uint8_t *wire, uint16_t len)
      * costs latency, which is the trade the flash buffer exists to make. */
     /* Strict order: the frame just captured goes behind the queue. With
      * live-first the backlog trickles out alongside instead. */
+    /* Every captured frame is a delivery attempt, whichever way it goes.
+     *
+     * This used to be called only from the strict-ordering branch below,
+     * which meant the guard was switched off for anyone running live-first --
+     * and live-first is the safer setting for the other failure, so the two
+     * protections were mutually exclusive without either saying so.
+     *
+     * It cost a night. The device held a link it believed was up and
+     * subscribed, delivered nothing for three hours, filled its two megabytes
+     * of flash, and then overwrote them: 33973 frames dropped, and the eight
+     * minutes still on the chip were unreadable because the cursor no longer
+     * described the bytes underneath it. The host meanwhile could connect and
+     * discover zero services, so nothing on this side could recover it either;
+     * only a reboot cleared it.
+     *
+     * The counter of failed sends could not have seen it: in strict ordering
+     * no send is attempted at all, and a half-open link can accept frames into
+     * nothing. What is always true is that audio should be leaving a device
+     * that believes it has a subscriber. */
+    ble_audio_note_delivery_attempt();
+
     if (qspi_store_pending() > 0 && g_state.buffering &&
         !g_state.backlog_mode && qspi_store_ready()) {
         qspi_store_push(wire, (uint8_t)len);
-        /* This branch never touches the radio, so a counter of failed sends
-         * cannot see a link that has died underneath it. Say that we tried;
-         * the guard measures how long since anything actually left. */
-        ble_audio_note_delivery_attempt();
         return;
     }
 

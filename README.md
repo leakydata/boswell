@@ -181,8 +181,8 @@ names what it hears from 527 everyday classes. It is not a speech model and
 does not care whether anyone spoke, which is the point: it is the only thing
 that can tell an empty room from a dog.
 
-It listens in **five-second windows overlapping by half**, not to the whole
-clip at once. A short event inside a long recording is invisible to a single
+It listens in **ten-second windows overlapping by half** — five passes over a
+thirty-second clip — not to the whole clip at once. A short event inside a long recording is invisible to a single
 verdict over thirty seconds, and the difference is not marginal:
 
 | | whole clip | windowed |
@@ -198,14 +198,22 @@ The whole-clip score is kept and the stronger of the two wins, because a
 *constant* sound loses by being chopped up exactly as a brief one loses by
 being averaged — windowing alone dropped a fan from 0.109 to 0.083.
 
-A window-only find must appear in **two** windows. Best-of-eleven gives noise
-eleven chances to cross a threshold and it takes them: across 120 clips it
-added a sheep, an oink, a neigh and six heartbeats to a house containing a dog
-and a computer. The two-window rule left every one of those behind.
+A window-only find must appear in **two** windows. Best-of-N gives noise N
+chances to cross a threshold and it takes them.
 
-It costs 153 ms a clip against 24 ms for a single pass — six times as much of
-something that was already free, and 1.3% of what transcribing the same clip
-costs.
+Ten seconds rather than five, measured over 20 clips known to hold a dog and
+96 that do not:
+
+| windows | dogs found | phantom heartbeats | ms/clip |
+|---|---|---|---|
+| whole clip (1) | 4/20 | 0 | 24 |
+| 10s / 10s (3) | 8/20 | 0 | 38 |
+| **10s / 5s (5)** | **9/20** | **0** | **68** |
+| 5s / 2.5s (11) | 8/20 | 4 | 156 |
+
+Narrower was not more sensitive, only noisier: a bark is loud enough to carry
+a ten-second window, and the extra passes bought nothing but chances to be
+wrong. 68 ms a clip is 0.7% of what transcribing the same clip costs.
 
 What it is used for: finding things (`Recordings` has a sound filter, `Heard`
 lists everything that was not speech or room noise, rarest first, with a player
@@ -224,9 +232,21 @@ Its limits, measured. It misses a quiet laugh entirely — 0.000 in every
 window, on a clip whose owner confirms he laughed. It hedges across
 neighbouring classes rather than committing (Dog, Animal and Domestic animals
 within 0.16 of each other). It describes a window rather than an instant. And
-it hears this room's fan as a body: 75 clips came back with a heartbeat in
-them, 70 of those also carrying Hum, 65 Throbbing and 43 Heart murmur, so that
-cluster is treated as room noise rather than as an event.
+it keeps finding this room's fan and naming it something else.
+
+Three times now, each cured and each replaced by the next. At five-second
+windows it heard a body: 75 clips with a heartbeat, 70 of those also Hum, 65
+Throbbing, 43 Heart murmur. Widening to ten seconds cured that — one clip left
+— and produced 218 clips of Vehicle at 0.35+, 189 also Aircraft, nine with any
+speech, the most confident at 00:55 and 05:45. Played back they are rushing
+air; the device's owner said it "did sound a bit like an aircraft engine close
+up", which is the whole difficulty: the model is not being stupid, a fan
+blowing into a microphone genuinely resembles a prop engine. It is simply
+useless for finding things, which is the only thing the tags are for.
+
+Both clusters are hidden from the browsing list and left searchable, so a real
+car is still findable by asking for it. What they must not do is fill a page
+titled "what is in this archive" with something that never happened.
 
 ### What the status light means
 

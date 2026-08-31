@@ -1070,3 +1070,51 @@ class TestSureVersusMerelyPossible:
         cols = {r[1] for r in c.execute("PRAGMA table_info(clips)")}
         c.close()
         assert "sounds_strong" in cols
+
+
+class TestTheFanKeepsGettingANewName:
+    """The same rushing air, named three different things by the same model.
+
+    At five-second windows it was a heartbeat: 75 clips, 70 of them also Hum,
+    43 also Heart murmur. Widening the windows cured that and produced 218
+    clips of Vehicle, 189 also Aircraft, the most confident recorded at 00:55
+    and 05:45. Played back, both are a fan blowing into a microphone.
+
+    The device's owner, hearing it: "it did sound a bit like an aircraft engine
+    close up". That is the difficulty in one line -- the model is not being
+    stupid, and the tag is still useless, because a tag is for finding things.
+
+    Hidden from browsing, kept searchable: a real car remains findable by
+    asking for it, and cannot fill a page titled "what is in this archive".
+    """
+
+    def _index(self, tmp_path, monkeypatch, sounds):
+        import json, index_db, soundfile as sf, numpy as np
+        monkeypatch.setattr(index_db, "DB_PATH", str(tmp_path / "index.db"))
+        monkeypatch.setattr(index_db, "_local", type(index_db._local)())
+        data = tmp_path / "data"
+        (data / "transcripts").mkdir(parents=True)
+        monkeypatch.setattr(index_db, "DATA", str(data))
+        wav = data / "c.wav"
+        sf.write(str(wav), np.zeros(16000, dtype="float32"), 16000)
+        tp = data / "transcripts" / "c.json"
+        tp.write_text(json.dumps({"clip": "c.wav", "segments": [],
+                                  "sounds": sounds, "sounds_removed": []}))
+        index_db.upsert_clip("c.wav", transcript_path=str(tp), wav_path=str(wav))
+        return index_db
+
+    def test_the_engine_costume_is_not_browsable(self, tmp_path, monkeypatch):
+        db = self._index(tmp_path, monkeypatch,
+                         [["Vehicle", 0.58, 5.0], ["Aircraft", 0.46, 5.0]])
+        assert db.notable_sounds() == []
+
+    def test_but_it_is_still_searchable(self, tmp_path, monkeypatch):
+        """A real car has to stay findable by someone who asks for one."""
+        db = self._index(tmp_path, monkeypatch, [["Vehicle", 0.58, 5.0]])
+        assert [r["name"] for r in db.sound_vocabulary()] == ["Vehicle"]
+
+    def test_a_dog_in_the_same_clip_still_shows(self, tmp_path, monkeypatch):
+        """Suppressing the fan must not suppress what happened beside it."""
+        db = self._index(tmp_path, monkeypatch,
+                         [["Vehicle", 0.58, 5.0], ["Dog", 0.57, 8.0]])
+        assert [g["tag"] for g in db.notable_sounds()] == ["Dog"]
