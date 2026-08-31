@@ -477,3 +477,35 @@ def test_a_narrow_win_over_a_person_is_refused(db):
 
     r = db.match(vec(92))
     assert r["decision"] != "matched", "too close to a person to write a name"
+
+
+def test_an_emptied_store_is_not_refilled_from_the_legacy_files(db, tmp_path):
+    """Emptying the store on purpose must not be undone by the next restart.
+
+    migrate() read "no voiceprints" as "first run" and imported the old
+    npz/json. Somebody who had deliberately cleared the store, to rebuild it by
+    hand after references were contaminated, got five people back on the next
+    restart -- and without their kinds, so a YouTube channel returned as a
+    person. From the outside the wipe looked as though it had silently failed.
+    """
+    import json, os
+    import numpy as np
+    # a legacy pair sitting where migrate() looks
+    meta = {"Somebody": {"samples": [{"clip": "old.wav", "seconds": 10.0}]}}
+    with open(db.LEGACY_META, "w") as f:
+        json.dump(meta, f)
+    np.savez(db.LEGACY_CENTROIDS, **{"Somebody": np.eye(1, 256)[0]})
+
+    first = db.migrate()
+    assert os.path.exists(db.MIGRATED_MARK), "the first import leaves a marker"
+
+    # now empty it, as a person rebuilding by hand would
+    c = db._conn()
+    c.execute("DELETE FROM people")
+    c.commit()
+    assert c.execute("SELECT COUNT(*) n FROM voiceprints").fetchone()["n"] == 0
+
+    again = db.migrate()
+    assert again["migrated"] is False
+    assert "already" in again["reason"]
+    assert c.execute("SELECT COUNT(*) n FROM people").fetchone()["n"] == 0

@@ -61,6 +61,9 @@ DB = os.path.join(DATA, "speakers.db")
 LEGACY_CENTROIDS = os.path.join(DATA, "speakers.npz")
 LEGACY_SAMPLES = os.path.join(DATA, "speaker_samples.npz")
 LEGACY_META = os.path.join(DATA, "speakers.json")
+# Written once the legacy files have been read, so emptying the store on
+# purpose is not mistaken for a fresh install and undone.
+MIGRATED_MARK = os.path.join(DATA, ".speakers_migrated")
 
 # ---------------------------------------------------------------------------
 # Thresholds.
@@ -1113,6 +1116,21 @@ def migrate(c=None):
     try:
         if c.execute("SELECT COUNT(*) n FROM voiceprints").fetchone()["n"]:
             return {"migrated": False, "reason": "store is not empty"}
+        # An empty store is not the same thing as a new install.
+        #
+        # This read "no voiceprints, so this must be a first run" and imported
+        # the August files. Somebody who deliberately emptied the store -- to
+        # rebuild it by hand after references had been contaminated -- got five
+        # people back on the next restart, without their kinds, so a YouTube
+        # channel returned as a person. The wipe looked like it had silently
+        # failed.
+        #
+        # A marker written after the first import says the difference. Once the
+        # legacy files have been read, they are never read again, whatever the
+        # store looks like afterwards.
+        if os.path.exists(MIGRATED_MARK):
+            return {"migrated": False, "reason": "the legacy files were already "
+                                                 "imported once"}
 
         meta = {}
         if os.path.exists(LEGACY_META):
@@ -1163,6 +1181,11 @@ def migrate(c=None):
                            time.time()))
                 n_prints += 1
         c.commit()
+        try:
+            with open(MIGRATED_MARK, "w") as fh:
+                fh.write(f"{n_people} people, {n_prints} voiceprints\n")
+        except OSError:
+            pass          # the import worked; the marker is a convenience
         return {"migrated": True, "people": n_people, "voiceprints": n_prints}
     finally:
         if own:
