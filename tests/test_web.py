@@ -1723,3 +1723,43 @@ class TestSmallSlotsGetACoreToo:
         i = src.index("if n < self.SPLIT_MIN_TURNS:")
         block = src[i:src.index("\n\n", i)]
         assert '"core": core' in block and '"medoid": medoid' in block
+
+
+class TestTheCoreAlwaysExists:
+    """An absolute similarity bar fails the slots that need rescuing most.
+
+    A narrator whose turns agree at 0.297 -- poor far-field audio, and 1.8
+    second turns are near the limit of what the embedder can do -- has almost
+    nothing clearing 0.60, so the core came back empty and the slot stayed
+    unusable. That was the case the rescue existed for and the one it refused:
+    two voices holding 17 of the 28 remaining locked-out minutes.
+    """
+
+    def _source(self):
+        import os
+        here = os.path.dirname(__file__)
+        with open(os.path.join(here, "..", "web", "pipeline.py"),
+                  encoding="utf-8") as f:
+            return f.read()
+
+    def test_the_absolute_bar_is_tried_first(self):
+        src = self._source()
+        i = src.index("medoid = int(np.argmax(S.sum(axis=1)))")
+        block = src[i:src.index("if n < self.SPLIT_MIN_TURNS:", i)]
+        assert "self.CORE_MIN" in block
+        assert block.index("self.CORE_MIN") < block.index("if len(core) < 2")
+
+    def test_it_falls_back_to_the_agreeing_half(self):
+        src = self._source()
+        i = src.index("if len(core) < 2 and n >= 2:")
+        block = src[i:src.index("if n < self.SPLIT_MIN_TURNS:", i)]
+        assert "-float(S[medoid, i])" in block, "sorted by likeness to the medoid"
+        assert "n // 2" in block
+
+    def test_it_is_still_a_subset_and_not_everything(self):
+        """Taking all the turns would be the pooled vector again, which is what
+        this exists to avoid."""
+        src = self._source()
+        i = src.index("if len(core) < 2 and n >= 2:")
+        block = src[i:src.index("if n < self.SPLIT_MIN_TURNS:", i)]
+        assert "order[:max(2, n // 2)]" in block

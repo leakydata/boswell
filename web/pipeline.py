@@ -1501,6 +1501,23 @@ class Worker:
         # flag was ever protecting against.
         medoid = int(np.argmax(S.sum(axis=1)))
         core = [i for i in range(n) if float(S[medoid, i]) >= self.CORE_MIN]
+        # An absolute bar is the wrong shape for the slots that need this most.
+        #
+        # A narrator whose turns agree at 0.297 -- poor far-field audio, and
+        # 1.8-second turns are near the limit of what the embedder can do
+        # anyway -- has almost nothing clearing 0.60, so the core came back
+        # empty and the slot stayed unusable. That is the case the rescue
+        # exists for, and it was the one it refused: two voices holding 17 of
+        # the 28 remaining locked-out minutes, one of them saying "welcome
+        # back to Cody's Lab" across 24 clips.
+        #
+        # So when the absolute bar finds nothing, fall back to a relative one:
+        # the half of the turns most like the medoid. It is still the agreeing
+        # half, it still drops the turns dragging the slot down, and it always
+        # exists. Better than the pooled vector, which keeps everything.
+        if len(core) < 2 and n >= 2:
+            order = sorted(range(n), key=lambda i: -float(S[medoid, i]))
+            core = sorted(order[:max(2, n // 2)])
 
         # Splitting needs six turns to mean anything; a core needs two. That
         # was one test doing both jobs, and it cost the smaller slots
