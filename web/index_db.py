@@ -59,6 +59,15 @@ def _ensure(c):
         tokenize='porter unicode61'
     );
     """)
+
+    # How confident the sound tagger was that a person was audible, kept on
+    # the clip row so "no transcript, but something was talking" is a query
+    # rather than a scan of every transcript on disk. Added after the fact,
+    # so it is a migration: sqlite has no ADD COLUMN IF NOT EXISTS.
+    have = {r["name"] for r in c.execute("PRAGMA table_info(clips)")}
+    if "voice_tag" not in have:
+        c.execute("ALTER TABLE clips ADD COLUMN voice_tag REAL")
+        c.commit()
     c.commit()
 
 
@@ -81,6 +90,7 @@ def upsert_clip(name, transcript_path=None, wav_path=None):
                                          os.path.splitext(name)[0] + ".json")
     status, has_speech, edited, speakers, preview = "none", None, 0, [], ""
     segs = []
+    voice_tag = None
     if os.path.exists(tp):
         try:
             t = json.load(open(tp))
@@ -99,19 +109,26 @@ def upsert_clip(name, transcript_path=None, wav_path=None):
             edited = 1 if t.get("edited") else 0
             status = "done"
             has_speech = 1 if preview.strip() else 0
+            # AST's own opinion about whether a person was audible, which is a
+            # different question from whether the transcriber wrote anything.
+            # Where the two disagree is exactly the list worth looking at.
+            voice_tag = max([float(v) for n, v in (t.get("sounds") or [])
+                             if n in VOICE_TAGS] or [0.0])
         except Exception:
             status = "error"
 
     c.execute("""INSERT INTO clips(name, seconds, modified, status, has_speech,
-                                   edited, speakers, preview, indexed_at)
-                 VALUES(?,?,?,?,?,?,?,?,?)
+                                   edited, speakers, preview, indexed_at,
+                                   voice_tag)
+                 VALUES(?,?,?,?,?,?,?,?,?,?)
                  ON CONFLICT(name) DO UPDATE SET
                    seconds=excluded.seconds, modified=excluded.modified,
                    status=excluded.status, has_speech=excluded.has_speech,
                    edited=excluded.edited, speakers=excluded.speakers,
-                   preview=excluded.preview, indexed_at=excluded.indexed_at""",
+                   preview=excluded.preview, indexed_at=excluded.indexed_at,
+                   voice_tag=excluded.voice_tag""",
               (name, seconds, os.path.getmtime(wav), status, has_speech,
-               edited, json.dumps(speakers), preview, time.time()))
+               edited, json.dumps(speakers), preview, time.time(), voice_tag))
     c.execute("DELETE FROM segments WHERE clip = ?", (name,))
     if segs:
         c.executemany(
@@ -216,7 +233,12 @@ def list_clips(limit=1000):
              "has_speech": None if r["has_speech"] is None else bool(r["has_speech"]),
              "edited": bool(r["edited"]),
              "speakers": json.loads(r["speakers"] or "[]"),
-             "preview": r["preview"] or ""} for r in rows]
+             "preview": r["preview"] or "",
+             # What the sound tagger thought, so the interface can show where
+             # it disagrees with the transcriber without a second request.
+             "voice_tag": (None if r["voice_tag"] is None
+                           else round(float(r["voice_tag"]), 3))}
+            for r in rows]
 
 
 def clips_by_name(names):
@@ -351,3 +373,30 @@ def stats():
     segs = c.execute("SELECT COUNT(*) n FROM segments").fetchone()["n"]
     return {"clips": r["n"], "seconds": round(r["secs"] or 0, 1),
             "with_speech": r["with_speech"] or 0, "segments": segs}
+
+
+# Sound classes that mean a person was audible. Kept here rather than imported
+# from pipeline so indexing does not pull in torch.
+VOICE_TAGS = ("Speech", "Conversation", "Male speech, man speaking",
+              "Female speech, woman speaking", "Child speech, kid speaking",
+              "Narration, monologue", "Whispering")
+
+
+def missed_voice(limit=200, floor=0.05):
+    """Clips the sound tagger heard a voice in and the transcriber did not.
+
+    Two models trained on different tasks disagreeing about whether anyone
+    spoke. Measured, the disagreement is worth listening to: of the ones AST
+    was confident about, a re-run with the level fixed recovered real speech
+    in two thirds of them. This is the list to go through by hand -- the audio
+    is there, and nothing else is going to tell you what is on it.
+    """
+    c = _conn()
+    rows = c.execute(
+        """SELECT name, seconds, modified, status, voice_tag
+           FROM clips
+           WHERE (has_speech IS NULL OR has_speech = 0)
+             AND voice_tag IS NOT NULL AND voice_tag >= ?
+           ORDER BY voice_tag DESC, modified DESC
+           LIMIT ?""", (floor, limit)).fetchall()
+    return [dict(r) for r in rows]

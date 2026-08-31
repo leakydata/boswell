@@ -492,6 +492,7 @@ html{scroll-padding-top:120px}
         <option value="all">All recordings</option>
         <option value="voice">With voice</option>
         <option value="silent">Silent</option>
+        <option value="missed">Silent, but a voice was heard</option>
       </select>
       <select class="filter" id="fDate" aria-label="Filter by date">
         <option value="all">Any time</option>
@@ -1603,6 +1604,10 @@ on("bVoiceScan", "click", async () => {
 
 /* ---- recordings ---- */
 let clipFilter = "all", dateFilter = "all", query = "";
+// Below this the tagger is not saying much, and the measured control -- 31
+// clips it scored under 0.05 -- produced three words of stock phrase between
+// them. Listening to those is listening to a fan.
+const MISSED_VOICE_FLOOR = 0.05;
 let selectMode = false, selected = new Set();
 
 /* Bind through this rather than assigning onto $(id) directly.
@@ -2080,10 +2085,22 @@ async function loadClips(){
     const all = await (await fetch("/api/clips")).json();
     // has_speech is null until a clip is transcribed; an unknown clip is not
     // the same as a silent one, so it stays out of both filtered views.
+    // "Silent, but a voice was heard": the sound tagger found a person
+    // audible where the transcriber wrote nothing. Two models trained on
+    // different tasks disagreeing, and the disagreement is worth listening to
+    // -- of the ones AST was confident about, re-running with the level fixed
+    // recovered real speech in two thirds. Sorted by the tagger's confidence
+    // rather than by time, because that is the order worth working through.
     const clips = all
       .filter(c => clipFilter === "all" ? true
-        : clipFilter === "voice" ? c.has_speech === true : c.has_speech === false)
+        : clipFilter === "voice" ? c.has_speech === true
+        : clipFilter === "missed" ? (c.has_speech === false &&
+                                     (c.voice_tag || 0) >= MISSED_VOICE_FLOOR)
+        : c.has_speech === false)
       .filter(c => inDateRange(c.modified));
+    if (clipFilter === "missed"){
+      clips.sort((a, b) => (b.voice_tag || 0) - (a.voice_tag || 0));
+    }
     if (!all.length){
       $("clipCount").textContent = "";
       el.innerHTML = '<div class="empty">No recordings yet. Capture some audio on the Device tab.</div>';
@@ -2096,7 +2113,11 @@ async function loadClips(){
     if (!clips.length){
       const n = all.filter(c => c.has_speech === null).length;
       el.innerHTML = `<div class="empty">` +
-        (query ? `Nothing matches “${query}”.` : "Nothing matches these filters.") +
+        (query ? `Nothing matches “${query}”.`
+         : clipFilter === "missed"
+           ? "Nothing here — the transcriber found words in everything the "
+             + "sound tagger heard a voice in."
+           : "Nothing matches these filters.") +
         (n ? ` ${n} clip${n===1?"":"s"} not transcribed yet.` : "") + `</div>`;
       return;
     }
@@ -2123,8 +2144,16 @@ async function loadClips(){
           ? `<span class="box">${selected.has(c.name) ? "✓" : ""}</span>` : "") +
         `<div class="ci">
           <div class="cn">${new Date(c.modified*1000).toLocaleString()}</div>
-          <div class="cp">${highlight(c.preview) || "<i style='opacity:.6'>not transcribed</i>"}</div>
+          <div class="cp">${highlight(c.preview) || (
+            // A clip with no words but a voice tag is not the same as an
+            // empty one, and saying so is the whole point of this view.
+            c.has_speech === false && (c.voice_tag || 0) >= MISSED_VOICE_FLOOR
+              ? `<i style='opacity:.75'>no transcript — a voice was heard here</i>`
+              : "<i style='opacity:.6'>not transcribed</i>")}</div>
         </div>
+        ${c.has_speech === false && (c.voice_tag || 0) >= MISSED_VOICE_FLOOR
+          ? `<span class="cd" title="how sure the sound tagger was that somebody was audible">voice ${c.voice_tag.toFixed(2)}</span>`
+          : ""}
         <span class="cd">${c.seconds.toFixed(0)}s</span>
         <span class="tag ${c.status}">${c.status === "none" ? "new"
           : (c.has_speech === false ? "silent" : c.status)}</span>`;

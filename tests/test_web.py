@@ -563,3 +563,114 @@ class TestQuietClipsAreLifted:
     def test_empty_input_does_not_raise(self):
         import pipeline
         assert len(pipeline.normalise(np.zeros(0, dtype=np.float32))) == 0
+
+
+class TestTheSilenceGuardUsesTheRightEvidence:
+    """What the guard is allowed to delete, and what it is not.
+
+    It exists because the decoder writes "Thank you." over room tone, and the
+    diarizer is the check on that. But it used to read segment labels rather
+    than the diarizer's own findings, and those are different things: a label
+    lands on a segment only if assign_word_speakers overlapped a diarization
+    turn with it, and when the timings disagree the label goes missing while
+    the voice is still there. A clip of two people talking over a fan lost the
+    line "I have to go to the toilet right now." that way -- 37 characters,
+    under the limit, no label, and a voiceprint for SPEAKER_00 in the very
+    same transcript.
+    """
+
+    def test_a_stock_phrase_over_room_tone_is_still_removed(self):
+        import pipeline
+        segs = [{"text": "Thank you.", "speaker": None}]
+        assert pipeline.is_hallucinated_silence(segs, {}) is True
+
+    def test_a_found_voice_saves_a_short_line_with_no_label(self):
+        import pipeline
+        segs = [{"text": "I have to go to the toilet right now.", "speaker": None}]
+        assert len(segs[0]["text"]) <= pipeline.HALLUCINATION_CHARS
+        assert pipeline.is_hallucinated_silence(segs, {"SPEAKER_00": [0.1]}) is False
+
+    def test_a_labelled_segment_survives_regardless(self):
+        import pipeline
+        segs = [{"text": "Yeah.", "speaker": "SPEAKER_00"}]
+        assert pipeline.is_hallucinated_silence(segs, {}) is False
+
+    def test_long_text_is_never_touched(self):
+        import pipeline
+        segs = [{"text": "x" * (pipeline.HALLUCINATION_CHARS + 1), "speaker": None}]
+        assert pipeline.is_hallucinated_silence(segs, {}) is False
+
+    def test_no_segments_is_not_a_hallucination(self):
+        import pipeline
+        assert pipeline.is_hallucinated_silence([], {}) is False
+
+    def test_omitting_the_evidence_keeps_the_old_behaviour(self):
+        """Callers that cannot supply it must not silently stop guarding."""
+        import pipeline
+        segs = [{"text": "Okay.", "speaker": None}]
+        assert pipeline.is_hallucinated_silence(segs) is True
+
+
+class TestTheMissedVoiceQueue:
+    """Clips the sound tagger heard a voice in and the transcriber did not.
+
+    This is a list a person works through by hand, so what it must never do is
+    waste their time: the archive holds 1273 silent clips whose loudest tag is
+    white noise, a fan or a keyboard, and a queue that included those would be
+    unusable. It is also the only place the two models' disagreement is
+    visible at all.
+    """
+
+    def _db(self, tmp_path, monkeypatch):
+        import index_db
+        monkeypatch.setattr(index_db, "DB_PATH", str(tmp_path / "index.db"))
+        monkeypatch.setattr(index_db, "_local", type(index_db._local)())
+        return index_db
+
+    def _add(self, db, name, has_speech, voice_tag):
+        c = db._conn()
+        c.execute("""INSERT INTO clips(name, seconds, modified, status,
+                                       has_speech, edited, speakers, preview,
+                                       indexed_at, voice_tag)
+                     VALUES(?,30.0,1000.0,'done',?,0,'[]','',1000.0,?)""",
+                  (name, has_speech, voice_tag))
+        c.commit()
+
+    def test_a_silent_clip_with_a_voice_is_listed(self, tmp_path, monkeypatch):
+        db = self._db(tmp_path, monkeypatch)
+        self._add(db, "a.wav", 0, 0.63)
+        assert [r["name"] for r in db.missed_voice()] == ["a.wav"]
+
+    def test_a_clip_that_transcribed_is_not(self, tmp_path, monkeypatch):
+        db = self._db(tmp_path, monkeypatch)
+        self._add(db, "a.wav", 1, 0.90)
+        assert db.missed_voice() == []
+
+    def test_fan_and_keyboard_stay_out(self, tmp_path, monkeypatch):
+        """The 1273-clip majority. Below the floor there is nothing to hear."""
+        db = self._db(tmp_path, monkeypatch)
+        self._add(db, "fan.wav", 0, 0.01)
+        self._add(db, "keys.wav", 0, 0.0)
+        assert db.missed_voice() == []
+
+    def test_untagged_clips_stay_out(self, tmp_path, monkeypatch):
+        """NULL means never examined, which is not the same as no voice."""
+        db = self._db(tmp_path, monkeypatch)
+        self._add(db, "a.wav", 0, None)
+        assert db.missed_voice() == []
+
+    def test_the_most_promising_come_first(self, tmp_path, monkeypatch):
+        db = self._db(tmp_path, monkeypatch)
+        self._add(db, "faint.wav", 0, 0.10)
+        self._add(db, "clear.wav", 0, 0.78)
+        assert [r["name"] for r in db.missed_voice()] == ["clear.wav", "faint.wav"]
+
+    def test_the_column_is_added_to_an_existing_database(self, tmp_path, monkeypatch):
+        """It arrived after the table did; an old index must not break."""
+        import sqlite3
+        db = self._db(tmp_path, monkeypatch)
+        db._conn()                       # create at current schema
+        c = sqlite3.connect(str(tmp_path / "index.db"))
+        cols = {r[1] for r in c.execute("PRAGMA table_info(clips)")}
+        c.close()
+        assert "voice_tag" in cols

@@ -862,7 +862,7 @@ def normalise(audio):
     return (audio * gain).astype(audio.dtype)
 
 
-def is_hallucinated_silence(segments):
+def is_hallucinated_silence(segments, voices=None):
     """Whisper writing a phrase over room tone, with no voice to back it.
 
     The decoder's habit on near-silence is a short stock phrase -- "Thank you.",
@@ -874,11 +874,26 @@ def is_hallucinated_silence(segments):
     consolidation and re-transcription passes rewrite segments too and did not,
     so they put back 24 of these that the original transcription had removed --
     a guard is only as good as the number of paths that reach it.
+
+    `voices` is what the diarizer actually found in this audio -- its
+    embeddings -- and it is the difference between the question this asks and
+    the question it used to ask. Segment labels are not the same evidence: a
+    segment carries a speaker only if assign_word_speakers managed to overlap
+    a diarization turn with it, and when the two disagree about timing the
+    label goes missing while the voice is still plainly there.
+
+    That is not hypothetical. A clip of two people talking over a fan came back
+    as "I have to go to the toilet right now." -- thirty-seven characters,
+    under the limit -- with a voiceprint for SPEAKER_00 sitting in the same
+    transcript and no label on the segment. This deleted it. The person in the
+    recording recognised the sentence as one he had said.
     """
     if not segments:
         return False
     if any(x.get("speaker") for x in segments):
         return False
+    if voices:
+        return False          # a voice was found; the missing label is ours
     return sum(len(x.get("text", "")) for x in segments) <= HALLUCINATION_CHARS
 
 
@@ -1118,7 +1133,7 @@ class Worker:
         # decoder wrote. A real short utterance -- "Yeah." -- is still kept,
         # because it comes with a speaker. Only applied when diarization
         # actually ran, so disabling it does not silently discard everything.
-        if self._diar is not None and is_hallucinated_silence(segs):
+        if self._diar is not None and is_hallucinated_silence(segs, embeddings):
             self.notify("log", text=(
                 f"{clip}: no voice found; discarding "
                 f"{' '.join(x['text'] for x in segs)[:40]!r} as silence"))
@@ -1738,7 +1753,7 @@ class Worker:
             # the decoder wrote there is one short stock phrase it is room tone
             # rather than speech -- the same test _process applies, applied
             # here because this path rewrites the same field.
-            if is_hallucinated_silence(t.get("segments") or []):
+            if is_hallucinated_silence(t.get("segments") or [], embeddings):
                 self.notify("log", text=(
                     f"{item['clip']}: no voice found after re-diarizing; "
                     f"discarding "
