@@ -416,7 +416,7 @@ def test_a_label_that_is_not_a_person_cannot_name_anybody(db):
     """"Media" is offered in the interface as an answer to "who is speaking",
     and the server marks it media on the way through.
 
-    Naming a voice enrols a voiceprint, so without that a person called TV
+    Naming a voice enrols a voiceprint, so without that a person called Media
     would be assembled from every screen and radio voice in the house and would sit in
     the reference set competing to name real people. Media is what stops it:
     still matched, so the same television is not asked about twice, and capped
