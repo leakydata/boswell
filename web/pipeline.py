@@ -1013,6 +1013,7 @@ SOUND_WINDOW = 10.0      # seconds per window; the model truncates past 10.24
 SOUND_HOP = 5.0          # seconds between windows
 SOUND_WINDOW_MIN = 0.25  # a window has "seen" a sound at this score
 SOUND_WINDOW_KEEP = 0.35 # ...and needs this, in two windows, to be recorded
+SOUND_WHOLE_KEEP = 0.20  # or this once, looking at the clip whole
 SOUND_FLOOR = 0.02       # below this the label carries no information
 
 
@@ -1205,12 +1206,15 @@ class Worker:
             P, times = whole[None, :], [0.0]
         else:
             P = np.stack(frames)
-        # The whole clip is just the longest window, and for a sound that runs
-        # the entire thirty seconds it is the best one: the model is surest
-        # when it hears the most. Windowing alone made a fan that had scored
-        # 0.109 across the clip score 0.083 in its best five seconds -- a
-        # constant noise loses by being chopped up, exactly as a brief one
-        # loses by being averaged. So both are kept and the stronger wins.
+        # The extra pass is not the "long view" it was once justified as -- the
+        # model truncates at 10.24 s, so it is the first ten seconds again with
+        # different padding. It was removed on that reasoning and put back,
+        # because removing it cost real things: a turkey, a throat clearing, a
+        # coin dropped, five of the twenty-six clips with a dog in them.
+        #
+        # What it actually provides is a second opinion that does not need two
+        # windows to agree. A brief event near a window edge lands in one
+        # window only and fails the two-window rule; this is how it survives.
         peak = np.maximum(P.max(axis=0), whole)
         # How many windows saw it at all. Best-of-N gives noise N chances to
         # cross a line and it takes them: over 120 clips, best-of-eleven added
@@ -1225,10 +1229,18 @@ class Worker:
         for j in np.argsort(-peak)[:SOUND_KEEP * 3]:
             j = int(j)
             score = float(peak[j])
-            if float(whole[j]) >= SOUND_FLOOR:
-                pass                          # the whole clip heard it anyway
+            # Two windows agreeing, or one confident look at the whole clip.
+            #
+            # That second door used to open at SOUND_FLOOR, which is 0.02 and
+            # therefore no bar at all: measured over 50 clips it admitted
+            # Inside-small-room 39 times, Mechanical fan 29, Vehicle 23, Hum
+            # and Air conditioning 17 each -- the room and the fan's costumes,
+            # skipping the two-window rule entirely. SOUND_WHOLE_KEEP is the
+            # bar it should always have had.
+            if float(whole[j]) >= SOUND_WHOLE_KEEP:
+                pass
             elif not (score >= SOUND_WINDOW_KEEP and seen[j] >= 2):
-                continue                      # only one window: not enough
+                continue
             if score < SOUND_FLOOR:
                 continue
             out.append([labels[j], round(score, 3),

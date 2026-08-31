@@ -215,11 +215,19 @@ verdict over thirty seconds, and the difference is not marginal:
 The control is the neighbouring clip where the same person says "so you dogs"
 and no dog makes a sound: it stays at 0.001. It finds the bark, not the word.
 
-The whole-clip score is kept and the stronger of the two wins, because a
-*constant* sound loses by being chopped up exactly as a brief one loses by
-being averaged — windowing alone dropped a fan from 0.109 to 0.083.
+There is also one look at the whole clip — which, given the truncation above,
+is the first ten seconds again with different padding rather than a longer
+view. It was removed on exactly that reasoning and put back, because removing
+it cost a turkey, a throat clearing, a dropped coin and five of the twenty-six
+clips with a dog in them. What it really provides is a second opinion that does
+not need two windows to agree: a brief event near a window edge lands in one
+window only.
 
-A window-only find must appear in **two** windows. Best-of-N gives noise N
+So a tag is stored if **two windows agree at 0.35**, or **one whole-clip look
+reaches 0.20**. That second bar used to be 0.02, which is no bar at all —
+measured over 50 clips it admitted `Inside, small room` 39 times, `Mechanical
+fan` 29, `Vehicle` 23, `Hum` and `Air conditioning` 17 each, all skipping the
+two-window rule. Raising it to 0.20 keeps the turkey and drops the room. Best-of-N gives noise N
 chances to cross a threshold and it takes them.
 
 Ten seconds rather than five, measured over 20 clips known to hold a dog and
