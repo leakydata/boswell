@@ -274,8 +274,19 @@ whether the bar is in the right place.
 |---|---|---|---|
 | Dog | 4 of 26 | 0.37 | 4/4 real; two were whining, not barking |
 | Typing | 4 of 251 | 0.35 | 4/4 real, including one with a 0.53 fan reading |
+| Music | 4 of 46 | 0.35 | 3/4 clearly music; the fourth was video audio he did not call music |
 
-So 0.35 holds twice over. The typing case settles something the dog case could
+So 0.35 holds, with Music the softest of the three — a video playing is a
+plausible thing to hear music in and a plausible thing to be wrong about, and
+it is shown rather than hidden, so an error there costs attention rather than
+recordings.
+
+The stored time is worth something too, which was checked because it looked
+like it might not be. Per window on a clip whose music the listener placed at
+the start of what he was played: 0.033, 0.013, 0.357, 0.403, 0.017 across the
+five windows. The music really is absent from the first ten seconds and
+present from ten to twenty-five, and the peak is a peak rather than the
+argmax of five similar numbers. The typing case settles something the dog case could
 not: the clip with the strongest fan of the four was still real typing, so the
 fan does not contaminate every label — it produces its own, and the model can
 tell a keyboard from it.
