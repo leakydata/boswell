@@ -1118,3 +1118,55 @@ class TestTheFanKeepsGettingANewName:
         db = self._index(tmp_path, monkeypatch,
                          [["Vehicle", 0.58, 5.0], ["Dog", 0.57, 8.0]])
         assert [g["tag"] for g in db.notable_sounds()] == ["Dog"]
+
+
+class TestSoundsThatAreRightAndWronglyNamed:
+    """Two different kinds of wrong, needing two different treatments.
+
+    Played to the person who was there: both Patter clips were the fan and both
+    Arrow clips were the fan or a television, so those are hidden like the
+    other three fan costumes. But both Typewriter clips were real -- his dog's
+    toenails on the kitchen linoleum, one of them while he talked about treats.
+
+    Suppressing that would throw away a genuine signal about the room. Leaving
+    it alone would put a typewriter in a house that has none. So the label
+    stays, because it is what the model said and what the filter searches for,
+    and what it actually is travels beside it -- to the page, and through the
+    MCP to whatever reads this archive later.
+    """
+
+    def _index(self, tmp_path, monkeypatch, sounds):
+        import json, index_db, soundfile as sf, numpy as np
+        monkeypatch.setattr(index_db, "DB_PATH", str(tmp_path / "index.db"))
+        monkeypatch.setattr(index_db, "_local", type(index_db._local)())
+        data = tmp_path / "data"
+        (data / "transcripts").mkdir(parents=True)
+        monkeypatch.setattr(index_db, "DATA", str(data))
+        wav = data / "c.wav"
+        sf.write(str(wav), np.zeros(16000, dtype="float32"), 16000)
+        tp = data / "transcripts" / "c.json"
+        tp.write_text(json.dumps({"clip": "c.wav", "segments": [],
+                                  "sounds": sounds, "sounds_removed": []}))
+        index_db.upsert_clip("c.wav", transcript_path=str(tp), wav_path=str(wav))
+        return index_db
+
+    def test_the_fourth_fan_costume_is_hidden(self, tmp_path, monkeypatch):
+        db = self._index(tmp_path, monkeypatch,
+                         [["Patter", 0.60, 0.0], ["Arrow", 0.67, 0.0]])
+        assert db.notable_sounds() == []
+
+    def test_a_real_sound_with_a_wrong_name_is_kept(self, tmp_path, monkeypatch):
+        db = self._index(tmp_path, monkeypatch, [["Typewriter", 0.72, 0.0]])
+        g = db.notable_sounds()
+        assert [x["tag"] for x in g] == ["Typewriter"]
+        assert g[0]["really"] == "a dog's claws on a hard floor"
+
+    def test_an_ordinary_sound_carries_no_correction(self, tmp_path, monkeypatch):
+        db = self._index(tmp_path, monkeypatch, [["Dog", 0.56, 8.0]])
+        assert db.notable_sounds()[0]["really"] is None
+
+    def test_the_wrongly_named_one_is_still_searchable_by_its_name(
+            self, tmp_path, monkeypatch):
+        """The filter searches what the model said, not what it meant."""
+        db = self._index(tmp_path, monkeypatch, [["Typewriter", 0.72, 0.0]])
+        assert [r["name"] for r in db.sound_vocabulary()] == ["Typewriter"]

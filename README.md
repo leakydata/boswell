@@ -279,10 +279,23 @@ whether the bar is in the right place.
 | Typing | 4 of 251 | 0.35 | 4/4 real, including one with a 0.53 fan reading |
 | Music | 4 of 46 | 0.35 | 3/4 clearly music; the fourth was video audio he did not call music |
 | Sigh | 4 of 7 | 0.46 | 3/4 real sighs; the fourth was a throat clearing with distortion |
+| Arrow | 2 of 5 | 0.67 | 0/2 — a television, and the fan |
+| Patter | 2 of 5 | 0.56 | 0/2 — the fan, both times |
+| Typewriter | 2 of 5 | 0.71 | 2/2 real, and neither is a typewriter: it is the dog's claws on lino |
 
-**14 of 16 across four labels.** Small, and spread deliberately across the
+**14 of 16 on the four common labels**, spread deliberately across the
 confidence range rather than taken from the top of it, so it says the 0.35 bar
 is in a sensible place — not that the error rate is 12%.
+
+The bottom six were sampled precisely because they looked wrong, and were:
+0 of 6 by name. Two kinds of wrong, needing different handling. Arrow and
+Patter were a television and the fan, so they join the other fan costumes in
+the hidden list. Typewriter was real both times and is not a typewriter — it
+is a dog's claws on kitchen lino. Suppressing that would throw away a true
+signal about the room; leaving it alone would put a typewriter in a house that
+has none. The label stays, since it is what the model said and what the filter
+searches, and what it actually is travels beside it, through the interface and
+through the MCP.
 
 So 0.35 holds, with Music the softest of the three — a video playing is a
 plausible thing to hear music in and a plausible thing to be wrong about, and

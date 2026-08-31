@@ -547,6 +547,28 @@ AMBIENT_SOUNDS = {
     # archive" with something that never happened.
     "Vehicle", "Aircraft", "Fixed-wing aircraft, airplane",
     "Propeller, airscrew", "Engine",
+    # Costume four, found by playing the five-clip oddities to their owner:
+    # both Patter clips were the fan, and both Arrow clips were the fan or a
+    # television. Neither had anything to do with rain or archery. The memory
+    # note written after costume three said to expect a fourth; it took two
+    # days.
+    "Patter", "Arrow",
+}
+
+
+# Classes this microphone hears reliably and names wrongly.
+#
+# Different from AMBIENT_SOUNDS, which hides things that did not happen. These
+# did happen -- the sound is real and repeatable and worth finding -- but the
+# label points at the wrong object, so anyone reading it, a person or a model,
+# would take away something false.
+#
+# Typewriter is the dog's toenails on the kitchen linoleum. Both clips carrying
+# it turned out to be Eli moving around, one of them while his owner talked
+# about treats. Suppressing it would throw away a genuine signal about the
+# room; leaving it alone would put a typewriter in a house that has none.
+SOUND_ALIASES = {
+    "Typewriter": "a dog's claws on a hard floor",
 }
 
 
@@ -574,7 +596,8 @@ def notable_sounds(min_score=0.15):
                 "clip": r["name"], "seconds": r["seconds"],
                 "modified": r["modified"], "preview": r["preview"] or "",
             })
-    out = [{"tag": t, "clips": len(v), "examples": v} for t, v in by_tag.items()]
+    out = [{"tag": t, "clips": len(v), "examples": v,
+            "really": SOUND_ALIASES.get(t)} for t, v in by_tag.items()]
     # Rarest first, then alphabetically so the order does not shuffle between
     # loads for tags with the same count.
     out.sort(key=lambda g: (g["clips"], g["tag"]))

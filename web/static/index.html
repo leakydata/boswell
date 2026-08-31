@@ -1200,6 +1200,17 @@ async function loadHeard(){
     h.className = "heardhead";
     const name = document.createElement("strong");
     name.textContent = g.tag;
+    /* A class that is right about the sound and wrong about the object. The
+       name stays, because it is what the model said and what the filter
+       searches for; what it actually is goes beside it. */
+    if (g.really){
+      const alias = document.createElement("span");
+      alias.className = "count";
+      alias.style.fontStyle = "italic";
+      alias.textContent = `— really ${g.really}`;
+      name.appendChild(document.createTextNode(" "));
+      name.appendChild(alias);
+    }
     const n = document.createElement("span");
     n.className = "count";
     n.textContent = `${g.clips} clip${g.clips === 1 ? "" : "s"}`;
