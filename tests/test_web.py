@@ -1286,3 +1286,50 @@ class TestAnswersThatAreNotAName:
         for enrol in ("speaker_store", "add_voiceprint", "save_speaker",
                       "ingest_unknown", "name_person"):
             assert enrol not in code, f"pinning a line must not call {enrol}"
+
+
+class TestTheLabelsThatAreNotPeople:
+    """"TV", "Someone else", "Not speech" — offered in two places, enforced in
+    a third.
+
+    Naming a voice enrols a voiceprint, unlike pinning a line, so a person
+    called TV would be built out of every screen voice in the house and would
+    sit in the reference set competing to name real people. The server marks
+    these media on the way through: still matched, so the same television is
+    not asked about twice, and capped at "uncertain" so it can never put its
+    label on anybody by itself.
+
+    The spelling is the contract. "TV" typed as "Television" is a different
+    person and none of the enforcement applies, so the browser's list and the
+    server's list must agree, and this is what says so.
+    """
+
+    def _files(self):
+        import os
+        here = os.path.dirname(__file__)
+        with open(os.path.join(here, "..", "web", "server.py"), encoding="utf-8") as f:
+            server = f.read()
+        with open(os.path.join(here, "..", "web", "static", "index.html"),
+                  encoding="utf-8") as f:
+            page = f.read()
+        return server, page
+
+    def test_the_two_lists_are_the_same(self):
+        import re
+        server, page = self._files()
+        s = re.search(r"NOT_A_PERSON_NAMES = \(([^)]*)\)", server).group(1)
+        srv = set(re.findall(r'"([^"]+)"', s))
+        i = page.index("const NOT_A_PERSON")
+        ui = set(re.findall(r'\["([^"]+)",', page[i:i + 400]))
+        assert srv == ui, f"server has {srv}, the page offers {ui}"
+
+    def test_the_server_marks_them_media(self):
+        server, _ = self._files()
+        i = server.index("if name in NOT_A_PERSON_NAMES:")
+        block = server[i:i + 400]
+        assert "set_kind" in block and "KIND_MEDIA" in block
+
+    def test_they_are_offered_in_both_places(self):
+        _, page = self._files()
+        # the line editor's empty-field branch, and the voice namer's chips
+        assert page.count("NOT_A_PERSON") >= 3

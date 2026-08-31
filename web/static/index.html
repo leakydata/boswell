@@ -3796,6 +3796,22 @@ $("namerSave").onclick = saveName;
     }
   }catch(e){ namerPeople = []; }
 
+  /* The same three answers the line editor offers, because the question is
+     the same one and it is asked here far more often -- a voice off a screen
+     is a whole cluster, not one line.
+     Naming a voice enrols a voiceprint, unlike pinning a line, so the server
+     marks these as media on the way through: they keep matching future
+     television, and can never put their label on a real person. */
+  for (const [label, why] of NOT_A_PERSON){
+    const b = document.createElement("button");
+    b.textContent = label;
+    b.title = why + " — keeps the words, never becomes a person";
+    b.dataset.name = label;
+    b.style.borderStyle = "dashed";
+    b.onclick = () => { $("namerInput").value = label; saveName(); };
+    q.appendChild(b);
+  }
+
   filterNamerQuick();
   openSheet("namer", "namerInput");
 }

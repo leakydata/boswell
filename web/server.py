@@ -111,6 +111,11 @@ PREFS_PATH = os.path.join(DATA, "prefs.json")
 # nothing remembered it asserted the defaults -- so restarting the service
 # turned the voice gate off on a device that had correctly remembered it was
 # on. Worse than not remembering.
+# Labels that answer "who said this" without naming a person. Kept in one
+# place because the interface offers them, the server enforces what they mean,
+# and a second spelling of any of them would be a different person.
+NOT_A_PERSON_NAMES = ("TV", "Someone else", "Not speech")
+
 PREF_KEYS = ("armed", "vad", "backlog_mode", "gain", "led_level", "led_mode",
              "fast_charge", "mic_power_save", "rate16",
              "agent_enabled", "agent_model", "agent_idle_seconds")
@@ -3040,6 +3045,30 @@ async def api_label(body: dict):
             propagated = _rematch_clips()
         except Exception as e:
             print(f"rematch after naming failed: {e}", flush=True)
+
+    # Some answers are not a person, and must never behave like one.
+    #
+    # "TV", "Someone else" and "Not speech" are offered in the interface so a
+    # voice that nobody needs to identify can be labelled and got out of the
+    # way. They go through naming like any other label, because the point is
+    # that the words get attributed -- but a person called TV, built from
+    # every screen voice in the house, is exactly the thing that must not sit
+    # in the reference set competing to name real people.
+    #
+    # Marking it media is what the store already has for this: it stays
+    # visible, stays searchable, keeps matching future television so the same
+    # voice is not asked about twice, and is capped at "uncertain" so it can
+    # never put its label on anybody by itself.
+    #
+    # Enforced here rather than in the browser so it holds however the name
+    # arrives -- the namer, the API, or a script.
+    if name in NOT_A_PERSON_NAMES:
+        try:
+            import speaker_store
+            pid = speaker_store.person_id_for(name)
+            speaker_store.set_kind(pid, speaker_store.KIND_MEDIA)
+        except Exception as e:
+            print(f"could not mark {name!r} as media: {e}", flush=True)
 
     device.event("log", text=(f"named {spk} as {name}"
                               + (f", voiceprint now {count} sample(s)" if enrolled
