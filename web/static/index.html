@@ -744,6 +744,16 @@ html{scroll-padding-top:120px}
         <button id="bVoiceIgnored">Show set aside</button>
         <button id="bVoiceRefresh">Refresh</button>
       </div>
+      <!-- Most of the queue is one-clip voices, and after enrolling a channel
+           a great many of them are the same channel again below the automatic
+           bar. Finding those meant reading every entry. -->
+      <div class="toolbar2" style="margin-top:2px">
+        <select class="filter" id="fVoiceNear" aria-label="Show voices closest to">
+          <option value="">Closest to anyone</option>
+        </select>
+        <span class="count" id="voiceNearCount"></span>
+        <button id="bVoiceConfirmAll" hidden></button>
+      </div>
       <div id="voiceQueue"><div class="empty">loading…</div></div>
     </div>
 
@@ -1792,6 +1802,42 @@ let showIgnored = false;
    whole backlog. */
 let recentOnly = false;
 
+/* Which name the queue is being narrowed to, and the voices it leaves. */
+let voiceNear = "";
+let voiceNearShown = [];
+
+/* Confirming one at a time is right when each is a different person. After
+   enrolling a channel it is the same channel over and over, below the bar that
+   would have written it automatically, and there were 22 of them in a queue of
+   47. This offers them together -- but only ever the ones on screen, only for
+   the name they are already closest to, and it says how confident the weakest
+   of them is before anything is written. */
+/* The store's own floor for considering a match at all (MATCH_LOW). Below it
+   a score is not weak evidence, it is no evidence, and naming in bulk must not
+   go anywhere the matcher would refuse to go alone. A test compares this
+   against speaker_store so the two cannot drift apart. */
+const BULK_NAME_FLOOR = 0.55;
+
+function syncVoiceNear(){
+  const b = $("bVoiceConfirmAll");
+  const n = voiceNearShown.length;
+  const sure = voiceNearShown.filter(v => v.candidates[0].score >= BULK_NAME_FLOOR);
+  const weak = n - sure.length;
+  $("voiceNearCount").textContent = voiceNear && n
+    ? `${n} voice${n === 1 ? "" : "s"} closest to ${voiceNear}`
+      + (weak ? ` · ${weak} too uncertain to name in bulk` : "") : "";
+  b.hidden = !(voiceNear && sure.length);
+  if (!b.hidden){
+    const worst = Math.min(...sure.map(v => v.candidates[0].score));
+    b.textContent = `Name ${sure.length} as ${voiceNear}`;
+    b.title = `Only the ones scoring ${BULK_NAME_FLOOR} or better. The least `
+            + `certain of those is ${worst.toFixed(2)}`
+            + (weak ? `; ${weak} weaker one${weak === 1 ? " is" : "s are"} left `
+                    + `for you to listen to` : "")
+            + `. Each keeps its own voiceprint; nothing is merged.`;
+  }
+}
+
 async function loadVoices(){
   const el = $("voiceQueue");
   try{
@@ -1810,8 +1856,31 @@ async function loadVoices(){
         + '</div>';
       return;
     }
-    el.innerHTML = "";
+    /* The names the queue is actually near, built from the queue itself so it
+       never offers a name that would show nothing. */
+    const sel = $("fVoiceNear");
+    const near = new Map();
     for (const v of q){
+      const c = (v.candidates || [])[0];
+      if (c && c.name) near.set(c.name, (near.get(c.name) || 0) + 1);
+    }
+    const keep = sel.value;
+    sel.innerHTML = '<option value="">Closest to anyone</option>';
+    for (const [n, k] of [...near].sort((a, b) => b[1] - a[1])){
+      const o = document.createElement("option");
+      o.value = n; o.textContent = `${n} (${k})`;
+      sel.appendChild(o);
+    }
+    sel.value = [...near.keys()].includes(keep) ? keep : "";
+    voiceNear = sel.value;
+
+    const shown = voiceNear
+      ? q.filter(v => (v.candidates || [])[0]?.name === voiceNear) : q;
+    voiceNearShown = voiceNear ? shown : [];
+    syncVoiceNear();
+
+    el.innerHTML = "";
+    for (const v of shown){
       const d = document.createElement("div");
       d.className = "row";
       d.style.cssText = "flex-direction:column;align-items:stretch;gap:8px";
@@ -1962,6 +2031,41 @@ async function loadVoices(){
     }
   }catch(e){ el.innerHTML = '<div class="empty">could not load voices</div>'; }
 }
+
+on("fVoiceNear", "change", () => { voiceNear = $("fVoiceNear").value; loadVoices(); });
+
+let voiceConfirmArmed = false;
+on("bVoiceConfirmAll", "click", async () => {
+  const list = voiceNearShown.filter(v => v.candidates[0].score >= BULK_NAME_FLOOR);
+  if (!list.length) return;
+  /* Two presses. This writes a name onto every clip of every voice in the
+     list, and a name is the thing the whole store is careful about. */
+  if (!voiceConfirmArmed){
+    voiceConfirmArmed = true;
+    $("bVoiceConfirmAll").textContent =
+      `Really name ${list.length} voice${list.length === 1 ? "" : "s"} as `
+      + `${voiceNear}?`;
+    setTimeout(() => { voiceConfirmArmed = false; syncVoiceNear(); }, 6000);
+    return;
+  }
+  voiceConfirmArmed = false;
+  const b = $("bVoiceConfirmAll");
+  b.disabled = true;
+  let done = 0, failed = 0;
+  for (const v of list){
+    b.textContent = `naming ${done + 1} of ${list.length}…`;
+    try{
+      const r = await fetch(`/api/voices/${v.person_id}/name`, {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({name: voiceNear})});
+      r.ok ? done++ : failed++;
+    }catch(e){ failed++; }
+  }
+  log(`named ${done} voice(s) as ${voiceNear}`
+      + (failed ? `, ${failed} failed` : ""));
+  b.disabled = false;
+  loadVoices(); loadPeople();
+});
 
 on("bVoiceRefresh", "click", loadVoices);
 /* Every voiceprint in the store was pooled over at most thirty seconds of

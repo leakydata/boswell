@@ -1387,3 +1387,54 @@ class TestWhichNonPersonLabelsLearn:
         s = self._server()
         i = s.index("if name in NOT_A_PERSON_NAMES:")
         assert "KIND_MEDIA" in s[i:i + 400]
+
+
+class TestNamingVoicesInBulk:
+    """Confirming a queue full of the same channel, without going too far.
+
+    After enrolling a YouTuber, most of the queue becomes that channel again
+    below the bar that would have named it automatically -- 18 of 40 entries in
+    one case. Confirming those one at a time is the work the enrolment was
+    supposed to remove.
+
+    The floor is the point. The weakest entry in that filtered list scored
+    0.29, which the matcher itself would not act on, so a bulk action offering
+    to name it is offering to be wrong eighteen times at once.
+    """
+
+    def _page(self):
+        import os
+        here = os.path.dirname(__file__)
+        with open(os.path.join(here, "..", "web", "static", "index.html"),
+                  encoding="utf-8") as f:
+            return f.read()
+
+    def test_the_bulk_floor_matches_the_store(self):
+        """It must not name anything the matcher would refuse to name alone."""
+        import re, sys, os
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "web"))
+        import speaker_store
+        page = self._page()
+        ui = float(re.search(r"const BULK_NAME_FLOOR = ([0-9.]+)", page).group(1))
+        assert ui == speaker_store.MATCH_LOW, \
+            f"the page bulk-names from {ui}, the store's floor is {speaker_store.MATCH_LOW}"
+
+    def test_the_weak_ones_are_excluded_not_hidden(self):
+        """They stay in the list to be listened to; only the button skips them."""
+        page = self._page()
+        i = page.index("function syncVoiceNear")
+        block = page[i:i + 1400]
+        assert "too uncertain to name in bulk" in block
+        assert "left \n" not in block
+
+    def test_the_action_filters_by_the_same_floor(self):
+        page = self._page()
+        i = page.index('on("bVoiceConfirmAll", "click"')
+        block = page[i:i + 400]
+        assert "BULK_NAME_FLOOR" in block
+
+    def test_it_takes_two_presses(self):
+        page = self._page()
+        i = page.index('on("bVoiceConfirmAll", "click"')
+        block = page[i:i + 900]
+        assert "voiceConfirmArmed" in block and "Really name" in block
