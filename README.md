@@ -199,6 +199,7 @@ recording?* — before the one you ask second. Every bright colour means yes.
 | colour | meaning |
 |---|---|
 | yellow | recording, but the flash chip is not available. Anything the radio cannot carry is lost rather than buffered. |
+| white | armed, but the microphone is producing nothing. The PDM driver can wedge and report every read empty forever while every flag still says it is capturing; the firmware rebuilds the stream, and shows this if that did not work. |
 
 Each is one steady colour, or in pulse mode that same colour flashed briefly —
 never a pattern to count. They are named constants in `ble_mic.ino`

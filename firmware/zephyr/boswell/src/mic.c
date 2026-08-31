@@ -26,15 +26,10 @@ K_MEM_SLAB_DEFINE_STATIC(mic_slab, BLOCK_BYTES, BLOCK_COUNT, 4);
 
 static const struct device *dmic_dev;
 static bool running;
+static uint8_t last_gain = 0x28;        /* 0 dB until told otherwise */
 
-int mic_init(void)
+static int mic_configure(void)
 {
-    dmic_dev = DEVICE_DT_GET(DT_NODELABEL(pdm0));
-    if (!device_is_ready(dmic_dev)) {
-        LOG_ERR("DMIC not ready");
-        return -ENODEV;
-    }
-
     struct pcm_stream_cfg stream = {
         .pcm_width = 16,
         .mem_slab  = &mic_slab,
@@ -67,6 +62,50 @@ int mic_init(void)
     return 0;
 }
 
+int mic_init(void)
+{
+    dmic_dev = DEVICE_DT_GET(DT_NODELABEL(pdm0));
+    if (!device_is_ready(dmic_dev)) {
+        LOG_ERR("DMIC not ready");
+        return -ENODEV;
+    }
+    return mic_configure();
+}
+
+/* Put the microphone back together after it has stopped producing anything.
+ *
+ * The driver can end up in a state where every read returns "No audio data to
+ * be read", forever, while the device still believes it is capturing: the
+ * capture loop reads, fails, sleeps five milliseconds and reads again, and
+ * nothing anywhere says a word. Found after a wearer spoke into the device for
+ * several seconds and no recording appeared -- pushes, pages and erases all
+ * frozen, the light still green, the driver logging that error five times a
+ * second for eleven minutes.
+ *
+ * A stop and start alone does not clear it; that was tried first and the
+ * counters did not move. The stream has to be configured again, which is why
+ * the configuration is its own function now.
+ */
+int mic_recover(void)
+{
+    LOG_WRN("microphone produced nothing; reconfiguring the PDM stream");
+    dmic_trigger(dmic_dev, DMIC_TRIGGER_STOP);
+    running = false;
+    k_sleep(K_MSEC(20));
+
+    int err = mic_configure();
+    if (err) {
+        LOG_ERR("PDM reconfigure failed (%d)", err);
+        return err;
+    }
+    mic_set_gain(last_gain);
+    err = mic_start();
+    if (err) {
+        LOG_ERR("PDM restart failed (%d)", err);
+    }
+    return err;
+}
+
 /* The DMIC API has no gain control and the devicetree binding exposes none,
  * so the PDM peripheral's gain register is set directly. Same units as the
  * Arduino build: 0x00 is -20 dB, 0x28 is 0 dB, 0x50 is +20 dB, half a dB per
@@ -76,6 +115,10 @@ void mic_set_gain(uint8_t gain)
     if (gain > 0x50) {
         gain = 0x50;
     }
+    /* Kept because dmic_configure resets the register, and a recovery that
+     * quietly dropped the microphone back to 0 dB would look like the fault
+     * had half-worked. */
+    last_gain = gain;
     nrf_pdm_gain_set(NRF_PDM0, gain, gain);
     LOG_INF("PDM gain %u (%d.%u dB)", gain,
             ((int)gain - 0x28) / 2, (((int)gain - 0x28) & 1) ? 5 : 0);

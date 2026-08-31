@@ -35,6 +35,7 @@ STATES = {
     "LED_IDLE_LINKED":  ("red",     (True,  False, False)),
     "LED_IDLE_WAITING": ("blue",    (False, False, True)),
     "LED_NO_FLASH":     ("yellow",  (True,  True,  False)),
+    "LED_NO_AUDIO":     ("white",   (True,  True,  True)),
 }
 
 
@@ -120,6 +121,7 @@ def test_the_page_paints_a_colour_with_one_hex_everywhere():
     for word, hexes in {
         "green": "#5ad07a", "cyan": "#4ad0d0", "red": "#e05a5a",
         "blue": "#4a90e0", "magenta": "#c060d0", "yellow": "#e0c04a",
+        "white": "#e8e8e8",
     }.items():
         found = set(re.findall(rf"{hexes}", page, re.I))
         assert found, f"{word} ({hexes}) is not used anywhere on the page"

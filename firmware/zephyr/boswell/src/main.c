@@ -106,6 +106,14 @@ static void usb_service(void)
     }
 }
 
+/* The microphone can stop producing audio while every flag still says it is
+ * running. Counted here rather than in mic.c because the capture loop is the
+ * only place that knows a read returned nothing. */
+#define MIC_DRY_MS   10000
+static uint32_t mic_dry_reads;
+static uint32_t mic_recoveries;
+static bool     mic_dead;
+
 /* ---------------------------------------------------------------- leds */
 
 /* The colours are defined once, in led.h, and named there. Brightness and
@@ -140,7 +148,9 @@ static void led_state(void)
      * Yellow is the only fault colour. Without it a device whose QSPI never
      * came up showed plain green: recording, healthy-looking, and quietly
      * unable to keep anything the radio could not carry. */
-    if (g_state.streaming && !qspi_store_ready()) {
+    if (g_state.streaming && mic_dead) {
+        led_set_colour(LED_NO_AUDIO);               /* white: capturing nothing */
+    } else if (g_state.streaming && !qspi_store_ready()) {
         led_set_colour(LED_NO_FLASH);               /* yellow: nowhere to buffer */
     } else if (g_state.streaming && !ble_audio_connected()) {
         led_set_colour(LED_BUFFERING);              /* magenta: into flash */
@@ -440,6 +450,8 @@ static int cmd_status(const struct shell *sh, size_t argc, char **argv)
     /* link and subscribed are reported apart. A host can hold a connection
      * without ever enabling notifications, which is a normal transient state
      * and looks identical to a dead radio if the two are merged. */
+    shell_print(sh, "mic recoveries=%u dry=%u dead=%d",
+                mic_recoveries, mic_dry_reads, mic_dead);
     shell_print(sh, "link=%d subscribed=%d streaming=%d gain=%u rate=%s mic=%d",
                 ble_audio_linked(), ble_audio_connected(), g_state.streaming,
                 g_state.gain, g_state.use16k ? "16k" : "8k", mic_running());
@@ -1078,8 +1090,33 @@ static void capture_fn(void *a, void *b, void *c)
             /* Must sleep, not just continue. dmic_read can fail immediately,
              * and a bare continue here spins without ever yielding. */
             k_sleep(K_MSEC(5));
+
+            /* A read that fails is ordinary. A read that fails every time for
+             * seconds is the microphone having stopped, and this loop used to
+             * treat the two the same: read, fail, sleep, read, for as long as
+             * it took anybody to notice. Measured once at eleven minutes, with
+             * the light still green and the wearer talking into it.
+             *
+             * Ten seconds is far longer than any real gap -- a block is twenty
+             * milliseconds -- and short enough to lose almost nothing. */
+            if (g_state.streaming &&
+                ++mic_dry_reads * 5 >= MIC_DRY_MS) {
+                mic_dry_reads = 0;
+                if (mic_recover() == 0) {
+                    mic_recoveries++;
+                } else {
+                    /* Rebuilding it did not help, so stop claiming to record:
+                     * the status light goes white and the host is told, rather
+                     * than everything looking healthy while nothing is
+                     * captured. */
+                    mic_dead = true;
+                }
+            }
             continue;
         }
+        /* Anything at all arrived, so whatever went wrong is over. */
+        mic_dry_reads = 0;
+        mic_dead = false;
 
         int count = got;
         if (!g_state.use16k) {

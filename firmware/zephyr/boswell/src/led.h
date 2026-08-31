@@ -31,7 +31,11 @@
  *   magenta  recording with no host -- into flash, to be sent later
  *   red      not recording, host connected
  *   blue     not recording, no host: advertising
- *   yellow   recording with no flash available. The only fault colour, and
+ *   white    armed, and the microphone is producing nothing. The PDM driver
+ *            can wedge and report every read as empty forever while every
+ *            flag still says it is capturing; this is that, after trying to
+ *            rebuild the stream and failing.
+ *   yellow   recording with no flash available. A fault colour, and
  *            the one that is not obvious: without it a device whose QSPI
  *            never came up looks perfectly healthy while quietly unable to
  *            keep anything the radio cannot carry.
@@ -44,6 +48,7 @@
 #define LED_IDLE_LINKED   true,  false, false   /* red     */
 #define LED_IDLE_WAITING  false, false, true    /* blue    */
 #define LED_NO_FLASH      true,  true,  false   /* yellow  */
+#define LED_NO_AUDIO      true,  true,  true    /* white   */
 
 int  led_init(void);
 /* What the LED *should* show. In pulse mode it is displayed briefly. */

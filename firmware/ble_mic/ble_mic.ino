@@ -446,6 +446,12 @@ static const LedColour LED_IDLE_WAITING  = { false, false, true,  "blue"    };
  * recordings. Anything the radio cannot carry in that state is gone, not
  * buffered, and the only warning was silence in the archive afterwards. */
 static const LedColour LED_NO_FLASH      = { true,  true,  false, "yellow"  };
+/* armed, and the microphone is producing nothing at all.
+ *
+ * Defined here to keep one vocabulary across both builds; only the Zephyr
+ * firmware detects the condition, because only it has the capture loop that
+ * counts empty reads. */
+static const LedColour LED_NO_AUDIO      = { true,  true,  true,  "white"   };
 
 static void setLed(const LedColour &c) { setLed(c.r, c.g, c.b); }
 

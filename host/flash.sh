@@ -49,11 +49,36 @@ enter_bootloader() {
 }
 enter_bootloader
 
+# Finding the bootloader once it is there.
+#
+# Matching only on the disk LABEL was not enough, and cost an attempt twice:
+# the board reached the bootloader and this loop sat through its full two
+# hundred seconds without seeing it, then found it immediately on the next
+# run. The label arrives from udev some time after the block device does, so a
+# scan that insists on it can miss the window entirely.
+#
+# So three signals, cheapest first, and the USB id is the authority: 2886:0045
+# is the bootloader, and if that is present the drive exists whether or not
+# anything has labelled it yet. The dfu request is repeated every twenty
+# seconds as well, in case the first one landed while the shell was busy.
 echo "waiting for bootloader (double-tap RESET if nothing happens) ..."
 DEV=""
 for i in $(seq 1 200); do
   DEV=$(lsblk -o NAME,LABEL -nr 2>/dev/null | awk '$2 ~ /^(XIAO|NRF52BOOT|FTHR)/ {print "/dev/"$1; exit}')
+  if [ -z "$DEV" ] && [ -e /dev/disk/by-label/XIAO-SENSE ]; then
+    DEV=$(readlink -f /dev/disk/by-label/XIAO-SENSE)
+  fi
+  if [ -z "$DEV" ] && lsusb 2>/dev/null | grep -q "2886:0045"; then
+    # In the bootloader for certain; take the removable disk it presents even
+    # if it has no label yet.
+    DEV=$(lsblk -o NAME,RM,TYPE -nr 2>/dev/null |
+          awk '$2 == 1 && $3 == "disk" {print "/dev/"$1; exit}')
+  fi
   [ -n "$DEV" ] && { echo "[${i}s] bootloader block device: $DEV"; break; }
+  if [ $((i % 20)) -eq 0 ]; then
+    echo "[${i}s] still waiting; asking again"
+    enter_bootloader >/dev/null 2>&1
+  fi
   sleep 1
 done
 [ -n "$DEV" ] || { echo "timed out waiting for bootloader" >&2; exit 1; }
