@@ -226,6 +226,7 @@ select.filter:focus{outline:2px solid var(--accent);outline-offset:-1px}
 .conv .ch{display:flex;justify-content:space-between;gap:12px;align-items:baseline}
 .conv .cw{font-weight:600;font-size:15px}
 .conv .cm{font-family:var(--mono);font-size:11.5px;color:var(--faint);flex:none}
+.conv .cmeta{display:flex;gap:8px;align-items:baseline;flex:none}
 .conv .cpv{font-size:14px;color:var(--ink-2);margin-top:5px;
   display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .conv .convacts{display:flex;flex-wrap:wrap;gap:8px;margin-top:11px}
@@ -289,6 +290,21 @@ select.filter:focus{outline:2px solid var(--accent);outline-offset:-1px}
 .tag.done{background:color-mix(in srgb,var(--ok) 16%,transparent);color:var(--ok)}
 .tag.running{background:color-mix(in srgb,var(--warn) 18%,transparent);color:var(--warn)}
 .tag.error{background:color-mix(in srgb,var(--bad) 16%,transparent);color:var(--bad)}
+
+/* Whether a row still needs a person's attention, said on the row itself.
+   The point is to be readable BEFORE opening anything: the archive is 1800
+   recordings and the expensive mistake is opening the ones already done.
+   Three states rather than a checkbox, because "one of the two voices here
+   is named" is the case that actually needs the work and would otherwise
+   read as finished. Named in words as well as colour -- the difference
+   between the ok and warn swatches is not something to stake a workflow on.
+   Nothing is drawn for a clip with no voices in it: there is no labelling to
+   do, and a grey "unlabelled" on 462 silent clips would bury the real ones. */
+.lbl{font-family:var(--mono);font-size:10px;letter-spacing:.06em;
+  padding:2px 7px;border-radius:3px;font-weight:600;flex:none;white-space:nowrap}
+.lbl.all{background:color-mix(in srgb,var(--ok) 16%,transparent);color:var(--ok)}
+.lbl.some{background:color-mix(in srgb,var(--warn) 18%,transparent);color:var(--warn)}
+.lbl.none{background:color-mix(in srgb,var(--accent) 14%,transparent);color:var(--accent)}
 
 /* transcript */
 audio{display:none}
@@ -610,6 +626,13 @@ html{scroll-padding-top:120px}
         <option value="voice">With voice</option>
         <option value="silent">Silent</option>
         <option value="missed">Silent, but a voice was heard</option>
+      </select>
+      <select class="filter" id="fLabel" aria-label="Filter by labelling">
+        <option value="all">Any labelling</option>
+        <option value="todo">Still to label</option>
+        <option value="none">No names yet</option>
+        <option value="some">Part named</option>
+        <option value="named">Fully labelled</option>
       </select>
       <select class="filter" id="fDate" aria-label="Filter by date">
         <option value="all">Any time</option>
@@ -1320,7 +1343,8 @@ async function loadTidy(){
     : "";
   if (!total){
     el.innerHTML = '<div class="empty">Nothing to clear out — every silent '
-      + 'recording either holds a voice or has never been examined.</div>';
+      + 'recording here either holds a voice or has never been examined by '
+      + 'the sound tagger.</div>';
     syncTidy();
     return;
   }
@@ -1338,6 +1362,19 @@ async function loadTidy(){
     };
     const tags = document.createElement("span");
     tags.className = "tidytags";
+    /* The group with no tags at all, which is the largest one here and used
+       to be excluded outright. It is not "unexamined" -- the tagger listened
+       and nothing cleared the bar, which on this archive means the fan and
+       the room. Said in words rather than shown as an empty row, because an
+       unlabelled checkbox next to 336 recordings is not a thing anyone should
+       be asked to tick. */
+    if (!g.tags.length){
+      const only = document.createElement("span");
+      only.className = "sound";
+      only.style.fontStyle = "italic";
+      only.textContent = "nothing but room noise";
+      tags.appendChild(only);
+    }
     for (const t of g.tags){
       const chip = document.createElement("span");
       chip.className = "sound";
@@ -2225,6 +2262,22 @@ on("bVoiceScan", "click", async () => {
 
 /* ---- recordings ---- */
 let clipFilter = "all", dateFilter = "all", query = "", soundFilter = "";
+/* Which labelling states to show. "todo" is the one worth having and the
+   reason this exists: it is "none" and "some" together, because a row with
+   one voice named and another still unknown needs exactly as much work as a
+   row with none, and reads as finished on the badge alone. */
+let labelFilter = "all";
+function matchesLabelFilter(speakers){
+  if (labelFilter === "all") return true;
+  const st = labelState(speakers);
+  // A recording with no voices in it is not unlabelled, it is not labellable.
+  // Leaving it in "still to label" would put 462 silent clips in a queue that
+  // is meant to be finishable.
+  if (st === "na") return false;
+  if (labelFilter === "todo") return st === "none" || st === "some";
+  if (labelFilter === "named") return st === "all";
+  return st === labelFilter;
+}
 
 /* Paging, and why it is not just a slice.
    Nine days of recording is already 1339 clips, and the day the archive is
@@ -2322,6 +2375,9 @@ let groupMode = "conv";
 on("fContent", "change", () => {
   clipFilter = $("fContent").value; resetPages(); loadClips();
 });
+on("fLabel", "change", () => {
+  labelFilter = $("fLabel").value; resetPages(); loadClips();
+});
 /* Filled from the archive, once, after the first clip list loads. */
 async function loadSoundFilter(){
   const sel = $("fSound");
@@ -2362,8 +2418,8 @@ on("fGroup", "change", () => {
  * holds the recordings. Device settings are a different question and are
  * remembered server-side, because they describe what the hardware is doing.
  */
-const VIEW_PREFS = ["fMode", "fGroup", "fContent", "fDate", "fPerPage",
-                    "itemKind", "dupThresh"];
+const VIEW_PREFS = ["fMode", "fGroup", "fContent", "fLabel", "fDate",
+                    "fPerPage", "itemKind", "dupThresh"];
 
 function loadViewPrefs(){
   let saved = {};
@@ -2391,6 +2447,7 @@ function applyViewPrefs(){
   searchMode = $("fMode").value;
   groupMode  = $("fGroup").value;
   clipFilter = $("fContent").value;
+  labelFilter = $("fLabel").value;
   dateFilter = $("fDate").value;
   pageSize   = parseInt($("fPerPage").value, 10) || 0;
 }
@@ -2433,9 +2490,16 @@ function fmtDur(sec){
 }
 
 async function loadConversations(el){
-  const convs = (await (await fetch("/api/conversations")).json())
+  const all = (await (await fetch("/api/conversations")).json())
     .filter(c => inDateRange(c.end));
-  $("clipCount").textContent = `${convs.length} conversation${convs.length===1?"":"s"}`;
+  /* The same filter as the clip list. A conversation's speaker list is the
+     union of its clips', so "part named" here means somebody in the room is
+     still unnamed somewhere in it -- which is the unit the work is actually
+     done in. */
+  const convs = all.filter(c => matchesLabelFilter(c.speakers));
+  $("clipCount").textContent = convs.length === all.length
+    ? `${convs.length} conversation${convs.length===1?"":"s"}`
+    : `${convs.length} of ${all.length} conversations`;
   if (!convs.length){
     el.innerHTML = '<div class="empty">Nothing matches these filters.</div>';
     return;
@@ -2460,9 +2524,9 @@ async function loadConversations(el){
     d.innerHTML =
       `<div class="ch">
          <span class="cw">${fmtClock(c.start)}–${fmtClock(c.end)}${people.length ? " · " + esc(people.join(", ")) : ""}</span>
-         <span class="cm">${fmtDur(c.seconds)} · ${n} clip${n===1?"":"s"}${
+         <span class="cmeta"><span class="cm">${fmtDur(c.seconds)} · ${n} clip${n===1?"":"s"}${
              typeof c.with_speech === "number" && c.with_speech < n
-               ? ` · ${n - c.with_speech} silent` : ""}</span>
+               ? ` · ${n - c.with_speech} silent` : ""}</span>${labelBadge(c.speakers)}</span>
        </div>` +
       (c.preview ? `<div class="cpv">${esc(c.preview)}</div>` : "") +
       `<div class="convacts"></div><div class="parts" hidden></div>`;
@@ -2789,6 +2853,38 @@ async function loadSearch(el){
 function esc(t){ return (t||"").replace(/[&<>"']/g, ch =>
   ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[ch])); }
 
+/* How far through labelling a row is, for the badge on the list.
+
+   "unknown" is exactly what the indexer writes for a diarized voice nobody
+   has put a name to (index_db.upsert_clip), and a conversation's speaker list
+   is the union of its clips', so one reading serves both lists. A row with no
+   voices at all returns "na" and is left unmarked -- silence is not work.
+
+   Deliberately not counting a NOT_A_PERSON label as unfinished: deciding a
+   voice is the television IS the labelling decision for that voice, and a row
+   that keeps asking to be labelled after it has been answered is the thing
+   that makes a queue impossible to get to the bottom of. */
+function labelState(speakers){
+  const sp = (speakers || []).filter(x => x);
+  if (!sp.length) return "na";
+  const unnamed = sp.filter(x => x === "unknown").length;
+  if (!unnamed) return "all";
+  return unnamed === sp.length ? "none" : "some";
+}
+
+function labelBadge(speakers){
+  const st = labelState(speakers);
+  if (st === "na") return "";
+  const named = (speakers || []).filter(x => x && x !== "unknown");
+  const text = st === "all" ? "labelled" : st === "some" ? "part named" : "no names";
+  const title = st === "all"
+      ? "every voice here is named: " + named.join(", ")
+      : st === "some"
+        ? "named: " + named.join(", ") + " — at least one other voice is not"
+        : "no voice here has been named yet";
+  return `<span class="lbl ${st}" title="${esc(title)}">${text}</span>`;
+}
+
 // A search snippet is transcript text with SQLite's <mark> tags around the
 // hits. Everything else in it came off a microphone and is not ours to trust,
 // so escape the whole string first and then put back only the two tags we
@@ -2899,6 +2995,7 @@ async function loadClips(){
                                      (c.voice_tag || 0) >= MISSED_VOICE_FLOOR)
         : c.has_speech === false)
       .filter(c => inDateRange(c.modified))
+      .filter(c => matchesLabelFilter(c.speakers))
       .filter(c => !soundFilter || (c.sounds || []).includes(soundFilter));
     if (clipFilter === "missed"){
       clips.sort((a, b) => (b.voice_tag || 0) - (a.voice_tag || 0));
@@ -2988,6 +3085,7 @@ async function loadClips(){
         ${c.has_speech === false && (c.voice_tag || 0) >= MISSED_VOICE_FLOOR
           ? `<span class="cd" title="how sure the sound tagger was that somebody was audible">voice ${c.voice_tag.toFixed(2)}</span>`
           : ""}
+        ${labelBadge(c.speakers)}
         <span class="cd">${c.seconds.toFixed(0)}s</span>
         <span class="tag ${c.status}">${c.status === "none" ? "new"
           : (c.has_speech === false ? "silent" : c.status)}</span>`;
@@ -3767,6 +3865,30 @@ async function renderTranscript(name){
   const heardAt = new Map((t.sounds || [])
       .filter(x => x.length > 2).map(x => [x[0], x[2]]));
   const heard = (t.sounds || []).filter(x => x[1] >= 0.10).slice(0, 8);
+  /* Nothing to show is two different facts and they used to look identical.
+     A blank row reads as "the tagger never ran here", which is what its owner
+     reasonably concluded on seeing hundreds of them. It did run: these clips
+     hold nothing but the fan, and the fan is deliberately unwritable -- it
+     scores White noise ~0.31 peak and ~0.18 whole, under both SOUND_WHOLE_KEEP
+     and SOUND_WINDOW_KEEP, thresholds raised precisely to stop the room's own
+     noise being reported as an event. Saying so is the difference between a
+     working filter and a broken model.
+
+     Told apart by the key rather than its contents: a transcript written
+     before the tagger existed has no "sounds" at all, which is the one case
+     where "not tagged" is the truth. */
+  if (!heard.length){
+    const row = document.createElement("div");
+    row.className = "sounds";
+    const note = document.createElement("span");
+    note.className = "cnt";
+    note.textContent = Array.isArray(t.sounds)
+      ? "heard: nothing above the bar — on this archive that is the fan and "
+        + "the room, which are filtered out on purpose"
+      : "heard: this recording predates the sound tagger";
+    row.appendChild(note);
+    $("dSpeakers").appendChild(row);
+  }
   if (heard.length){
     const row = document.createElement("div");
     row.className = "sounds";

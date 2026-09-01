@@ -82,6 +82,17 @@ def _ensure(c):
     if "sounds_strong" not in have:
         c.execute("ALTER TABLE clips ADD COLUMN sounds_strong TEXT")
         c.commit()
+    # Whether the tagger ever looked at this clip, which is not the same
+    # question as whether it found anything. An empty tag list used to mean
+    # both, and cleanup_groups refused to touch either on that ambiguity --
+    # which put 336 clips of pure fan noise permanently out of reach of the
+    # only tool that deletes. The transcript answers it exactly: a clip the
+    # tagger examined has a "sounds" key, empty or not; one written before the
+    # tagger existed has no such key. Measured when this was added: 1846 clips
+    # examined, 1 not.
+    if "tagged" not in have:
+        c.execute("ALTER TABLE clips ADD COLUMN tagged INTEGER")
+        c.commit()
     c.commit()
 
 
@@ -107,6 +118,7 @@ def upsert_clip(name, transcript_path=None, wav_path=None):
     voice_tag = None
     sounds = None
     sounds_strong = None
+    tagged = 0
     if os.path.exists(tp):
         try:
             t = json.load(open(tp))
@@ -134,6 +146,9 @@ def upsert_clip(name, transcript_path=None, wav_path=None):
             # missing one -- it puts a clip in front of you under a name that
             # is not what happened. Kept in the transcript rather than deleted,
             # so a correction survives re-transcription and can be undone.
+            # Key presence, not contents: "examined and found only the fan"
+            # and "never examined" both leave the list empty.
+            tagged = 1 if "sounds" in t else 0
             dropped = set(t.get("sounds_removed") or [])
             # A row is [name, score] or [name, score, when]: the tagger
             # started reporting where in the clip it heard the thing, and every
@@ -150,8 +165,8 @@ def upsert_clip(name, transcript_path=None, wav_path=None):
 
     c.execute("""INSERT INTO clips(name, seconds, modified, status, has_speech,
                                    edited, speakers, preview, indexed_at,
-                                   voice_tag, sounds, sounds_strong)
-                 VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+                                   voice_tag, sounds, sounds_strong, tagged)
+                 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
                  ON CONFLICT(name) DO UPDATE SET
                    seconds=excluded.seconds, modified=excluded.modified,
                    status=excluded.status, has_speech=excluded.has_speech,
@@ -159,10 +174,11 @@ def upsert_clip(name, transcript_path=None, wav_path=None):
                    preview=excluded.preview, indexed_at=excluded.indexed_at,
                    voice_tag=excluded.voice_tag,
                    sounds=excluded.sounds,
-                   sounds_strong=excluded.sounds_strong""",
+                   sounds_strong=excluded.sounds_strong,
+                   tagged=excluded.tagged""",
               (name, seconds, os.path.getmtime(wav), status, has_speech,
                edited, json.dumps(speakers), preview, time.time(), voice_tag,
-               sounds, sounds_strong))
+               sounds, sounds_strong, tagged))
     c.execute("DELETE FROM segments WHERE clip = ?", (name,))
     if segs:
         c.executemany(
@@ -470,7 +486,7 @@ def sound_vocabulary(limit=40):
 CLEANUP_VOICE_FLOOR = 0.05
 
 
-def cleanup_groups():
+def cleanup_groups(cap=200):
     """Silent clips, grouped by the exact set of sounds heard in them.
 
     The set, not the individual tags. "Delete anything tagged Typing" would
@@ -483,20 +499,31 @@ def cleanup_groups():
     """
     c = _conn()
     rows = c.execute(
-        """SELECT name, seconds, sounds, voice_tag FROM clips
+        """SELECT name, seconds, sounds, voice_tag, tagged FROM clips
            WHERE has_speech = 0
              AND (voice_tag IS NULL OR voice_tag < ?)""",
         (CLEANUP_VOICE_FLOOR,)).fetchall()
     groups = {}
     for r in rows:
         names = tuple(sorted(n for n in (r["sounds"] or "").split("\n") if n))
-        if not names:
-            continue          # nothing was heard and nothing examined it; keep
+        if not names and not r["tagged"]:
+            # Never examined, so nothing is known about it. Still the one case
+            # that must be kept: an empty list here is an absence of evidence.
+            continue
+        # Otherwise it was examined and nothing cleared the bar, which is not
+        # "unknown" -- on this archive it is the fan, scoring about 0.31 peak
+        # against a 0.35 window bar and filtered by design. Such clips group
+        # under the empty set and were invisible while this case was lumped in
+        # with the one above: 336 of them, 301 MB, unreachable by every button.
         g = groups.setdefault(names, {"tags": list(names), "clips": 0,
                                       "seconds": 0.0, "names": []})
         g["clips"] += 1
         g["seconds"] += float(r["seconds"] or 0)
-        if len(g["names"]) < 200:
+        # The cap is for the browser payload, not for the work. The delete
+        # path recomputes with cap=None: with a 336-clip group it would
+        # otherwise delete the first 200 and silently leave the rest, and the
+        # button would look broken in the one way nobody checks -- by working.
+        if cap is None or len(g["names"]) < cap:
             g["names"].append(r["name"])
     out = sorted(groups.values(), key=lambda g: -g["clips"])
     for g in out:
@@ -511,7 +538,7 @@ def clips_for_sound_sets(sets):
     caller is about to delete them.
     """
     want = {tuple(sorted(s)) for s in sets}
-    return [g["names"] for g in cleanup_groups()
+    return [g["names"] for g in cleanup_groups(cap=None)
             if tuple(sorted(g["tags"])) in want]
 
 

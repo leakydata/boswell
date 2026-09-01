@@ -1599,7 +1599,11 @@ async def api_cleanup_delete(body: dict):
     sets = body.get("sets") or []
     if not sets:
         raise HTTPException(400, "nothing selected")
-    groups = {tuple(sorted(g["tags"])): g for g in index_db.cleanup_groups()}
+    # cap=None: the capped form is for the browser payload. With a 336-clip
+    # group the capped call would delete the first 200 and report success,
+    # leaving the rest behind and the button looking like it worked.
+    groups = {tuple(sorted(g["tags"])): g
+              for g in index_db.cleanup_groups(cap=None)}
     chosen, names = [], []
     for s_ in sets:
         key = tuple(sorted(s_))

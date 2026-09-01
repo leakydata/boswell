@@ -1763,3 +1763,268 @@ class TestTheCoreAlwaysExists:
         i = src.index("if len(core) < 2 and n >= 2:")
         block = src[i:src.index("if n < self.SPLIT_MIN_TURNS:", i)]
         assert "order[:max(2, n // 2)]" in block
+
+
+class TestLabelledStateOnTheListRow:
+    """Whether a recording still needs naming, shown before it is opened.
+
+    The archive is around 1800 recordings and two names covered 840 of them,
+    so the expensive move is opening rows that are already finished. The badge
+    exists to make that visible from the list, which means it rests on one
+    contract: the indexer writes the literal string "unknown" for a diarized
+    voice nobody has named, and a real name once somebody has. If that string
+    ever changes, every row silently reads as labelled and the queue looks
+    finished when it is not -- the failure is invisible, which is why it is
+    worth a test rather than a glance.
+    """
+
+    def _page(self):
+        import os
+        here = os.path.dirname(__file__)
+        with open(os.path.join(here, "..", "web", "static", "index.html"),
+                  encoding="utf-8") as f:
+            return f.read()
+
+    def _indexed(self, tmp_path, monkeypatch, speakers, segments):
+        """A clip on disk, indexed the way the server indexes one."""
+        import json, os, sys
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "web"))
+        import index_db
+        import soundfile as sf, numpy as np
+        monkeypatch.setattr(index_db, "DB_PATH", str(tmp_path / "index.db"))
+        monkeypatch.setattr(index_db, "_local", type(index_db._local)())
+        data = tmp_path / "data"
+        (data / "transcripts").mkdir(parents=True)
+        monkeypatch.setattr(index_db, "DATA", str(data))
+        wav = data / "c.wav"
+        sf.write(str(wav), np.zeros(16000, dtype="float32"), 16000)
+        tp = data / "transcripts" / "c.json"
+        tp.write_text(json.dumps({"clip": "c.wav", "segments": segments,
+                                  "speakers": speakers}))
+        index_db.upsert_clip("c.wav", transcript_path=str(tp), wav_path=str(wav))
+        return index_db.list_clips(10)[0]["speakers"]
+
+    def test_an_unnamed_voice_is_indexed_as_unknown(self, tmp_path, monkeypatch):
+        """The string the badge keys on. Change it and the badge lies."""
+        sp = self._indexed(
+            tmp_path, monkeypatch,
+            {"SPEAKER_00": {"name": None}},
+            [{"speaker": "SPEAKER_00", "start": 0.0, "end": 1.0, "text": "hello"}])
+        assert sp == ["unknown"]
+
+    def test_a_named_voice_is_indexed_by_name(self, tmp_path, monkeypatch):
+        sp = self._indexed(
+            tmp_path, monkeypatch,
+            {"SPEAKER_00": {"name": "Nathan Jones"}},
+            [{"speaker": "SPEAKER_00", "start": 0.0, "end": 1.0, "text": "hello"}])
+        assert sp == ["Nathan Jones"]
+
+    def test_a_half_named_clip_reports_both(self, tmp_path, monkeypatch):
+        """The case the badge exists for: finished-looking but not finished."""
+        sp = self._indexed(
+            tmp_path, monkeypatch,
+            {"SPEAKER_00": {"name": "Nathan Jones"}, "SPEAKER_01": {"name": None}},
+            [{"speaker": "SPEAKER_00", "start": 0.0, "end": 1.0, "text": "hi"},
+             {"speaker": "SPEAKER_01", "start": 1.0, "end": 2.0, "text": "hello"}])
+        assert sorted(sp) == ["Nathan Jones", "unknown"]
+
+    def test_the_badge_distinguishes_three_states(self):
+        page = self._page()
+        i = page.index("function labelState(")
+        block = page[i:i + 900]
+        for state in ('"all"', '"some"', '"none"', '"na"'):
+            assert state in block, f"labelState must return {state}"
+        assert '=== "unknown"' in block, \
+            "labelState must key on the exact string the indexer writes"
+
+    def test_a_clip_with_no_voices_is_left_unmarked(self):
+        """462 silent clips would drown the rows that need work."""
+        page = self._page()
+        i = page.index("function labelBadge(")
+        block = page[i:i + 700]
+        assert 'if (st === "na") return ""' in block, \
+            "a clip with nothing to label must draw no badge at all"
+
+    def test_both_lists_show_it(self):
+        """Clips and conversations: the marker is useless in only one view."""
+        page = self._page()
+        assert "labelBadge(c.speakers)" in page
+        assert page.count("labelBadge(c.speakers)") == 2, \
+            "both the clip row and the conversation row must render the badge"
+
+    def test_the_badge_says_it_in_words(self):
+        """Colour alone fails the reader who cannot separate the swatches."""
+        page = self._page()
+        i = page.index("function labelBadge(")
+        block = page[i:i + 700]
+        for word in ("labelled", "part named", "no names"):
+            assert word in block, f"the badge must say {word!r}, not colour alone"
+
+
+class TestAnEmptySoundRowSaysWhy:
+    """"No tags" and "never tagged" are different facts that looked the same.
+
+    357 clips in the archive carry an empty sound list, and a blank row reads
+    as a model that never ran. It ran. Those clips hold the fan and nothing
+    else, and the fan is deliberately unwritable: measured on four of them,
+    White noise peaks around 0.31 with a whole-clip score near 0.18, under
+    both SOUND_WHOLE_KEEP (0.20) and SOUND_WINDOW_KEEP (0.35) -- thresholds
+    raised on purpose so the room's own noise is not reported as an event.
+
+    Silence about that is what made a working filter look like a broken model.
+    """
+
+    def _block(self):
+        import os
+        here = os.path.dirname(__file__)
+        with open(os.path.join(here, "..", "web", "static", "index.html"),
+                  encoding="utf-8") as f:
+            page = f.read()
+        i = page.index("const heard = (t.sounds || [])")
+        return page[i:i + 1600]
+
+    def test_an_empty_list_is_explained_rather_than_left_blank(self):
+        b = self._block()
+        assert "if (!heard.length){" in b, \
+            "a clip with no tags must still say something"
+        assert "nothing above the bar" in b
+
+    def test_it_names_the_fan_as_the_reason(self):
+        """The explanation is useless if it does not say what was filtered."""
+        b = self._block()
+        assert "fan" in b
+
+    def test_never_tagged_is_told_apart_from_tagged_and_empty(self):
+        """Key presence, not contents: only a pre-tagger transcript lacks it."""
+        b = self._block()
+        assert "Array.isArray(t.sounds)" in b, \
+            "an absent 'sounds' key is the only case that means 'not tagged'"
+        assert "predates the sound tagger" in b
+
+
+class TestClearingOutRoomNoise:
+    """The largest deletable group was unreachable by the only tool that deletes.
+
+    cleanup_groups refused any clip with an empty tag list, on the reasoning
+    that "nothing was heard and nothing examined it". Those are two different
+    facts and only one of them justifies keeping the clip. Measured when this
+    was fixed: 1836 clips had been examined and 1 had not, while 336 clips of
+    pure fan noise -- 301 MB, the biggest group in the archive by a factor of
+    a hundred -- sat outside every group and could not be selected at all.
+    """
+
+    def _db(self, tmp_path, monkeypatch):
+        import os, sys
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "web"))
+        import index_db
+        monkeypatch.setattr(index_db, "DB_PATH", str(tmp_path / "index.db"))
+        monkeypatch.setattr(index_db, "_local", type(index_db._local)())
+        data = tmp_path / "data"
+        (data / "transcripts").mkdir(parents=True)
+        monkeypatch.setattr(index_db, "DATA", str(data))
+        return index_db, data
+
+    def _clip(self, index_db, data, name, transcript):
+        import json, soundfile as sf, numpy as np
+        wav = data / name
+        sf.write(str(wav), np.zeros(16000, dtype="float32"), 16000)
+        tp = data / "transcripts" / (name.replace(".wav", ".json"))
+        tp.write_text(json.dumps(transcript))
+        index_db.upsert_clip(name, transcript_path=str(tp), wav_path=str(wav))
+
+    def test_examined_and_silent_can_be_cleared(self, tmp_path, monkeypatch):
+        """The fan. Listened to, nothing above the bar, safe to offer."""
+        db, data = self._db(tmp_path, monkeypatch)
+        self._clip(db, data, "fan.wav", {"segments": [], "sounds": []})
+        groups = db.cleanup_groups()
+        assert [g["clips"] for g in groups] == [1]
+        assert groups[0]["tags"] == [], "it groups under the empty tag set"
+
+    def test_never_examined_is_still_kept(self, tmp_path, monkeypatch):
+        """Absence of evidence. The one case the original guard was right about."""
+        db, data = self._db(tmp_path, monkeypatch)
+        self._clip(db, data, "old.wav", {"segments": []})     # no "sounds" key
+        assert db.cleanup_groups() == [], \
+            "a clip the tagger never looked at must not be offered for deletion"
+
+    def test_the_two_are_told_apart(self, tmp_path, monkeypatch):
+        db, data = self._db(tmp_path, monkeypatch)
+        self._clip(db, data, "fan.wav", {"segments": [], "sounds": []})
+        self._clip(db, data, "old.wav", {"segments": []})
+        names = [n for g in db.cleanup_groups() for n in g["names"]]
+        assert names == ["fan.wav"]
+
+    def test_deleting_a_big_group_reaches_every_clip(self, tmp_path, monkeypatch):
+        """The cap is for the browser payload, never for the work.
+
+        cleanup_groups truncates each group's name list so the interface is
+        not handed thousands of strings. The delete path read through the same
+        function, so selecting a group larger than the cap deleted the first
+        slice, reported success, and left the remainder -- failing in the one
+        way nobody investigates, by appearing to work.
+        """
+        db, data = self._db(tmp_path, monkeypatch)
+        for i in range(12):
+            self._clip(db, data, f"q{i:03d}.wav", {"segments": [], "sounds": []})
+        shown = db.cleanup_groups(cap=5)
+        assert len(shown[0]["names"]) == 5, "the payload stays capped"
+        assert shown[0]["clips"] == 12, "...but the count is honest about it"
+        every = db.clips_for_sound_sets([[]])
+        assert sum(len(x) for x in every) == 12, \
+            "the delete path must see every clip in the group, not the cap"
+
+
+class TestFilteringByLabellingState:
+    """A queue you can get to the bottom of.
+
+    The badge says which rows are done; the filter is what makes that useful
+    on an archive of 1837 recordings, where the fully-labelled ones outnumber
+    the rest and scrolling past them is the whole cost.
+    """
+
+    def _page(self):
+        import os
+        here = os.path.dirname(__file__)
+        with open(os.path.join(here, "..", "web", "static", "index.html"),
+                  encoding="utf-8") as f:
+            return f.read()
+
+    def _fn(self):
+        page = self._page()
+        i = page.index("function matchesLabelFilter(")
+        return page[i:i + 800]
+
+    def test_the_control_offers_the_states(self):
+        page = self._page()
+        i = page.index('id="fLabel"')
+        block = page[i:i + 500]
+        for v in ('"all"', '"todo"', '"none"', '"some"', '"named"'):
+            assert v in block, f"the dropdown must offer {v}"
+
+    def test_still_to_label_covers_both_unfinished_states(self):
+        """The point of the filter: part-named is unfinished work too."""
+        b = self._fn()
+        assert 'st === "none" || st === "some"' in b, \
+            '"still to label" must include part-named rows, not just empty ones'
+
+    def test_silent_recordings_stay_out_of_the_queue(self):
+        """462 clips have no voices; they are not unlabelled, just not work."""
+        b = self._fn()
+        assert 'if (st === "na") return false' in b
+
+    def test_it_applies_to_both_lists(self):
+        page = self._page()
+        assert page.count("matchesLabelFilter(c.speakers)") == 2, \
+            "clips and conversations must both honour the filter"
+
+    def test_the_choice_is_remembered(self):
+        """Every other filter survives a reload; this one is used the most."""
+        page = self._page()
+        i = page.index("const VIEW_PREFS")
+        assert '"fLabel"' in page[i:i + 200]
+
+    def test_a_filtered_conversation_count_says_so(self):
+        """"22 conversations" while hiding 66 of them is a lie by omission."""
+        page = self._page()
+        i = page.index("async function loadConversations(")
+        assert "of ${all.length} conversations" in page[i:i + 900]
