@@ -2028,3 +2028,86 @@ class TestFilteringByLabellingState:
         page = self._page()
         i = page.index("async function loadConversations(")
         assert "of ${all.length} conversations" in page[i:i + 900]
+
+
+class TestMediaDoesNotBecomeYourFacts:
+    """A voice from a screen must not have its claims recorded as the user's.
+
+    The archive fills up with YouTube: a video plays near the microphone, the
+    diarizer clusters the host as a speaker, and somebody names that cluster so
+    the transcript reads properly. Right for a transcript, wrong for a review
+    that writes durable facts -- "planning to wire a sensor into a backpack for
+    a 14-mile race at altitude" was recorded as a fact about the user, and it
+    was a fact about Data Slayer.
+
+    Untested until now, and it is the piece deciding what enters the fact
+    store, so a silent regression here is not visible until something wrong is
+    already remembered about you.
+    """
+
+    def _agent(self):
+        import agent_runner
+        return agent_runner, agent_runner.ConversationAgent()
+
+    def _batch(self):
+        return [("c.wav",
+                 [{"speaker": "SPEAKER_00", "text": "buy the cheaper sensor"},
+                  {"speaker": "SPEAKER_01", "text": "huh, I should try that"}],
+                 {"SPEAKER_00": {"name": "Ryan Long"},
+                  "SPEAKER_01": {"name": "Nathan Jones"}})]
+
+    def test_a_media_voice_is_marked(self, monkeypatch):
+        ar, agent = self._agent()
+        monkeypatch.setattr(ar, "_media_names", lambda: frozenset({"Ryan Long"}))
+        out = agent._render(self._batch())
+        assert "Ryan Long [MEDIA]: buy the cheaper sensor" in out
+
+    def test_a_person_is_not_marked(self, monkeypatch):
+        ar, agent = self._agent()
+        monkeypatch.setattr(ar, "_media_names", lambda: frozenset({"Ryan Long"}))
+        out = agent._render(self._batch())
+        assert "Nathan Jones: huh, I should try that" in out
+        assert "Nathan Jones [MEDIA]" not in out
+
+    def test_media_speech_is_kept_not_dropped(self, monkeypatch):
+        """The reaction is unrecordable without the line it answers."""
+        ar, agent = self._agent()
+        monkeypatch.setattr(ar, "_media_names", lambda: frozenset({"Ryan Long"}))
+        out = agent._render(self._batch())
+        assert "buy the cheaper sensor" in out, \
+            "dropping media loses the thread the user is reacting to"
+
+    def test_an_unreadable_store_does_not_stop_the_review(self, monkeypatch):
+        """Best effort: unfiltered is what it did before this existed."""
+        ar, _ = self._agent()
+        import speaker_store
+        def boom():
+            raise RuntimeError("database is locked")
+        monkeypatch.setattr(speaker_store, "people", boom)
+        assert ar._media_names() == frozenset()
+
+    def test_it_keys_on_kind_not_role(self, monkeypatch):
+        """role is free text nobody promised to keep in any form; kind is the
+        field the store already trusts to gate self-naming."""
+        ar, _ = self._agent()
+        import speaker_store
+        monkeypatch.setattr(speaker_store, "people", lambda: [
+            {"name": "Ryan Long", "kind": speaker_store.KIND_MEDIA, "role": ""},
+            {"name": "Nathan Jones", "kind": None, "role": "YouTuber"},
+            {"name": None, "kind": speaker_store.KIND_MEDIA, "role": ""},
+        ])
+        assert ar._media_names() == frozenset({"Ryan Long"})
+
+    def test_the_prompt_tells_the_model_what_media_means(self):
+        """The tag is inert unless the instructions say what to do with it.
+
+        Matched on unwrapped fragments and on the real SYSTEM constant rather
+        than the file: an earlier version of this test asserted a sentence
+        that the source wraps across two lines, so it failed on prose layout
+        while the behaviour it meant to check was correct.
+        """
+        import agent_runner
+        prompt = " ".join(agent_runner.SYSTEM.split())
+        assert "[MEDIA]" in prompt
+        assert "Never record a task, fact or event from them" in prompt
+        assert "never attribute anything to a [MEDIA] speaker" in prompt
