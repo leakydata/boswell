@@ -62,18 +62,23 @@ OLLAMA = "http://localhost:11434/api/chat"
 DEFAULT_MODEL = "gpt-oss:20b"
 # Silence that marks the end of a conversation.
 #
-# Ordering note, not yet acted on: consolidation settles at 150 s on a loop
-# ticking every 120 s, so it lands somewhere between 150 s and 270 s after the
-# last clip -- reliably after this. The agent therefore reads a conversation
-# while its speaker labels are still the per-clip SPEAKER_00 the diarizer
-# produced, rather than the names consolidation resolves, and writes notes
-# attributing things to nobody.
+# Ordering: consolidation settles at 150 s on a loop ticking every 120 s, so it
+# lands somewhere between 150 s and 270 s after the last clip. At 90 s the agent
+# read every conversation before that, while its speaker labels were still the
+# per-clip SPEAKER_00 the diarizer produced rather than the names consolidation
+# resolves -- so it wrote facts attributing things to nobody.
 #
-# Left alone deliberately: the value in data/prefs.json is the user's, and
-# raising it silently would change when their agent runs. Raising it above
-# ~300 s, or having the agent wait for a consolidated conversation, would fix
-# it whenever the LLM layer next gets attention.
-IDLE_SECONDS = 90.0
+# That also silently defeated the media filter in _render(), which matches on
+# names: a YouTube host not yet resolved to "Ryan Long" is only SPEAKER_00, and
+# his claims went into the fact store as the user's own. Both fixes are one
+# fix, and this is the half that has to come first.
+#
+# 330 s clears the far end of the consolidation window with a minute to spare.
+# The cost is a review landing about four minutes after you stop talking
+# instead of ninety seconds; the benefit is that it lands with names attached.
+# data/prefs.json carries the live value and overrides this at startup
+# (server.py), so changing this constant alone would have done nothing.
+IDLE_SECONDS = 330.0
 MAX_WAIT = 900.0           # fire anyway if someone talks continuously
 MIN_CHARS = 120            # below this there is nothing worth reasoning about
 MAX_RETRIES = 3            # a batch survives this many failures before it is dropped
@@ -116,6 +121,10 @@ Rules:
 - If nothing else is worth recording, say so in one short sentence.
 - Attribute owners by the speaker name shown.
 - Transcription is imperfect; ignore garbled fragments rather than guessing.
+- Lines marked [MEDIA] are audio playing near the microphone -- video,
+  podcast, music -- not people in the room. Never record a task, fact or
+  event from them, and never attribute anything to a [MEDIA] speaker. They
+  are shown only so you can follow what the real speakers are reacting to.
 
 You may be shown ALREADY KNOWN entries retrieved from earlier conversations.
 They are what you have recorded before. Use them:
@@ -131,6 +140,35 @@ They are what you have recorded before. Use them:
   is not a duplicate of the one it adds to. Tidying these up is part of the
   job: they exist because earlier reviews could not see what had already been
   recorded."""
+
+
+def _media_names():
+    """Names whose speech is playback, not someone in the room.
+
+    The archive fills up with YouTube: a video plays near the microphone, the
+    diarizer clusters the host as a speaker, and someone names that cluster so
+    the transcript reads properly. Right for a transcript, wrong here -- the
+    agent had no way to tell a host's claim from the user's own, and recorded
+    "planning to wire a sensor into a backpack for a 14-mile race at altitude"
+    as a durable fact about the user. It was a fact about Data Slayer.
+
+    Keyed on kind, not the free-text role: role is a human label nobody promised
+    to keep in any particular form, while kind is the field the store already
+    trusts to decide whether a voice may write its own name onto a clip.
+
+    Best effort. If the store cannot be read the review still runs unfiltered,
+    which is what it did before this existed.
+    """
+    try:
+        import speaker_store
+    except Exception:
+        return frozenset()
+    try:
+        return frozenset(
+            p["name"] for p in speaker_store.people()
+            if p.get("name") and p.get("kind") == speaker_store.KIND_MEDIA)
+    except Exception:
+        return frozenset()
 
 
 class ConversationAgent:
@@ -266,12 +304,21 @@ class ConversationAgent:
         return "\n".join(lines)
 
     def _render(self, batch):
+        """The one funnel: every segment becomes a line the model reads.
+
+        Media is marked rather than dropped. Dropping it loses the thread
+        whenever the user reacts to what is playing -- "huh, I should try that"
+        is unrecordable without the line before it -- so the speech stays and
+        the prompt says what may be done with it.
+        """
+        media = _media_names()
         lines = []
         for clip, segs, names in batch:
             for s in segs:
                 spk = s.get("speaker")
                 who = s.get("speaker_name") or (names.get(spk, {}) or {}).get("name") or spk or "UNKNOWN"
-                lines.append(f"{who}: {s['text'].strip()}")
+                tag = " [MEDIA]" if who in media else ""
+                lines.append(f"{who}{tag}: {s['text'].strip()}")
         return "\n".join(lines)
 
     def _widen(self, batch):
