@@ -1,0 +1,16 @@
+# Application options. Zephyr requires the sourcing line at the end.
+
+config BOSWELL_OPUS
+	bool "Encode captured audio with Opus"
+	default n
+	help
+	  Replaces IMA ADPCM with Opus in CELT restricted-low-delay mode.
+	  Half the bitrate for considerably better audio: ADPCM is a 4-bit
+	  quantiser at 64 kbps, Opus is near-transparent for speech at 32.
+
+	  Costs about 190 KB of flash for the codec, so it is a build-time
+	  choice rather than something the device switches at runtime. The
+	  wire protocol carries a codec id either way, so a host can decode
+	  recordings from a device built with or without this.
+
+source "Kconfig.zephyr"

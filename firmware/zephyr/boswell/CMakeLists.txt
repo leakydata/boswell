@@ -18,4 +18,11 @@ target_sources(app PRIVATE
 if(CONFIG_DISK_DRIVER_SDMMC)
   target_sources(app PRIVATE src/sd_probe.c)
 endif()
+# Vendored, not fetched -- see src/lib/opus-1.2.1/README.boswell.md for why
+# a copy and not a module, and what was changed on the way in.
+if(CONFIG_BOSWELL_OPUS)
+  add_subdirectory(src/lib/opus-1.2.1)
+  target_include_directories(app PRIVATE src/lib/opus-1.2.1)
+endif()
+
 target_include_directories(app PRIVATE src)
