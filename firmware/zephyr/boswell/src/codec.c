@@ -175,3 +175,8 @@ uint16_t codec_build_frame(const int16_t *samples, int count, uint16_t seq,
     return (uint16_t)(PROTO_HEADER_LEN + count / 2);
 #endif /* CONFIG_BOSWELL_OPUS */
 }
+
+#ifdef CONFIG_BOSWELL_OPUS
+int codec_opus_state_bytes(void) { return opus_encoder_get_size(1); }
+int codec_opus_reserved(void)    { return (int) sizeof(enc_mem); }
+#endif

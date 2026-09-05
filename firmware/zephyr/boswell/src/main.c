@@ -302,6 +302,28 @@ static int cmd_sd(const struct shell *sh, size_t argc, char **argv)
 }
 #endif
 
+#ifdef CONFIG_BOSWELL_OPUS
+static int cmd_opus(const struct shell *sh, size_t argc, char **argv)
+{
+    ARG_UNUSED(argc); ARG_UNUSED(argv);
+    int need = codec_opus_state_bytes();
+    int have = codec_opus_reserved();
+
+    if (have == 0) {
+        shell_print(sh, "opus: not built into this image");
+        return 0;
+    }
+    /* The reserve was chosen to be comfortably larger than a mono CELT-only
+     * encoder could plausibly need, and never checked against the real
+     * figure -- which is a runtime property of how the library was
+     * configured and cannot be known at compile time. This is the
+     * measurement that would let it be trimmed. */
+    shell_print(sh, "opus: encoder needs %d bytes, reserved %d (%d spare)",
+                need, have, have - need);
+    return 0;
+}
+#endif
+
 static int cmd_imu(const struct shell *sh, size_t argc, char **argv)
 {
     ARG_UNUSED(argc); ARG_UNUSED(argv);
@@ -517,6 +539,9 @@ SHELL_STATIC_SUBCMD_SET_CREATE(boswell_cmds,
     SHELL_CMD(reboot, NULL, "Restart the firmware", cmd_reboot),
     SHELL_CMD(stream, NULL, "Arm/disarm capture (on|off)", cmd_stream),
     SHELL_CMD(imu, NULL, "Re-probe the IMU and report", cmd_imu),
+#ifdef CONFIG_BOSWELL_OPUS
+    SHELL_CMD(opus, NULL, "Report the Opus encoder's memory use", cmd_opus),
+#endif
 #ifdef CONFIG_DISK_DRIVER_SDMMC
     SHELL_CMD(sd, NULL, "Probe the SD card and round-trip a file", cmd_sd),
 #endif
