@@ -42,6 +42,10 @@ static const struct note arm_notes[]    = { { 660, 90 }, { 990, 110 } };
 static const struct note disarm_notes[] = { { 990, 90 }, { 660, 110 } };
 static const struct note off_notes[]    = { { 880, 90 }, { 660, 90 },
                                             { 440, 160 } };
+/* The mirror of off: the same three notes the other way up, so "going down"
+ * and "coming up" are the same shape read in opposite directions. */
+static const struct note on_notes[]     = { { 440, 90 }, { 660, 90 },
+                                            { 880, 160 } };
 
 /* A square wave, not a sine.
  *
@@ -143,6 +147,7 @@ void tone_play(enum tone which)
     case TONE_ARM:    play(arm_notes,    ARRAY_SIZE(arm_notes));    break;
     case TONE_DISARM: play(disarm_notes, ARRAY_SIZE(disarm_notes)); break;
     case TONE_OFF:    play(off_notes,    ARRAY_SIZE(off_notes));    break;
+    case TONE_ON:     play(on_notes,     ARRAY_SIZE(on_notes));     break;
     }
 }
 

@@ -10,16 +10,22 @@
  * you just made started or stopped a recording. A rising pair and a falling
  * pair are distinguishable without looking, and without counting.
  *
- * Power-off gets its own, and it matters most of the three: a device that
- * goes quiet with no sound is indistinguishable from one that has crashed,
- * and this project has had enough of those to know the difference is worth
- * two hundred milliseconds of amplifier.
+ * Power-off gets its own, and it matters most: a device that goes quiet with
+ * no sound is indistinguishable from one that has crashed, and this project
+ * has had enough of those to know the difference is worth two hundred
+ * milliseconds of amplifier.
+ *
+ * And so does waking, for the reason the first hold found: the device said
+ * goodbye, went off, was woken by a press -- and said nothing at all, so the
+ * only way to know it had worked was to ask it over a cable. A farewell
+ * without a greeting is half a conversation.
  */
 
 enum tone {
     TONE_ARM,      /* rising pair -- recording */
     TONE_DISARM,   /* falling pair -- stopped */
     TONE_OFF,      /* three descending -- powering down */
+    TONE_ON,       /* three ascending -- awake again */
 };
 
 /* Returns 0, or a negative errno if there is no I2S on this board. */

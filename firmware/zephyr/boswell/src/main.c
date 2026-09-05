@@ -606,9 +606,12 @@ static int cmd_status(const struct shell *sh, size_t argc, char **argv)
       shell_print(sh, "dead-link fails=%u drops=%u silent=%u s", dl[0], dl[1], dl[2]); }
     shell_print(sh, "idle-guard armed=%u fired=%u dropped=%u",
                 idle[0], idle[1], idle[2]);
-    shell_print(sh, "last reset=0x%08x%s%s%s", last_reset_reason,
+    shell_print(sh, "last reset=0x%08x%s%s%s%s", last_reset_reason,
                 (last_reset_reason & NRF_POWER_RESETREAS_DOG_MASK)    ? " watchdog" : "",
                 (last_reset_reason & NRF_POWER_RESETREAS_LOCKUP_MASK) ? " lockup"   : "",
+                /* The one a person causes on purpose, and the one that read
+                 * as a bare hex number the first time the button was held. */
+                (last_reset_reason & NRF_POWER_RESETREAS_OFF_MASK) ? " woke from power-off" : "",
                 last_reset_reason == 0 ? " power-on" : "");
     shell_print(sh, "imu_stream=%u Hz gyro=%d", g_state.imu_hz,
                 imu_gyro_enabled());
@@ -1979,6 +1982,18 @@ int main(void)
             btn_err == -ENODEV ? " (no switch fitted)" : "");
 
     tone_init();
+
+    /* Say hello, but only to the press that asked for it.
+     *
+     * Every boot beeping would mean a beep on every reflash, every cable,
+     * and every crash-reboot -- noise that stops meaning anything. This one
+     * fires only when the reset register says the wake came from System OFF,
+     * which is exactly the case where somebody just held a button, heard
+     * three notes going down, and is waiting to learn whether their press
+     * did anything. */
+    if (last_reset_reason & NRF_POWER_RESETREAS_OFF_MASK) {
+        tone_play(TONE_ON);
+    }
 
     err = imu_tap_init(on_double_tap);
     LOG_INF("imu_tap_init -> %d", err);
