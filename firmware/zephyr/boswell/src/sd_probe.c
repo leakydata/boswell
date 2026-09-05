@@ -27,6 +27,11 @@
 #define PROBE_FILE MOUNT "/boswell_probe.txt"
 
 #include <zephyr/kernel.h>
+#include <zephyr/logging/log.h>
+
+/* Not "sd": Zephyr's own subsys/sd registers that name, and two modules with
+ * one name is a link error about log_const_sd that says nothing about logging. */
+LOG_MODULE_REGISTER(boswell_sd, LOG_LEVEL_INF);
 
 static FATFS fat;
 static struct fs_mount_t mp = {
@@ -47,6 +52,32 @@ static bool mounted;
  */
 #define STATS_STALE_MS (5 * 60 * 1000)
 
+/* The card gets its own thread, and nothing else may wait on it.
+ *
+ * This cost a watchdog reset to learn. Mounting takes about sixteen seconds
+ * on this card and counting free clusters takes seconds more, and both were
+ * reachable from ble_audio_publish_info() -- which runs on the Bluetooth RX
+ * thread and on the system workqueue. A multi-second block there stalls the
+ * transmit path, so WDT_TX never checks in, and thirty seconds later the
+ * watchdog resets the SoC. The board came up reporting
+ * "last reset=0x00000002 watchdog" and nothing else looked wrong.
+ *
+ * The system workqueue was the wrong home for the same reason: it is shared
+ * with tap handling and with connection callbacks, and a card that decides
+ * to spend twenty seconds on internal housekeeping must not be able to hold
+ * any of that up. A dedicated queue at a preemptible priority means the
+ * worst a slow card can do is report stale numbers.
+ */
+#define SD_WQ_STACK 4096
+#define SD_WQ_PRIO  K_PRIO_PREEMPT(10)
+
+K_THREAD_STACK_DEFINE(sd_wq_stack, SD_WQ_STACK);
+
+static struct k_work_q  sd_wq;
+/* The shell can probe the card while the queue is measuring it. FATFS is not
+ * reentrant across threads for the same volume, and two walks of the same
+ * allocation table would be a corrupt reading at best. */
+K_MUTEX_DEFINE(sd_lock);
 static struct sd_status cached;
 static int64_t          cached_at;
 static struct k_work    mount_work;
@@ -56,13 +87,24 @@ static int do_mount(void)
     if (mounted) {
         return 0;
     }
+    /* Logged step by step because the failure being chased is a hang, not an
+     * error code: a mount that never returns leaves no return value to
+     * inspect, and the last line printed is the only thing that says which
+     * call is stuck. */
+    LOG_INF("mount: disk init");
+    int64_t t0 = k_uptime_get();
     if (disk_access_init(DISK) != 0) {
+        LOG_WRN("mount: no card (%lld ms)", k_uptime_get() - t0);
         return -ENODEV;
     }
+    LOG_INF("mount: disk ready in %lld ms, mounting", k_uptime_get() - t0);
+    t0 = k_uptime_get();
     int err = fs_mount(&mp);
     if (err != 0) {
+        LOG_WRN("mount: fs_mount %d after %lld ms", err, k_uptime_get() - t0);
         return err;
     }
+    LOG_INF("mount: mounted in %lld ms", k_uptime_get() - t0);
     mounted = true;
     return 0;
 }
@@ -72,10 +114,16 @@ static void measure(void)
     struct fs_statvfs st;
 
     cached_at = k_uptime_get();
+    int64_t t0 = k_uptime_get();
+    LOG_INF("stat: counting free clusters");
     if (!mounted || fs_statvfs(MOUNT, &st) != 0) {
+        LOG_WRN("stat: statvfs failed after %lld ms", k_uptime_get() - t0);
         cached.mounted = mounted;
         return;
     }
+    LOG_INF("stat: took %lld ms", k_uptime_get() - t0);
+    LOG_INF("stat: %llu blocks free of %llu", (uint64_t) st.f_bfree,
+            (uint64_t) st.f_blocks);
     uint64_t all_mb  = ((uint64_t) st.f_blocks * st.f_frsize) / (1024ULL * 1024ULL);
     uint64_t free_mb = ((uint64_t) st.f_bfree  * st.f_frsize) / (1024ULL * 1024ULL);
 
@@ -90,15 +138,20 @@ static void measure(void)
 static void mount_work_fn(struct k_work *w)
 {
     ARG_UNUSED(w);
+    k_mutex_lock(&sd_lock, K_FOREVER);
     if (do_mount() == 0) {
         measure();
     }
+    k_mutex_unlock(&sd_lock);
 }
 
 void sd_probe_init(void)
 {
+    k_work_queue_start(&sd_wq, sd_wq_stack, K_THREAD_STACK_SIZEOF(sd_wq_stack),
+                       SD_WQ_PRIO, NULL);
+    k_thread_name_set(&sd_wq.thread, "sd");
     k_work_init(&mount_work, mount_work_fn);
-    k_work_submit(&mount_work);
+    k_work_submit_to_queue(&sd_wq, &mount_work);
 }
 
 void sd_status_get(struct sd_status *out)
@@ -110,16 +163,26 @@ void sd_status_get(struct sd_status *out)
 
 void sd_status_poll(void)
 {
+    /* Asks; does not measure. Every caller of this is on a path that must
+     * not block -- the info characteristic is published from the Bluetooth
+     * RX thread -- so the work is handed to the card's own queue and the
+     * caller returns with whatever the last measurement said.
+     *
+     * cached_at moves before the work runs rather than after, so a poll a
+     * second later does not queue the same measurement again while the
+     * first is still walking the allocation table.
+     */
     if (!mounted) {
         return;
     }
     if (cached_at != 0 && k_uptime_get() - cached_at < STATS_STALE_MS) {
         return;
     }
-    measure();
+    cached_at = k_uptime_get();
+    k_work_submit_to_queue(&sd_wq, &mount_work);
 }
 
-int sd_probe(const struct shell *sh)
+static int sd_probe_locked(const struct shell *sh)
 {
     uint32_t sector_count = 0, sector_size = 0;
     int err;
@@ -201,4 +264,28 @@ int sd_probe(const struct shell *sh)
 
     shell_print(sh, "sd: round trip ok -- card is working");
     return 0;
+}
+
+int sd_probe(const struct shell *sh)
+{
+    /* Held for the whole probe, not per step: the write and the read back
+     * are one measurement, and a refresh landing between them would be
+     * measuring a different card state than the one being reported. */
+    /* Bounded, not K_FOREVER.
+     *
+     * This command exists to diagnose the card, and the state it most needs
+     * to report is the one where the card is stuck -- which is exactly when
+     * a K_FOREVER lock makes it hang with no output at all. A diagnostic that
+     * goes silent when the fault appears is worse than none, because the
+     * silence gets read as a dead board rather than a busy one.
+     */
+    if (k_mutex_lock(&sd_lock, K_SECONDS(5)) != 0) {
+        shell_print(sh, "sd: busy -- a mount or refresh has been running for "
+                        "over 5 s and has not returned");
+        shell_print(sh, "    that is the fault, not a timeout of this command");
+        return -EBUSY;
+    }
+    int rc = sd_probe_locked(sh);
+    k_mutex_unlock(&sd_lock);
+    return rc;
 }

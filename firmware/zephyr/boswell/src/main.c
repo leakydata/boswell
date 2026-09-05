@@ -324,6 +324,26 @@ static int cmd_opus(const struct shell *sh, size_t argc, char **argv)
 }
 #endif
 
+/* Clearing the backlog needed a Bluetooth round trip, and that is exactly
+ * the thing that stops working when the backlog is the problem: a board with
+ * a wedged drain resets before the write can be acknowledged, so the one
+ * command that would fix it could never land. The shell does not depend on
+ * the radio, on a link staying up, or on the board surviving another thirty
+ * seconds -- which is the whole argument for it being here. */
+static int cmd_drop(const struct shell *sh, size_t argc, char **argv)
+{
+    ARG_UNUSED(argc); ARG_UNUSED(argv);
+    uint32_t before = qspi_store_pending();
+
+    if (!qspi_store_ready()) {
+        shell_print(sh, "backlog: flash not ready, nothing to clear");
+        return 0;
+    }
+    qspi_store_reset();
+    shell_print(sh, "backlog: %u B -> %u B", before, qspi_store_pending());
+    return 0;
+}
+
 static int cmd_imu(const struct shell *sh, size_t argc, char **argv)
 {
     ARG_UNUSED(argc); ARG_UNUSED(argv);
@@ -538,6 +558,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(boswell_cmds,
     SHELL_CMD(status, NULL, "Show capture state", cmd_status),
     SHELL_CMD(reboot, NULL, "Restart the firmware", cmd_reboot),
     SHELL_CMD(stream, NULL, "Arm/disarm capture (on|off)", cmd_stream),
+    SHELL_CMD(drop, NULL, "Discard the buffered backlog in flash", cmd_drop),
     SHELL_CMD(imu, NULL, "Re-probe the IMU and report", cmd_imu),
 #ifdef CONFIG_BOSWELL_OPUS
     SHELL_CMD(opus, NULL, "Report the Opus encoder's memory use", cmd_opus),
