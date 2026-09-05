@@ -697,6 +697,9 @@ static int drain_to_host(const uint8_t *rec, uint16_t len)
 static void on_double_tap(void)
 {
     g_state.streaming = !g_state.streaming;
+    /* Only here. The host adopts the device's state when this moves, so any
+     * other writer would make a lost command look like somebody's decision. */
+    g_state.tap_seq++;
     LOG_INF("double tap -> %s", g_state.streaming ? "capturing" : "stopped");
     ble_audio_apply_conn_params(g_state.streaming);
     ble_audio_publish_info();

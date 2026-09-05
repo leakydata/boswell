@@ -117,6 +117,12 @@
 #define INFO_CAP_BOOTID    0x0080   /* bytes 22-23 identify this boot */
 #define INFO_CAP_SPLITBUF  0x0100   /* CTRL_BUFFER and CTRL_REPLAY understood */
 #define INFO_CAP_DROPS     0x0200   /* bytes 40-43 are notification drops */
+/* Byte 44 counts double-tap toggles. It exists so the host can tell a
+ * person reaching for the device from a control write that went missing.
+ * Both look identical in the capture state alone -- the device disagrees
+ * with what we last asked for -- and they want opposite responses: undo
+ * the drift, or accept the decision. Only on_double_tap() moves it. */
+#define INFO_CAP_TAPSEQ    0x0400   /* byte 44 counts tap toggles */
 
 /* Control opcodes, unchanged from the Arduino build. */
 enum {
@@ -175,6 +181,10 @@ struct boswell_state {
     uint8_t  buffering;      /* store and forward while disconnected */
     uint8_t  mic_power_save;
     int8_t   tx_power;
+    /* Wraps at 256, which is fine: the host compares for change, not
+     * magnitude. Several taps between two reads leave the device in
+     * whichever state it ended in, and that is the state reported. */
+    uint8_t  tap_seq;
 };
 
 extern struct boswell_state g_state;

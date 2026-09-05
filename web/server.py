@@ -181,6 +181,7 @@ def parse_info(info):
     has_overruns = bool(caps & 0x0020)
     has_state = bool(caps & 0x0040)
     has_bootid = bool(caps & 0x0080)
+    has_tapseq = bool(caps & 0x0400)
     out["boot_id"] = (info[22] | (info[23] << 8)) if (
         has_bootid and len(info) >= 24) else None
     out["info_version"] = version
@@ -231,6 +232,13 @@ def parse_info(info):
         out["charging"] = bool(flags & 1)
         out["fast_charge"] = bool(flags & 2)
         out["mic_running"] = bool(flags & 4)
+    if has_tapseq and len(info) >= 45:
+        # Counts double-tap toggles. Not a state -- a change to it is the
+        # only evidence the host gets that a person, rather than a dropped
+        # control write, is why the device disagrees with us. Gated on the
+        # capability rather than the length alone: the Arduino build has no
+        # double tap and publishes a constant zero in this byte.
+        out["tap_seq"] = info[44]
     if len(info) >= 39:
         # Samples the microphone produced with nowhere to put them. Any value
         # above zero is audible as a click. Only meaningful on a firmware that
@@ -863,6 +871,35 @@ class Device:
         # Of the two, this direction is the one that matters. Failing to record
         # is a lost conversation; recording while the interface says you are not
         # is a promise broken to whoever is in the room.
+        # A tap is a decision, not drift.
+        #
+        # reconcile_capture cannot tell them apart: "the device is capturing
+        # and we believe it is not" is equally true when somebody double-tapped
+        # it and when our own disarm went missing, and the two want opposite
+        # answers. So the device counts its taps, and a counter that moved says
+        # a person did this -- adopt what they chose, remember it so the app
+        # shows it and a reconnect does not undo it, and skip the reconciler
+        # for this round rather than immediately reversing them.
+        #
+        # Guarded on the boot id because the counter restarts at zero with the
+        # firmware, and a reboot is not somebody tapping.
+        tap_seq = parsed.get("tap_seq")
+        last_seq = getattr(self, "_tap_seq", None)
+        rebooted = new_id is not None and old_id is not None and new_id != old_id
+        if tap_seq is not None:
+            self._tap_seq = tap_seq
+        if (tap_seq is not None and last_seq is not None and not rebooted
+                and tap_seq != last_seq
+                and parsed["device_streaming"] is not None
+                and bool(parsed["device_streaming"]) != bool(self.state.get("armed"))):
+            want = bool(parsed["device_streaming"])
+            print(f"double tap on the device -> capture "
+                  f"{'ARMED' if want else 'DISARMED'}; adopting", flush=True)
+            self.event("log", text=f"double tap: recording {'on' if want else 'off'}")
+            self._rearm_needed = self._redisarm_needed = False
+            await self.set_armed(want, by_user=True)
+            return
+
         action = reconcile_capture(parsed["device_streaming"],
                                    self.state.get("armed"))
         if action == "rearm":

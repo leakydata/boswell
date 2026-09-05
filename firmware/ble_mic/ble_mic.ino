@@ -477,7 +477,7 @@ static void applyGain(int gain) {
 }
 
 static void publishInfo() {
-  uint8_t info[44];
+  uint8_t info[45];
   info[0] = 1;                          // codec: 1 = IMA ADPCM
   info[1] = use16k ? 1 : 0;
   info[2] = FRAME_MS;
@@ -560,6 +560,12 @@ static void publishInfo() {
   info[35] = (uint8_t)(batteryMv >> 8);
   info[36] = batteryPercent(batteryMv);
   info[37] = (uint8_t)((charging ? 1 : 0) | (fastCharge ? 2 : 0) | (micRunning ? 4 : 0));
+  // Byte 44 is Zephyr's double-tap counter. This build has no double tap,
+  // so it stays zero and INFO_CAP_TAPSEQ is not advertised -- but it is
+  // written rather than left alone, because nothing memsets this array and
+  // stack garbage here would read as a counter that keeps moving, which is
+  // precisely the signal the host adopts capture state from.
+  info[44] = 0;
   infoChar.write(info, sizeof(info));
 }
 
