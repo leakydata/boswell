@@ -150,6 +150,23 @@
  *
  * To move it: change the pin below. Nothing else refers to it.
  */
+/*
+ * The board enables uart0 and its pinctrl claims P1.11 and P1.12 -- D6 and
+ * D7 -- as TX and RX. Nothing here uses it: the console and the shell are
+ * both on USB CDC, declared above. Left enabled it simply owns two header
+ * pins, and the button on D7 was configured, interrupt-enabled, and never
+ * saw an edge, because the UART peripheral had the pin.
+ *
+ * Disabled rather than moving the button, because by the time this was found
+ * the switch was soldered to D7 and hardware that already exists beats a
+ * pin choice that only exists in a file. If a hardware UART is ever wanted
+ * -- and it would be worth having, since USB CDC cannot deliver a panic
+ * banner -- it can go on D4/D5.
+ */
+&uart0 {
+	status = "disabled";
+};
+
 / {
 	buttons {
 		compatible = "gpio-keys";

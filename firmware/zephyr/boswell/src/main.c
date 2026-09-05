@@ -708,6 +708,90 @@ static int cmd_card(const struct shell *sh, size_t argc, char **argv)
     return 0;
 }
 
+/* Which header pin is the switch actually on?
+ *
+ * `boswell button` answers "did a press arrive", and when the answer is no it
+ * cannot say why: an open joint, the wrong pin, and a pin another peripheral
+ * already owns all look identical from there. This watches several pins at
+ * once for a few seconds and reports which ones moved, so a press during the
+ * window identifies the pin rather than confirming a guess about it.
+ *
+ * D0 and D8-D10 are left out on purpose. The card's SPI has them on this
+ * board, and reconfiguring them as inputs to look for a button would stop the
+ * recording that is the reason the board exists.
+ */
+static int cmd_pins(const struct shell *sh, size_t argc, char **argv)
+{
+    static const struct { const char *name; int port, pin; } cand[] = {
+        { "D1", 0,  3 }, { "D2", 0, 28 }, { "D3", 0, 29 },
+        { "D4", 0,  4 }, { "D5", 0,  5 },
+        { "D6", 1, 11 }, { "D7", 1, 12 },
+    };
+
+    int secs = 10;
+    if (argc > 1) {
+        secs = atoi(argv[1]);
+        if (secs < 1)  secs = 1;
+        if (secs > 30) secs = 30;
+    }
+
+    const struct device *p0 = DEVICE_DT_GET(DT_NODELABEL(gpio0));
+    const struct device *p1 = DEVICE_DT_GET(DT_NODELABEL(gpio1));
+    if (!device_is_ready(p0) || !device_is_ready(p1)) {
+        shell_print(sh, "gpio not ready");
+        return 0;
+    }
+
+    int start[ARRAY_SIZE(cand)];
+    int changes[ARRAY_SIZE(cand)] = { 0 };
+    int last[ARRAY_SIZE(cand)];
+
+    for (size_t i = 0; i < ARRAY_SIZE(cand); i++) {
+        const struct device *d = cand[i].port ? p1 : p0;
+        /* Pull-up and active-low, the same way the button is declared, so a
+         * switch to ground reads 1 when pressed whichever pin it is on. */
+        gpio_pin_configure(d, cand[i].pin,
+                           GPIO_INPUT | GPIO_PULL_UP | GPIO_ACTIVE_LOW);
+        start[i] = last[i] = gpio_pin_get(d, cand[i].pin);
+    }
+
+    shell_print(sh, "watching D1-D7 for %d s -- press the button now", secs);
+
+    int64_t end = k_uptime_get() + secs * 1000;
+    while (k_uptime_get() < end) {
+        for (size_t i = 0; i < ARRAY_SIZE(cand); i++) {
+            const struct device *d = cand[i].port ? p1 : p0;
+            int v = gpio_pin_get(d, cand[i].pin);
+            if (v != last[i]) {
+                changes[i]++;
+                last[i] = v;
+            }
+        }
+        k_msleep(5);
+    }
+
+    bool any = false;
+    for (size_t i = 0; i < ARRAY_SIZE(cand); i++) {
+        if (changes[i]) {
+            any = true;
+            shell_print(sh, "  %s (P%d.%02d): %d change(s), now %d",
+                        cand[i].name, cand[i].port, cand[i].pin,
+                        changes[i], last[i]);
+        }
+    }
+    if (!any) {
+        shell_print(sh, "  nothing moved. Idle levels (1 = pulled to ground):");
+        for (size_t i = 0; i < ARRAY_SIZE(cand); i++) {
+            shell_print(sh, "    %s (P%d.%02d) = %d",
+                        cand[i].name, cand[i].port, cand[i].pin, start[i]);
+        }
+    }
+
+    /* Put D7 back the way button.c wants it; the others were unclaimed. */
+    gpio_pin_configure(p1, 12, GPIO_INPUT | GPIO_PULL_UP | GPIO_ACTIVE_LOW);
+    return 0;
+}
+
 static int cmd_button(const struct shell *sh, size_t argc, char **argv)
 {
     ARG_UNUSED(argc); ARG_UNUSED(argv);
@@ -748,6 +832,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(boswell_cmds,
     SHELL_CMD(tap, NULL, "Set double-tap threshold (0-31)", cmd_tap),
     SHELL_CMD(taps, NULL, "Show tap counters", cmd_taps),
     SHELL_CMD(button, NULL, "Show push-button counters", cmd_button),
+    SHELL_CMD(pins, NULL, "Watch header pins to find the button", cmd_pins),
     SHELL_CMD(card, NULL, "Show what has been written to the card", cmd_card),
     SHELL_CMD(cardls, NULL, "List recordings on the card and check them", cmd_cardls),
 #ifdef CONFIG_DISK_DRIVER_SDMMC
