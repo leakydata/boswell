@@ -26,6 +26,8 @@
 #define MOUNT "/SD:"
 #define PROBE_FILE MOUNT "/boswell_probe.txt"
 
+#include <zephyr/kernel.h>
+
 static FATFS fat;
 static struct fs_mount_t mp = {
     .type = FS_FATFS,
@@ -33,6 +35,89 @@ static struct fs_mount_t mp = {
     .mnt_point = MOUNT,
 };
 static bool mounted;
+
+/* Cached, because measuring is expensive.
+ *
+ * fs_statvfs() on FAT counts free clusters by walking the allocation table.
+ * On this card that is seconds, and the info characteristic is read about
+ * once a second -- so measuring on demand would put a multi-second blocking
+ * SPI transfer on the path that reports battery and capture state. The
+ * numbers move slowly; a stale free-space figure is worth far more than a
+ * status characteristic that stalls.
+ */
+#define STATS_STALE_MS (5 * 60 * 1000)
+
+static struct sd_status cached;
+static int64_t          cached_at;
+static struct k_work    mount_work;
+
+static int do_mount(void)
+{
+    if (mounted) {
+        return 0;
+    }
+    if (disk_access_init(DISK) != 0) {
+        return -ENODEV;
+    }
+    int err = fs_mount(&mp);
+    if (err != 0) {
+        return err;
+    }
+    mounted = true;
+    return 0;
+}
+
+static void measure(void)
+{
+    struct fs_statvfs st;
+
+    cached_at = k_uptime_get();
+    if (!mounted || fs_statvfs(MOUNT, &st) != 0) {
+        cached.mounted = mounted;
+        return;
+    }
+    uint64_t all_mb  = ((uint64_t) st.f_blocks * st.f_frsize) / (1024ULL * 1024ULL);
+    uint64_t free_mb = ((uint64_t) st.f_bfree  * st.f_frsize) / (1024ULL * 1024ULL);
+
+    /* Published as 16-bit megabytes, which tops out at 64 GB. A larger card
+     * would wrap and report a small one, so it saturates instead: a figure
+     * that is merely capped is recoverable, one that wrapped is a lie. */
+    cached.mounted  = true;
+    cached.total_mb = all_mb  > 0xFFFF ? 0xFFFF : (uint16_t) all_mb;
+    cached.free_mb  = free_mb > 0xFFFF ? 0xFFFF : (uint16_t) free_mb;
+}
+
+static void mount_work_fn(struct k_work *w)
+{
+    ARG_UNUSED(w);
+    if (do_mount() == 0) {
+        measure();
+    }
+}
+
+void sd_probe_init(void)
+{
+    k_work_init(&mount_work, mount_work_fn);
+    k_work_submit(&mount_work);
+}
+
+void sd_status_get(struct sd_status *out)
+{
+    if (out) {
+        *out = cached;
+    }
+}
+
+void sd_status_poll(void)
+{
+    if (!mounted) {
+        return;
+    }
+    if (cached_at != 0 && k_uptime_get() - cached_at < STATS_STALE_MS) {
+        return;
+    }
+    measure();
+}
 
 int sd_probe(const struct shell *sh)
 {
@@ -60,13 +145,10 @@ int sd_probe(const struct shell *sh)
     shell_print(sh, "sd: %u sectors x %u B = %llu MB",
                 sector_count, sector_size, bytes / (1024ULL * 1024ULL));
 
-    if (!mounted) {
-        err = fs_mount(&mp);
-        if (err != 0) {
-            shell_print(sh, "sd: card is readable but will not mount (%d)", err);
-            return err;
-        }
-        mounted = true;
+    err = do_mount();
+    if (err != 0) {
+        shell_print(sh, "sd: card is readable but will not mount (%d)", err);
+        return err;
     }
 
     struct fs_statvfs st;
@@ -112,6 +194,10 @@ int sd_probe(const struct shell *sh)
     /* Leave nothing behind; a stray file in the root is how a probe becomes
      * a thing somebody has to clean up later. */
     fs_unlink(PROBE_FILE);
+
+    /* The probe just changed the free space, and it is the one moment the
+     * cost of counting clusters is already being paid for. */
+    measure();
 
     shell_print(sh, "sd: round trip ok -- card is working");
     return 0;

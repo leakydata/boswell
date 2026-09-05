@@ -552,6 +552,9 @@ html{scroll-padding-top:120px}
       <label class="row">Voice activity gating
         <span class="switch" id="vad" role="switch" aria-checked="false" tabindex="0"></span>
       </label>
+      <label class="row">Storage card
+        <span class="val" id="cardv">—</span>
+      </label>
       <label class="row">Double tap to start and stop
         <span class="switch" id="tapon" role="switch" aria-checked="false" tabindex="0"></span>
       </label>
@@ -1146,6 +1149,7 @@ function paint(s){
   $("bDis").disabled = !s.connected && !s.scanning;
   $("gain").disabled = !s.connected;
   $("tapths").disabled = !s.connected;
+  $("cardv").textContent = cardLabel(s);
   if (typeof s.tap_enabled === "boolean")
     $("tapon").setAttribute("aria-checked", s.tap_enabled ? "true" : "false");
   // Only when the device told us. A board whose firmware predates the
@@ -4653,6 +4657,21 @@ gain.onchange = () => send({cmd:"gain", value:+gain.value});
 // firmware configures +/-2 g, so a step is 62.5 mg. Showing the number alone
 // would mean nothing; showing what it is in g is the difference between
 // "12" and "about the firmness of a deliberate knock".
+// Three states, not two. A firmware with no card support reports nothing at
+// all, which is a different thing from a board that supports one and has no
+// card in the slot -- and saying "no card" for both would send somebody
+// looking for a hardware fault in a build that never had the feature.
+function cardLabel(s){
+  if (s.card_present === null || s.card_present === undefined)
+    return s.connected ? "not supported by this firmware" : "—";
+  if (!s.card_present) return "no card";
+  const total = s.card_total_mb || 0, free = s.card_free_mb || 0;
+  if (!total) return "mounted";
+  const used = total - free;
+  const gb = v => v >= 1024 ? `${(v/1024).toFixed(1)} GB` : `${v} MB`;
+  return `${gb(free)} free of ${gb(total)} · ${Math.round(100*used/total)}% used`;
+}
+
 function tapLabel(v){
   const mg = v * 62.5;
   return mg >= 1000 ? `${v} · ${(mg/1000).toFixed(2)} g` : `${v} · ${mg.toFixed(0)} mg`;

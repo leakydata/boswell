@@ -186,6 +186,7 @@ def parse_info(info):
     has_bootid = bool(caps & 0x0080)
     has_tapseq = bool(caps & 0x0400)
     has_tapcfg = bool(caps & 0x0800)
+    has_sdcard = bool(caps & 0x1000)
     out["boot_id"] = (info[22] | (info[23] << 8)) if (
         has_bootid and len(info) >= 24) else None
     out["info_version"] = version
@@ -249,6 +250,16 @@ def parse_info(info):
         # another machine -- or never tuned -- reports its own value rather
         # than whatever this host last asked for.
         out["tap_thresh"] = info[45]
+    if has_sdcard and len(info) >= 51:
+        # Megabytes, 16-bit, saturating. A build without the hardware leaves
+        # these zero and does not set the bit, which is the difference
+        # between "no card fitted" and "a card with no room left" -- the same
+        # two readings, told apart by the capability and not by the value.
+        out["card_present"] = bool(info[46])
+        out["card_total_mb"] = info[47] | (info[48] << 8)
+        out["card_free_mb"] = info[49] | (info[50] << 8)
+    else:
+        out["card_present"] = None
     if len(info) >= 39:
         # Samples the microphone produced with nowhere to put them. Any value
         # above zero is audible as a click. Only meaningful on a firmware that
@@ -303,6 +314,9 @@ class Device:
             "backlog_seconds": 0.0, "qspi_mb": 0, "imu": False,
             "peak": 0, "rms": 0.0, "level": 0.0, "error": None,
             "clip_seconds": 0.0, "source": None,
+            # None means "this firmware has no card support", which is not
+            # the same as False, meaning "it has support and no card".
+            "card_present": None, "card_total_mb": 0, "card_free_mb": 0,
             # Which board this is, so a two-board bench can tell them apart
             # without reading the journal. None until something connects.
             "device_address": None,

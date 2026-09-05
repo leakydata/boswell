@@ -140,6 +140,7 @@
  * the drift, or accept the decision. Only on_double_tap() moves it. */
 #define INFO_CAP_TAPSEQ    0x0400   /* byte 44 counts tap toggles */
 #define INFO_CAP_TAPCFG    0x0800   /* byte 45 is the tap threshold */
+#define INFO_CAP_SDCARD    0x1000   /* bytes 46-50 describe the card */
 
 /* Control opcodes, unchanged from the Arduino build. */
 enum {

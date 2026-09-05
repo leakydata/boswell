@@ -477,7 +477,7 @@ static void applyGain(int gain) {
 }
 
 static void publishInfo() {
-  uint8_t info[46];
+  uint8_t info[51];
   info[0] = 1;                          // codec: 1 = IMA ADPCM
   info[1] = use16k ? 1 : 0;
   info[2] = FRAME_MS;
@@ -572,6 +572,11 @@ static void publishInfo() {
    * which the capability bit already says; the point is that it says it
    * consistently rather than differently on every notification. */
   info[45] = 0;
+  /* No card on this build, and the absent INFO_CAP_SDCARD bit says so. These
+   * are zeroed for the same reason bytes 44 and 45 are: the array is never
+   * memset, so anything left unfilled is stack residue, and residue in a
+   * free-space field reads as a card with an arbitrary amount of room. */
+  info[46] = 0; info[47] = 0; info[48] = 0; info[49] = 0; info[50] = 0;
   infoChar.write(info, sizeof(info));
 }
 

@@ -1284,6 +1284,13 @@ int main(void)
     err = imu_tap_init(on_double_tap);
     LOG_INF("imu_tap_init -> %d", err);
 
+#ifdef CONFIG_DISK_DRIVER_SDMMC
+    /* Queued, not performed. Mounting this card took sixteen seconds, most of
+     * it counting free clusters, and every one of those would be a second the
+     * microphone was not running. */
+    sd_probe_init();
+#endif
+
     /* After the drivers exist, so applying a restored value reaches hardware
      * rather than only updating a variable that init then overwrites. */
     struct boswell_settings saved;
