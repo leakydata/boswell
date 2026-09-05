@@ -103,12 +103,57 @@ static bool vbus_present(void)
             NRF_POWER_USBREGSTATUS_VBUSDETECT_MASK) != 0;
 }
 
+/* Who owns the card, decided by whether a computer has actually enumerated us.
+ *
+ * Mass storage means two writers can reach one FAT volume, and that is how
+ * volumes get destroyed. The firmware gives the card up whenever a host
+ * configures the USB device, and takes it back when that goes away.
+ *
+ * Enumeration is the right signal rather than VBUS. A wall charger or a power
+ * bank supplies VBUS and never enumerates anything, and a device charging on
+ * a bedside table should go on recording to the card; a computer is the only
+ * thing that both enumerates and wants to read the drive.
+ *
+ * Nothing slow happens here -- this runs in USB context, and the release
+ * flushes and unmounts.
+ */
+static void usb_status(enum usb_dc_status_code status, const uint8_t *param)
+{
+    ARG_UNUSED(param);
+
+#ifdef CONFIG_DISK_DRIVER_SDMMC
+    switch (status) {
+    case USB_DC_CONFIGURED:
+        /* A host has us. Whatever is still in RAM goes to the card, the
+         * volume is unmounted, and writes stop until it lets go. Capture
+         * carries on into the QSPI ring, which is where a docked device's
+         * audio lives until it is undocked. */
+        sd_release();
+        break;
+
+    case USB_DC_DISCONNECTED:
+    case USB_DC_SUSPEND:
+        /* Suspend counts. A host that has gone to sleep is not reading the
+         * drive, and a device left plugged into a sleeping laptop overnight
+         * should be recording rather than waiting. */
+        sd_reclaim();
+        break;
+
+    default:
+        break;
+    }
+#else
+    /* No card slot, so nothing to hand over. */
+    ARG_UNUSED(status);
+#endif
+}
+
 static void usb_service(void)
 {
     if (usb_up || !vbus_present()) {
         return;
     }
-    if (usb_enable(NULL) == 0) {
+    if (usb_enable(usb_status) == 0) {
         usb_up = true;
         LOG_INF("USB attached");
     }
@@ -613,6 +658,32 @@ static void print_fault(const struct shell *sh)
 
 static void report_last_fault(void) { print_fault(NULL); }
 
+#ifdef CONFIG_DISK_DRIVER_SDMMC
+/* Force the handover either way.
+ *
+ * Normally this follows USB enumeration and needs no help. It needs help on a
+ * bench, where the shell arrives over the same cable that hands the card to
+ * the host -- so plugging in to type `boswell cardls` is exactly what stops
+ * it working. "dock off" takes the card back without unplugging.
+ */
+static int cmd_dock(const struct shell *sh, size_t argc, char **argv)
+{
+    if (argc > 1) {
+        if (argv[1][1] == 'n') {          /* on */
+            sd_release();
+        } else {
+            sd_reclaim();
+        }
+        shell_print(sh, "asked to %s; it happens on the card thread",
+                    argv[1][1] == 'n' ? "release" : "reclaim");
+        return 0;
+    }
+    shell_print(sh, "card owner: %s",
+                sd_is_released() ? "USB host (docked)" : "firmware");
+    return 0;
+}
+#endif
+
 static int cmd_cardls(const struct shell *sh, size_t argc, char **argv)
 {
     ARG_UNUSED(argc); ARG_UNUSED(argv);
@@ -627,6 +698,10 @@ static int cmd_card(const struct shell *sh, size_t argc, char **argv)
     sd_store_get_stats(&st);
     shell_print(sh, "card ready=%d frames=%u bytes=%u files=%u",
                 sd_store_ready(), st.frames, st.bytes, st.files);
+#ifdef CONFIG_DISK_DRIVER_SDMMC
+    shell_print(sh, "  owner=%s", sd_is_released() ? "USB host (docked)"
+                                                   : "firmware");
+#endif
     shell_print(sh, "  write errors=%u worst write=%u ms last err=%d",
                 st.write_errs, st.worst_ms, st.last_err);
     return 0;
@@ -674,6 +749,9 @@ SHELL_STATIC_SUBCMD_SET_CREATE(boswell_cmds,
     SHELL_CMD(button, NULL, "Show push-button counters", cmd_button),
     SHELL_CMD(card, NULL, "Show what has been written to the card", cmd_card),
     SHELL_CMD(cardls, NULL, "List recordings on the card and check them", cmd_cardls),
+#ifdef CONFIG_DISK_DRIVER_SDMMC
+    SHELL_CMD(dock, NULL, "Give the card to USB, or take it back (on|off)", cmd_dock),
+#endif
     SHELL_CMD(steps, NULL, "Show step count, or 'steps reset'", cmd_steps),
     SHELL_CMD(unpair, NULL, "Forget every paired host", cmd_unpair),
     SHELL_CMD(adv, NULL, "Force advertising to restart", cmd_adv),
@@ -1571,7 +1649,7 @@ int main(void)
     /* Only wait for enumeration when there is a host to enumerate with.
      * On battery this saves a second and a half of boot spent on nothing. */
     if (vbus_present()) {
-        (void)usb_enable(NULL);
+        (void)usb_enable(usb_status);
         usb_up = true;
         k_sleep(K_MSEC(1500));
     }

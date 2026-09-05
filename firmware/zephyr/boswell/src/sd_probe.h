@@ -49,3 +49,23 @@ extern struct k_mutex sd_lock;
 
 /* Is the volume mounted right now? */
 bool sd_mounted(void);
+
+/* Hand the card to the USB host, and take it back.
+ *
+ * Mass storage talks to the block device directly, sector by sector. It knows
+ * nothing about the filesystem, so while the host has the volume, FATFS must
+ * not merely be idle -- it must be unmounted. FATFS caches the FSINFO free
+ * count and directory entries, and a host writing sectors underneath a
+ * mounted volume leaves those caches describing a card that no longer exists.
+ * The next firmware write then commits them, and the corruption is the
+ * firmware's, not the host's.
+ *
+ * Both are asynchronous: unmounting flushes, and mounting this card took
+ * sixteen seconds the first time, so neither can happen on a USB callback.
+ */
+void sd_release(void);
+void sd_reclaim(void);
+
+/* True while the host owns the card and the firmware must keep off it. */
+bool sd_is_released(void);
+

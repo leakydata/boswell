@@ -161,7 +161,11 @@ void sd_store_init(void)
 
 bool sd_store_ready(void)
 {
-    return started && sd_mounted();
+    /* Released means a USB host owns the volume. Writing then is not "risky"
+     * -- FATFS is unmounted, so there is nothing to write through, and the
+     * caches that would be committed describe a card the host has been
+     * editing underneath us. */
+    return started && sd_mounted() && !sd_is_released();
 }
 
 void sd_store_format(uint8_t codec, uint16_t rate, uint32_t boot_id)
@@ -179,7 +183,7 @@ void sd_store_format(uint8_t codec, uint16_t rate, uint32_t boot_id)
 
 int sd_store_write(const uint8_t *rec, uint16_t len)
 {
-    if (!started || !sd_mounted()) {
+    if (!sd_store_ready()) {
         return 0;                 /* not yet -- keep it in the ring */
     }
     if (len == 0 || len > MAX_FRAME_LEN) {

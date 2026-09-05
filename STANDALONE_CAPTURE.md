@@ -14,6 +14,7 @@ What is built, and what is waiting on a decision or on hardware.
 | Cursor save | moved off the writer thread onto `qspi-save` | **on hardware**: two backlogs drained while connected, 0 resets |
 | Push button | gesture driver on D7, single press toggles capture | builds; 11 tests; **no switch to press yet** |
 | Card capture | audio spills to FAT files past a 75% ring mark | **on hardware**: 600 KB written, header read back, 0 errors |
+| USB offload | the card mounts on the host as a drive | **on hardware**: file read and decoded to 126 s of audio |
 | Card capture | audio spills to FAT files past a 75% ring mark | **on hardware**: 600 KB written, header verified, 0 errors |
 | OTA | `CTRL_DFU` sent from the app, gated on the capability bit | 8 tests; not yet triggered on hardware |
 | Device selection | `BOSWELL_DEVICE` picks a board by address or name | 10 tests |
@@ -172,6 +173,67 @@ could be reached in three minutes rather than after a day of talking:
 files and validates each header, because "the frame counter went up" is not
 the same as "there is a readable recording on the card".
 
+## Phase 05 is built: the card is a drive
+
+`CONFIG_USB_MASS_STORAGE` exposes the card, and the whole loop has been run:
+docked the device, mounted it on the host, read the file the firmware wrote,
+decoded it, and got 126 seconds of real audio out.
+
+| | |
+|---|---|
+| host sees | `sdc  14.6G  usb  ZEPHYR USB DISK` |
+| file read | `b0000e9cd_0000.bwl`, 600,335 bytes |
+| decoded | 6,319 frames, **0 unusable**, 126.4 s at 16 kHz |
+| signal | RMS 854, peak 8442, 75.7% of samples above the noise floor |
+
+**The rule that makes it safe is unmounting, not merely stopping.** Mass
+storage talks to the block device sector by sector and knows nothing about
+the filesystem. FATFS caches the FSINFO free count and directory entries, so
+a host writing underneath a *mounted* volume leaves those caches describing a
+card that no longer exists -- and the next firmware write commits them. The
+corruption would be the firmware's, not the host's. So the handover is a real
+`fs_unmount()`, and taking it back is a real mount.
+
+Enumeration is the trigger, not VBUS. A wall charger supplies VBUS and never
+enumerates; a device charging on a bedside table should go on recording. A
+computer is the only thing that both enumerates and wants the drive. Suspend
+counts as letting go, so a device left plugged into a sleeping laptop
+overnight records rather than waits.
+
+`host/read_card.py` is the other half of the bet -- FAT was chosen so
+something else could read these files, and this is that something else. It
+parses the header, unpacks each record as a proto frame and decodes it with
+the same code that decodes a live stream. A torn tail, which is what a flat
+battery mid-batch leaves, stops the read and keeps everything before it:
+refusing a whole recording over its last few milliseconds would throw away
+the recording to protect it.
+
+## A real bug this turned up: frames can predate the file that holds them
+
+Reading the first real card file back showed device timestamps running
+**backwards** -- one clean discontinuity at frame 5, from 1413 s to 38 s,
+with 5,730 of 6,319 frames marked as replayed from flash.
+
+That is the QSPI cursor save working exactly as designed. The backlog
+survives a reboot, so frames captured 23 minutes into an *earlier* boot were
+replayed and written into a file whose header says the *current* boot.
+
+The header's `boot_id` describes the boot that **wrote the file**, not the
+boot that **captured the frames**, and `(boot_id, device_ms)` -- the key
+`web/dedup.py` uses -- is wrong for exactly those frames.
+
+**This is not new and not caused by the card.** The same thing happens over
+Bluetooth: a replayed frame carries the old boot's `device_ms` while the host
+reads the current `boot_id` from the info characteristic. Writing both into
+one file is simply the first thing that made it visible. Five frames is 100
+ms; after a long disconnection it would be minutes of audio placed at the
+wrong time.
+
+The fix belongs with phase 03, because it is the same question -- what time
+was this captured. The cheap version: record the write cursor at boot, and
+flag any record replayed from before it as belonging to an earlier run, so
+the host knows not to trust its timestamp against the current boot id.
+
 ## Still ahead on the card
 
 - **03 timestamps.** Files are named by boot id and sequence. A recording
@@ -180,8 +242,6 @@ the same as "there is a readable recording on the card".
   offset.
 - **04 retention.** Nothing deletes anything yet. 14.9 GB is about 23 days
   at the Opus rate, and after that the card fills and writes start failing.
-- **05 offload.** USB mass storage, now that the format is FAT. The files
-  exist and there is no way to get them off except the shell listing.
 - **06 ingest.** `web/dedup.py` has 18 tests and still nothing calls it,
   because there is no path that brings a file in.
 

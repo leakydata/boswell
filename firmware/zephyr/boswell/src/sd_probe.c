@@ -14,6 +14,7 @@
  */
 
 #include "sd_probe.h"
+#include "sd_store.h"
 
 #include <zephyr/fs/fs.h>
 #include <zephyr/storage/disk_access.h>
@@ -83,6 +84,8 @@ bool sd_mounted(void) { return mounted; }
 static struct sd_status cached;
 static int64_t          cached_at;
 static struct k_work    mount_work;
+static struct k_work    release_work;
+static bool             released;
 
 static int do_mount(void)
 {
@@ -137,11 +140,44 @@ static void measure(void)
     cached.free_mb  = free_mb > 0xFFFF ? 0xFFFF : (uint16_t) free_mb;
 }
 
+/* Give the volume up so mass storage can have it.
+ *
+ * Order matters. The store's batch has to reach the card before the volume
+ * goes away, or up to 16 KB of audio is discarded rather than written -- and
+ * it has to be written through FATFS, which means before the unmount, not
+ * after.
+ */
+static void release_work_fn(struct k_work *w)
+{
+    ARG_UNUSED(w);
+
+    sd_store_flush();           /* takes sd_lock itself; must not hold it here */
+
+    k_mutex_lock(&sd_lock, K_FOREVER);
+    if (mounted) {
+        int err = fs_unmount(&mp);
+        if (err) {
+            /* Refusing to hand over a volume we could not unmount is the
+             * safe failure: the host sees a drive it cannot read, which is
+             * recoverable, where a half-released volume is not. */
+            LOG_ERR("release: fs_unmount %d -- keeping the card", err);
+            k_mutex_unlock(&sd_lock);
+            return;
+        }
+        mounted = false;
+    }
+    released = true;
+    cached.mounted = false;
+    LOG_INF("card released to USB host");
+    k_mutex_unlock(&sd_lock);
+}
+
 static void mount_work_fn(struct k_work *w)
 {
     ARG_UNUSED(w);
     k_mutex_lock(&sd_lock, K_FOREVER);
     if (do_mount() == 0) {
+        released = false;
         measure();
     }
     k_mutex_unlock(&sd_lock);
@@ -153,6 +189,7 @@ void sd_probe_init(void)
                        SD_WQ_PRIO, NULL);
     k_thread_name_set(&sd_wq.thread, "sd");
     k_work_init(&mount_work, mount_work_fn);
+    k_work_init(&release_work, release_work_fn);
     k_work_submit_to_queue(&sd_wq, &mount_work);
 }
 
@@ -291,3 +328,26 @@ int sd_probe(const struct shell *sh)
     k_mutex_unlock(&sd_lock);
     return rc;
 }
+
+void sd_release(void)
+{
+    if (released) {
+        return;
+    }
+    /* Not done inline: this flushes and unmounts, and it is called from a USB
+     * callback. */
+    k_work_submit_to_queue(&sd_wq, &release_work);
+}
+
+void sd_reclaim(void)
+{
+    if (!released) {
+        return;
+    }
+    /* The host may have written to the volume, so this is a real mount and
+     * not a flag flip -- FATFS has to re-read what is actually there. */
+    k_work_submit_to_queue(&sd_wq, &mount_work);
+}
+
+bool sd_is_released(void) { return released; }
+
