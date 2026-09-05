@@ -103,12 +103,33 @@ def test_the_listing_says_what_is_already_held():
     assert "f\"{f['name']}:{f['size']}\" in ledger" in fn
 
 
-def test_the_list_is_asked_for_rather_than_polled():
-    # Asking costs a directory walk on the card and a round trip, and the
-    # answer only changes when the device records something new.
+def test_the_radio_is_asked_rather_than_polled():
+    # Asking over the radio costs a round trip and a directory walk on a card
+    # that is still being written to. The docked case is polled, because
+    # plugging a cable in is the event and it costs only a host-side listing.
     html = read(INDEX)
-    assert "setInterval(devFilesLook" not in html
-    assert '$("devfilesbtn").onclick = devFilesLook;' in html
+    assert 'if (recRoute !== "ble") recPoll(0);' in html, \
+        "the radio route must not be on the timer"
+    assert '$("recbtn").onclick = () => recPoll(1);' in html
+
+
+def test_there_is_one_control_not_two():
+    # Two importing-shaped buttons a few rows apart, one of them usually
+    # invisible, and the invisible one is the one that gets clicked.
+    html = read(INDEX)
+    for gone in ("cardimport", "devfilesbtn", "devfilesrow", "cardrow"):
+        assert gone not in html, f"{gone} should have been merged away"
+    assert 'id="recrow"' in html
+
+
+def test_both_routes_end_at_the_same_ingest():
+    # The whole reason for merging: two controls were two chances to build
+    # two sets of rules about what is trustworthy.
+    src = read(SERVER)
+    fn = src[src.index("async def api_recordings_import"):]
+    fn = fn[:fn.index("\n@app.")]
+    assert "ingest_card.ingest_file" in fn      # the docked route
+    assert "api_device_files_pull_inner" in fn  # the radio route
 
 
 def test_the_subscription_is_dropped_when_the_link_is():
@@ -136,3 +157,14 @@ def test_the_ui_distinguishes_no_answer_from_nothing_there():
     html = read(INDEX)
     assert "no answer from the device" in html
     assert "nothing on the card" in html
+    assert "nothing recorded yet" in html
+
+
+def test_a_press_during_a_poll_is_not_thrown_away():
+    # Dropping it silently is indistinguishable from a broken button, which
+    # is the complaint this section exists to answer.
+    html = read(INDEX)
+    assert "recAskAgain" in html
+    fn = html[html.index("async function recPoll(ask){"):]
+    fn = fn[:fn.index("\n}")]
+    assert "if (ask) recAskAgain = true;" in fn

@@ -575,26 +575,21 @@ html{scroll-padding-top:120px}
         The charger defaults to 50 mA, so a 500 mAh cell takes about ten hours.
         100 mA halves that. Only raise it on a cell rated for the current.
       </div>
-      <label class="row" id="devfilesrow" hidden>On the device
-        <span class="val" id="devfilesv">—</span>
-        <button id="devfilesbtn">Look</button>
+      <label class="row" id="recrow" hidden>Recordings on the device
+        <span class="val" id="recv">—</span>
+        <button id="recbtn">Look</button>
       </label>
-      <div id="devfileslist" hidden style="font-size:12.5px;margin-top:-4px"></div>
-      <div id="devfilesnote" hidden style="font-size:12.5px;color:var(--muted);margin-top:2px">
-        Recordings still on the device, fetched over Bluetooth without the
-        cable. It is about twenty times slower than docking — a four-minute
-        recording takes roughly four minutes — so it is for when you want one
-        conversation now, not for collecting a day.
-      </div>
-      <label class="row" id="cardrow" hidden>Docked card
-        <span class="val" id="cardnew">—</span>
-        <button id="cardimport" class="pri">Import</button>
-      </label>
-      <div id="cardnote" hidden style="font-size:12.5px;color:var(--muted);margin-top:-4px">
-        Recordings the device made while it was away from the computer. Nothing
-        is deleted from the card when they are imported — it holds about three
+      <div id="reclist" hidden style="font-size:12.5px;margin-top:-4px"></div>
+      <div id="recnote" hidden style="font-size:12.5px;color:var(--muted);margin-top:2px">
+        What the device recorded while it was away from the computer. Plugged
+        in, they come off as fast as the cable allows and can all be imported
+        at once. Over Bluetooth it is about twenty times slower — a four-minute
+        recording takes roughly four minutes — so they come one at a time, for
+        when you want a particular conversation now.
+        <br><br>
+        Nothing is deleted from the device either way. It holds about three
         weeks and ages out the oldest on its own, so if an import goes wrong
-        the recordings are still there to read again.
+        the recording is still there to read again.
       </div>
       <label class="row" id="dfurow" hidden>Update the firmware
         <button id="dfubtn" class="dang" disabled>Reboot to bootloader</button>
@@ -1188,11 +1183,8 @@ function paint(s){
   // Only offered when the firmware says it understands the Bluetooth variant
   // of CTRL_DFU. An older build would take the write and ignore it, which
   // looks exactly like the button being broken.
-  $("devfilesrow").hidden = !s.has_files;
-  $("devfilesnote").hidden = !s.has_files;
-  $("devfilesbtn").disabled = !s.has_files || !s.connected || devFilesBusy;
   if (typeof s.card_pull_pct === "number")
-    $("devfilesv").textContent = `fetching… ${s.card_pull_pct}%`;
+    $("recv").textContent = `fetching… ${s.card_pull_pct}%`;
 
   $("dfurow").hidden = !s.has_ota;
   $("dfunote").hidden = !s.has_ota;
@@ -4739,35 +4731,42 @@ function toggleVad(){
 }
 vad.onclick = toggleVad;
 
-// Recordings still on the device. Not polled: asking costs a directory walk
-// on the card and a round trip over the radio, and the answer only changes
-// when the device records something new. Asked for when somebody wants it.
-let devFilesBusy = false;
+// Recordings on the device, by whichever route is available.
+//
+// One control, two transports underneath. Splitting them into a "Docked card"
+// row and an "On the device" row put two importing-shaped buttons a few rows
+// apart, one of them usually invisible, and the invisible one is the one that
+// gets clicked -- "I hit Import and I am not sure anything happened" was
+// exactly that.
+let recBusy = false;
+let recRoute = null;
+// A press that arrives while a poll is in flight must not be thrown away.
+// Dropping it silently is indistinguishable from a broken button, which is
+// the complaint this whole section exists to answer.
+let recAskAgain = false;
 
-function devFilesRender(files){
-  const el = $("devfileslist");
-  if (!files || !files.length){
-    el.hidden = false;
-    el.textContent = "nothing on the card yet";
-    return;
-  }
+function recRender(files, route){
+  const el = $("reclist");
   el.hidden = false;
   el.innerHTML = "";
+  if (!files || !files.length){
+    el.textContent = "nothing recorded yet";
+    return;
+  }
   for (const f of files){
     const row = document.createElement("div");
     row.style.cssText = "display:flex;gap:8px;align-items:center;padding:2px 0";
-    const kb = Math.round(f.size / 1024);
     const nm = document.createElement("span");
     nm.style.cssText = "font-family:var(--mono);flex:1";
-    nm.textContent = `${f.name}  ${kb} kB`;
+    nm.textContent = `${f.name}  ${Math.round(f.size / 1024)} kB`;
     const b = document.createElement("button");
     b.className = "sound";
     if (f.ingested){
       b.textContent = "already have it";
       b.disabled = true;
     } else {
-      b.textContent = "Fetch";
-      b.onclick = () => devFilesPull(f, b);
+      b.textContent = "Import";
+      b.onclick = () => recImport(f, b);
     }
     row.appendChild(nm);
     row.appendChild(b);
@@ -4775,96 +4774,94 @@ function devFilesRender(files){
   }
 }
 
-async function devFilesLook(){
-  if (devFilesBusy) return;
-  devFilesBusy = true;
-  $("devfilesbtn").disabled = true;
-  $("devfilesbtn").textContent = "Looking…";
+async function recPoll(ask){
+  if (recBusy){
+    if (ask) recAskAgain = true;
+    return;
+  }
+  recBusy = true;
+  if (ask){ $("recbtn").disabled = true; $("recbtn").textContent = "Looking…"; }
   try {
-    const r = await (await fetch("/api/device_files")).json();
-    if (!r.supported){ $("devfilesrow").hidden = true; return; }
-    // "the device did not answer" and "the card is empty" look the same from
-    // here unless they are told apart deliberately, and telling somebody
-    // their recordings are gone when the radio simply timed out is the worse
-    // of the two mistakes.
-    if (r.error){ $("devfilesv").textContent = "no answer from the device"; }
-    else {
+    const r = await (await fetch("/api/recordings" + (ask ? "?ask=1" : ""))).json();
+    recRoute = r.route;
+    $("recrow").hidden = !r.route;
+    $("recnote").hidden = !r.route;
+
+    if (!r.route){
+      $("reclist").hidden = true;
+    } else if (r.error){
+      // "the device did not answer" and "the card is empty" look identical
+      // from here unless they are told apart on purpose, and telling somebody
+      // their recordings are gone when the radio timed out is much the worse
+      // of the two mistakes.
+      $("recv").textContent = "no answer from the device";
+    } else if (!r.listed){
+      // Reachable over the radio, not yet asked -- asking costs a round trip
+      // and a directory walk on a card that is still being written to.
+      $("recv").textContent = "over Bluetooth — press Look";
+      $("reclist").hidden = true;
+    } else {
       const n = (r.files || []).length;
-      $("devfilesv").textContent = n ? `${n} recording${n===1?"":"s"}` : "nothing on the card";
-      devFilesRender(r.files);
+      const fresh = (r.files || []).filter(f => !f.ingested).length;
+      const how = r.route === "usb" ? "plugged in" : "over Bluetooth";
+      $("recv").textContent = n
+        ? `${n} recording${n===1?"":"s"}, ${fresh} new — ${how}`
+        : `nothing on the card — ${how}`;
+      recRender(r.files, r.route);
+      // "Look" once the list is already on screen reads as though nothing
+      // happened when it is pressed. The button says what pressing it does.
+      const bulk = r.route === "usb" && fresh > 0;
+      $("recbtn").textContent = bulk ? `Import ${fresh}` : "Refresh";
+      $("recbtn").onclick = bulk
+        ? () => recImport(null, $("recbtn"))
+        : () => recPoll(1);
     }
   } catch(e){
-    $("devfilesv").textContent = "could not ask";
+    /* leave whatever was showing rather than blanking it on one bad poll */
   }
-  $("devfilesbtn").textContent = "Look";
-  $("devfilesbtn").disabled = false;
-  devFilesBusy = false;
-}
-$("devfilesbtn").onclick = devFilesLook;
+  if ($("recbtn").textContent === "Looking…") $("recbtn").textContent = "Look";
+  $("recbtn").disabled = false;
+  recBusy = false;
 
-async function devFilesPull(f, btn){
+  if (recAskAgain){
+    recAskAgain = false;
+    recPoll(1);
+  }
+}
+
+// The docked case is polled because plugging a cable in is the event, and it
+// costs a directory listing on the host. The radio case is not: it is only
+// ever asked for.
+setInterval(() => { if (recRoute !== "ble") recPoll(0); }, 5000);
+recPoll(0);
+
+$("recbtn").onclick = () => recPoll(1);
+
+async function recImport(f, btn){
+  const all = f === null;
   btn.disabled = true;
-  btn.textContent = "Fetching…";
+  const was = btn.textContent;
+  btn.textContent = all ? "Importing…" : "Fetching…";
   try {
-    const r = await (await fetch("/api/device_files/pull", {
+    const body = all ? {} : {index: f.index, name: f.name, size: f.size};
+    const r = await (await fetch("/api/recordings/import", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({index: f.index, name: f.name, size: f.size}),
+      body: JSON.stringify(body),
     })).json();
     if (r.ok){
-      log(`fetched ${f.name}: ${r.line}`);
-      btn.textContent = "already have it";
+      for (const line of (r.lines || [])) log(line);
+      if (r.queued) log(`queued ${r.queued} clip(s) for transcription`);
     } else {
-      log(`fetch failed: ${r.error || "unknown"}`);
-      btn.textContent = "Fetch";
-      btn.disabled = false;
-    }
-  } catch(e){
-    log(`fetch failed: ${e}`);
-    btn.textContent = "Fetch";
-    btn.disabled = false;
-  }
-}
-
-// A docked card is found by looking, not by being told: the desktop mounts it
-// wherever it likes and does not say. Polled slowly, because the answer only
-// changes when somebody physically plugs something in.
-let cardBusy = false;
-async function pollCard(){
-  if (cardBusy) return;
-  let s;
-  try { s = await (await fetch("/api/card")).json(); } catch(e){ return; }
-  const show = !!(s && s.found);
-  $("cardrow").hidden = !show;
-  $("cardnote").hidden = !show;
-  if (!show) return;
-  const n = s.new || 0;
-  $("cardnew").textContent = n
-    ? `${n} new of ${s.files} recording${s.files === 1 ? "" : "s"}`
-    : `${s.files} recording${s.files === 1 ? "" : "s"}, all imported`;
-  $("cardimport").disabled = n === 0;
-}
-setInterval(pollCard, 5000);
-pollCard();
-
-$("cardimport").onclick = async () => {
-  cardBusy = true;
-  $("cardimport").disabled = true;
-  $("cardimport").textContent = "Importing…";
-  try {
-    const r = await (await fetch("/api/card/ingest", {method:"POST"})).json();
-    if (r && r.ok){
-      log(`imported from the card: ${r.files} file(s), ${r.queued} queued to transcribe`);
-    } else {
-      log(`import failed: ${(r && r.error) || "unknown"}`);
+      log(`import failed: ${r.error || "unknown"}`);
     }
   } catch(e){
     log(`import failed: ${e}`);
   }
-  $("cardimport").textContent = "Import";
-  cardBusy = false;
-  pollCard();
-};
+  btn.textContent = was;
+  btn.disabled = false;
+  recPoll(recRoute === "ble" ? 1 : 0);
+}
 
 // Rebooting into the bootloader takes the device off the air until something
 // flashes it, so it uses the same tap-twice guard as discarding the buffer --

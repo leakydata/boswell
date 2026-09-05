@@ -18,7 +18,8 @@ What is built, and what is waiting on a decision or on hardware.
 | Import | the app finds a docked card and imports it | **on hardware**: clicked in the browser, 0 duplicates |
 | Push button | single press toggles capture, hold powers off | **on hardware**: 1 press, 1 single, 0 bounces |
 | Speaker | rising/falling pairs on arm and disarm | **on hardware**: heard |
-| Browse and pull | list and fetch a recording over the radio | **on hardware**: 253 KB in 50 s, byte-perfect |
+| Browse and pull | list and fetch a recording over the radio | **on hardware**: 253 KB in 17-50 s, byte-perfect |
+| One control | cable when docked, radio when not | **on hardware**: both routes driven from the browser |
 | Transcription | card clips go through the ordinary pipeline | **on hardware**: 476 words, diarized into two speakers |
 | Card capture | audio spills to FAT files past a 75% ring mark | **on hardware**: 600 KB written, header verified, 0 errors |
 | OTA | `CTRL_DFU` sent from the app, gated on the capability bit | 8 tests; not yet triggered on hardware |
@@ -350,9 +351,30 @@ What the design had to get right, none of which is about throughput:
 - **Unsubscribing abandons it.** Somebody closed the page; reading the card
   for nobody costs power and stalls the writer.
 
-Asked for rather than polled: a listing costs a directory walk on the card
-and a round trip, and the answer only changes when the device records
-something new.
+Asked for rather than polled: a listing over the radio costs a round trip and
+a directory walk on a card that is still being written to, and the answer
+only changes when the device records something new. The docked case *is*
+polled, because plugging a cable in is the event and it costs only a host-side
+listing.
+
+## One control, not two
+
+Docking and the radio started as separate rows -- "Docked card / Import" and
+"On the device / Look" -- a few lines apart, and the docked one is hidden
+almost all the time because the card is usually inside the device. Which
+meant the button somebody pressed was the one that did nothing, and the
+report was "I hit Import and I am not sure anything happened."
+
+Now one section: **Recordings on the device**. It says which route it is
+using, and the button says what pressing it will do -- `Import 3` when three
+are waiting on a cable, `Look` when the radio has not been asked yet,
+`Refresh` when the list is already on screen. Over the cable everything can
+come at once; over the radio they come one at a time, because a four-minute
+recording takes about four minutes.
+
+Both routes end at the same verify-and-ingest path, keyed the same way. That
+is the real reason to merge them rather than a cosmetic one: two controls
+were two chances to grow two sets of rules about what is trustworthy.
 
 ## Still ahead
 

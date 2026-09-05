@@ -1797,6 +1797,108 @@ async def api_envelope(name: str):
     return JSONResponse(out)
 
 
+@app.get("/api/recordings")
+async def api_recordings(ask: int = 0):
+    """What the device has recorded, by whichever route is available.
+
+    One question, two answers underneath. A docked card is a directory the
+    server can read instantly, so it is listed without being asked. The radio
+    costs a round trip and a directory walk on a card that is still being
+    written to, so that one waits to be asked for.
+    """
+    import sys
+    sys.path.insert(0, os.path.join(HERE, "..", "host"))
+    import ingest_card
+    ledger = ingest_card.load_ledger()
+
+    def mark(files):
+        for f in files:
+            f["ingested"] = f"{f['name']}:{f['size']}" in ledger
+        return files
+
+    cards = card_scan.find_cards()
+    if cards:
+        path = cards[0]
+        files = [{"index": i, "name": os.path.basename(p),
+                  "size": os.path.getsize(p)}
+                 for i, p in enumerate(card_scan.recordings(path))]
+        return {"route": "usb", "listed": True, "path": path,
+                "files": mark(files)}
+
+    if not (device.state.get("connected") and device.state.get("has_files")):
+        return {"route": None, "listed": False}
+
+    if not ask:
+        # Known to be reachable, not yet asked. The button says "Look" for
+        # this reason: asking is not free, and the answer only changes when
+        # the device records something new.
+        return {"route": "ble", "listed": False}
+
+    files = await device.list_card_files()
+    if files is None:
+        return {"route": "ble", "listed": False, "error": "no answer"}
+    return {"route": "ble", "listed": True, "files": mark(files)}
+
+
+@app.post("/api/recordings/import")
+async def api_recordings_import(request: Request):
+    """Bring recordings in, over whichever route they are on.
+
+    Both routes end at the same verify-and-ingest path, keyed the same way,
+    so a recording collected either way is ingested once. That is the whole
+    reason for merging these: two importing-shaped controls a few rows apart
+    were two chances to build two sets of rules.
+    """
+    body = await request.json()
+    import sys
+    sys.path.insert(0, os.path.join(HERE, "..", "host"))
+    import ingest_card
+
+    cards = card_scan.find_cards()
+    lines = []
+
+    if cards:
+        path = cards[0]
+        wanted = body.get("index")
+
+        def run():
+            ledger = ingest_card.load_ledger()
+            held = ingest_card.held_records()
+            out = []
+            for i, f in enumerate(card_scan.recordings(path)):
+                if wanted is not None and i != int(wanted):
+                    continue
+                out.append(ingest_card.ingest_file(f, held, ledger, write=True))
+            ingest_card.save_ledger(ledger)
+            return out
+
+        lines = await asyncio.to_thread(run)
+    else:
+        if body.get("index") is None:
+            return {"ok": False,
+                    "error": "over Bluetooth, fetch one recording at a time"}
+        r = await api_device_files_pull_inner(int(body["index"]),
+                                              body.get("name"),
+                                              int(body.get("size") or 0))
+        if not r.get("ok"):
+            return r
+        lines = [r["line"]]
+
+    for line in lines:
+        device.event("log", text=line)
+
+    queued = 0
+    for f in sorted(os.listdir(DATA)):
+        if f.startswith("card_") and f.endswith(".wav"):
+            if not os.path.exists(pipeline.transcript_path(f)):
+                if worker.submit(f):
+                    queued += 1
+    if queued:
+        device.event("log", text=f"queued {queued} clip(s) for transcription")
+
+    return {"ok": True, "files": len(lines), "queued": queued, "lines": lines}
+
+
 @app.get("/api/device_files")
 async def api_device_files():
     """What is on the card, asked over the radio rather than the cable."""
@@ -1830,9 +1932,13 @@ async def api_device_files_pull(request: Request):
     place for de-duplication to be subtly wrong.
     """
     body = await request.json()
-    index = int(body.get("index", -1))
-    name = str(body.get("name") or f"pulled_{index}.bwl")
-    size = int(body.get("size") or 0)
+    return await api_device_files_pull_inner(
+        int(body.get("index", -1)), body.get("name"),
+        int(body.get("size") or 0))
+
+
+async def api_device_files_pull_inner(index, name, size):
+    name = str(name or f"pulled_{index}.bwl")
     if index < 0:
         return {"ok": False, "error": "no index"}
     if not device.state.get("connected"):
