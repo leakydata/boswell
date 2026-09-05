@@ -121,10 +121,11 @@ BUILD_DIR=/tmp/boswell-full-build \
 ```
 
 The plain image size is the check that none of the card or codec work leaked
-into the build the wearable runs. The baseline is **564,224 bytes** as of
-`boswell drop`.
+into the build the wearable runs. The baseline is **564,736 bytes** as of
+`boswell stacks`.
 
-It moved once, deliberately, from 563,712: the backlog-clear command is not
+It has moved twice, deliberately. From 564,224 for `boswell stacks`, a
+thread high-water report that any build benefits from. And before that, from 563,712: the backlog-clear command is not
 card code or codec code, it is a general diagnostic that a wearable with a
 stuck backlog needs just as much, so it belongs in both builds and costs 512
 bytes there. Every other change to this number has meant something leaked and

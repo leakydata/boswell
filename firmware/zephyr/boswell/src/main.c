@@ -344,6 +344,16 @@ static int cmd_drop(const struct shell *sh, size_t argc, char **argv)
     return 0;
 }
 
+/* Defined once the threads it reports on exist, further down. */
+static void stacks_report(const struct shell *sh);
+
+static int cmd_stacks(const struct shell *sh, size_t argc, char **argv)
+{
+    ARG_UNUSED(argc); ARG_UNUSED(argv);
+    stacks_report(sh);
+    return 0;
+}
+
 static int cmd_imu(const struct shell *sh, size_t argc, char **argv)
 {
     ARG_UNUSED(argc); ARG_UNUSED(argv);
@@ -560,6 +570,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(boswell_cmds,
     SHELL_CMD(stream, NULL, "Arm/disarm capture (on|off)", cmd_stream),
     SHELL_CMD(drop, NULL, "Discard the buffered backlog in flash", cmd_drop),
     SHELL_CMD(imu, NULL, "Re-probe the IMU and report", cmd_imu),
+    SHELL_CMD(stacks, NULL, "Thread stack high-water marks", cmd_stacks),
 #ifdef CONFIG_BOSWELL_OPUS
     SHELL_CMD(opus, NULL, "Report the Opus encoder's memory use", cmd_opus),
 #endif
@@ -972,7 +983,31 @@ static int decimate_2to1(const int16_t *in, int n, int16_t *out)
 
 /* ---------------------------------------------------------------- capture */
 
+/* The encoder runs on this thread, and Opus is not a modest guest.
+ *
+ * 4 KB was sized for IMA ADPCM, which is a handful of locals. Opus is
+ * compiled here with USE_ALLOCA, so opus_encode() takes its working buffers
+ * from the stack of whoever calls it, and the amount scales with the frame:
+ * this project encodes 20 ms -- 320 samples at 16 kHz -- where Omi's
+ * firmware, on this same part, encodes 10 ms. They give their codec a
+ * dedicated thread with 32,000 bytes. This one was handing it 4,096 and also
+ * asking it to do twice the work per call.
+ *
+ * With CONFIG_MPU_STACK_GUARD the overrun is not silent corruption, it is a
+ * fatal MPU fault -- the thread stops, nothing feeds WDT_CAPTURE, and thirty
+ * seconds later the board resets. Which is exactly the fault this was:
+ * resets only ever while capture was running, never while idle or
+ * disconnected, and never on the ADPCM build.
+ *
+ * 16 KB is chosen to be comfortably above what one 20 ms CELT frame needs
+ * and below Omi's, and `boswell stacks` reports the high-water mark so it
+ * can be trimmed against a measurement rather than another guess.
+ */
+#ifdef CONFIG_BOSWELL_OPUS
+#define CAPTURE_STACK 16384
+#else
 #define CAPTURE_STACK 4096
+#endif
 K_THREAD_STACK_DEFINE(capture_stack, CAPTURE_STACK);
 static struct k_thread capture_thread;
 
@@ -1140,6 +1175,33 @@ static void route_frame(const uint8_t *wire, uint16_t len)
 static int16_t raw[MAX_SAMPLES];
 static int16_t frame[MAX_SAMPLES];
 static uint8_t wire[MAX_FRAME_LEN];
+
+/* How close each thread has come to its limit.
+ *
+ * The capture thread overflowed silently as far as anything visible went --
+ * the board simply reset. A high-water mark turns "it has not crashed yet"
+ * into a number with margin in it, which is what lets the size above be
+ * trimmed against a measurement instead of another guess.
+ */
+static void report_stack(const struct shell *sh, const char *name,
+                         struct k_thread *t, size_t size)
+{
+    size_t unused = 0;
+
+    if (k_thread_stack_space_get(t, &unused) != 0) {
+        shell_print(sh, "  %-8s (unavailable)", name);
+        return;
+    }
+    shell_print(sh, "  %-8s %5u of %5u used, %u free (%u%% headroom)",
+                name, (unsigned)(size - unused), (unsigned)size,
+                (unsigned)unused, (unsigned)(100 * unused / size));
+}
+
+static void stacks_report(const struct shell *sh)
+{
+    report_stack(sh, "capture", &capture_thread, CAPTURE_STACK);
+    report_stack(sh, "imu", &imu_thread, IMU_STACK);
+}
 
 static void capture_fn(void *a, void *b, void *c)
 {
