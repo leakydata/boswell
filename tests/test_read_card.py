@@ -18,7 +18,7 @@ import read_card as rc
 FRAME_HDR = 12
 
 
-def header(codec=20, rate=16000, boot=0xE9CD, magic=b"BSWL", ver=1):
+def header(codec=20, rate=16000, boot=0xE9CD, magic=b"BSWL", ver=2):
     return (magic + bytes([ver, codec]) + struct.pack("<HI", rate, boot)
             + b"\0" * 4)
 
@@ -28,8 +28,11 @@ def frame(t_ms=0, flags=0x11, nsamples=320, body=b"\x01\x02\x03"):
     return hdr + body
 
 
-def record(payload):
-    return struct.pack("<H", len(payload)) + payload
+def record(payload, ver=2, crc=None):
+    out = struct.pack("<H", len(payload))
+    if ver >= 2:
+        out += bytes([rc.crc8(payload) if crc is None else crc])
+    return out + payload
 
 
 def test_a_good_header_parses():
@@ -48,6 +51,13 @@ def test_a_future_version_is_refused_rather_than_guessed_at():
         rc.read_header(io.BytesIO(header(ver=99)))
 
 
+def test_the_crc_matches_the_one_the_firmware_writes():
+    # Same polynomial and init as rec_crc.h, which is compiled and tested
+    # natively -- this is the other half of that agreement.
+    assert rc.crc8(b"") == 0xFF
+    assert rc.crc8(b"\x00") == 0xF3
+
+
 def test_a_truncated_header_is_refused():
     with pytest.raises(rc.BadFile):
         rc.read_header(io.BytesIO(b"BSWL"))
@@ -55,7 +65,34 @@ def test_a_truncated_header_is_refused():
 
 def test_frames_are_read_back_in_order():
     buf = io.BytesIO(b"".join(record(frame(t_ms=t)) for t in (0, 20, 40)))
-    assert len(list(rc.read_frames(buf))) == 3
+    assert len(list(rc.read_frames(buf, 2))) == 3
+
+
+def test_version_1_files_still_read():
+    # Written before the checksum existed. Refusing them would strand real
+    # recordings to gain a guarantee they were never written with.
+    buf = io.BytesIO(b"".join(record(frame(t_ms=t), ver=1) for t in (0, 20)))
+    got = list(rc.read_frames(buf, 1))
+    assert len(got) == 2
+    assert all(ok for _, ok in got)
+
+
+def test_a_scrambled_payload_is_caught():
+    # The length chain walks straight past this: the lengths are intact and
+    # only the bytes between them are wrong.
+    buf = io.BytesIO(record(frame(), crc=0x00) + record(frame(t_ms=20)))
+    got = list(rc.read_frames(buf, 2))
+    assert len(got) == 2, "one bad record must not end the file"
+    assert got[0][1] is False
+    assert got[1][1] is True
+
+
+def test_a_corrupt_record_is_reported_not_decoded(tmp_path):
+    p = tmp_path / "x.bwl"
+    p.write_bytes(header() + record(frame(), crc=0x00) + record(frame(t_ms=20)))
+    h = rc.read_file(str(p), want_audio=False)
+    assert h["corrupt"] == 1
+    assert h["frames"] == 2
 
 
 def test_a_torn_tail_keeps_what_came_before_it():
@@ -64,17 +101,17 @@ def test_a_torn_tail_keeps_what_came_before_it():
     # away the recording to protect the recording.
     good = b"".join(record(frame(t_ms=t)) for t in (0, 20, 40))
     buf = io.BytesIO(good + struct.pack("<H", 900) + b"\x01\x02")
-    assert len(list(rc.read_frames(buf))) == 3
+    assert len(list(rc.read_frames(buf, 2))) == 3
 
 
 def test_a_zero_length_record_stops_rather_than_loops():
     buf = io.BytesIO(record(frame()) + struct.pack("<H", 0) + b"junk")
-    assert len(list(rc.read_frames(buf))) == 1
+    assert len(list(rc.read_frames(buf, 2))) == 1
 
 
 def test_an_absurd_length_is_treated_as_a_tear():
     buf = io.BytesIO(record(frame()) + struct.pack("<H", 60000))
-    assert len(list(rc.read_frames(buf))) == 1
+    assert len(list(rc.read_frames(buf, 2))) == 1
 
 
 def _write(tmp_path, payloads, **kw):

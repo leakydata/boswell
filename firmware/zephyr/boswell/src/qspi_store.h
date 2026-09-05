@@ -82,6 +82,14 @@ int      qspi_store_push(const uint8_t *data, uint8_t len);
  * turned a moment of radio backpressure into permanently lost recovered
  * audio, because the record was already gone when the send failed. */
 int      qspi_store_peek(uint8_t *out, uint8_t max_len);
+/* Was the record the last peek returned captured before this boot?
+ *
+ * The backlog survives a reset, so a frame replayed afterwards carries the
+ * previous run's device_ms while everything around it reports the current
+ * boot_id. The host keys de-duplication on that pair, so for these frames the
+ * pair is wrong -- audio lands at the wrong time instead of being recognised
+ * as already held. Whoever replays a record has to say so. */
+bool     qspi_store_peek_is_pre_boot(void);
 void     qspi_store_commit(uint8_t len);
 
 /* Returns payload length, or 0 when empty. Flushes any partial page. */

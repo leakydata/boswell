@@ -179,6 +179,16 @@ def decode_block(nibbles, predictor, index, nsamples):
 FLAG_16K = 0x01
 FLAG_OPUS = 0x10
 
+# This frame was captured before the device's current boot.
+#
+# The backlog survives a reset, so a frame replayed afterwards carries the
+# *previous* run's device_ms while the info characteristic reports the
+# current boot_id. De-duplication keys on that pair, so for exactly these
+# frames the pair is wrong and audio lands at the wrong time rather than
+# being recognised as already held. Found by reading the first real card file
+# back and seeing its timestamps run backwards across one discontinuity.
+FLAG_PRE_BOOT = 0x20
+
 # libopus through ctypes rather than a wheel.
 #
 # opuslib and pyogg both wrap this same shared object, and both would be one

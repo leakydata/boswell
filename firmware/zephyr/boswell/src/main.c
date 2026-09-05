@@ -23,6 +23,7 @@
 #include <zephyr/bluetooth/hci.h>
 #include <zephyr/bluetooth/hci_vs.h>
 #include "cfg_store.h"
+#include "clock.h"
 #include "qspi_store.h"
 #include "fault.h"
 #include "button.h"
@@ -844,8 +845,24 @@ static void set_tx_power(int8_t dbm)
 
 static void on_ctrl_locked(uint8_t op, uint8_t arg);
 
-static void on_ctrl(uint8_t op, uint8_t arg)
+static void on_ctrl(uint8_t op, uint8_t arg, const uint8_t *extra,
+                    uint16_t extra_len)
 {
+    if (op == CTRL_SET_TIME) {
+        /* Four more bytes, little-endian seconds since the epoch. Handled
+         * before the lock because it touches nothing else does. */
+        if (extra == NULL || extra_len < 4) {
+            LOG_WRN("CTRL_SET_TIME without a time");
+            return;
+        }
+        uint32_t epoch = (uint32_t)extra[0] | ((uint32_t)extra[1] << 8) |
+                         ((uint32_t)extra[2] << 16) | ((uint32_t)extra[3] << 24);
+        clock_set_epoch(epoch);
+        ble_audio_publish_info();
+        return;
+    }
+    ARG_UNUSED(extra); ARG_UNUSED(extra_len);
+
     /* One control write can change several fields, and the info
      * characteristic packs several into one byte. Without this a host can be
      * handed a combination that never existed. */
@@ -959,17 +976,31 @@ static bool ring_needs_spilling(void)
 
 static int drain_record(const uint8_t *rec, uint16_t len)
 {
+    /* A record from before the reset carries the previous run's device_ms.
+     * Everything around it reports the current boot_id, and the host keys
+     * de-duplication on the pair -- so left unmarked, this audio is placed at
+     * whatever time the current boot happened to be at, which is how a card
+     * file came back with its timestamps running backwards.
+     *
+     * Marking it costs one flag bit and makes the ambiguity visible rather
+     * than silent: the host can hold it aside, or place it by sequence, but
+     * it is not told a time that is wrong.
+     */
+    bool pre_boot = qspi_store_peek_is_pre_boot();
+
     /* Cheap, and a no-op unless something actually changed. One file
-     * describes one format, so switching rate or codec mid-recording has to
-     * start a new one rather than leave the host decoding the back half of a
-     * file with the front half's header. */
+     * describes one format -- and one boot, which is why pre-boot audio gets
+     * a boot id of zero and therefore a file of its own. Zero means "no
+     * boot claims this"; a file that lied about it would be worse than a
+     * file that admits it does not know. */
     sd_store_format(
 #ifdef CONFIG_BOSWELL_OPUS
         PROTO_CODEC_OPUS,
 #else
         PROTO_CODEC_ADPCM,
 #endif
-        g_state.use16k ? 16000 : 8000, ble_audio_boot_id());
+        g_state.use16k ? 16000 : 8000,
+        pre_boot ? 0 : ble_audio_boot_id());
 
     if (ble_audio_ready()) {
         return drain_to_host(rec, len);
@@ -1005,6 +1036,13 @@ static int drain_to_host(const uint8_t *rec, uint16_t len)
 
     memcpy(stamped, rec, len);
     stamped[2] |= FLAG_FROM_FLASH;
+
+    /* And, if it predates the reset, say so. FLAG_FROM_FLASH only means
+     * "this was buffered"; it says nothing about which run captured it, and
+     * the two are different questions the host needs answered separately. */
+    if (qspi_store_peek_is_pre_boot()) {
+        stamped[2] |= FLAG_PRE_BOOT;
+    }
     return ble_audio_send(stamped, len) == 0 ? 1 : 0;
 }
 

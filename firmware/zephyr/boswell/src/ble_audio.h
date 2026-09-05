@@ -3,7 +3,11 @@
 
 #include "proto.h"
 
-typedef void (*ctrl_handler_t)(uint8_t op, uint8_t arg);
+/* `extra` is whatever followed the opcode and argument, for the few controls
+ * that cannot say what they mean in one byte -- the wall clock needs four.
+ * It is NULL for the ordinary two-byte writes, which is all of them but one. */
+typedef void (*ctrl_handler_t)(uint8_t op, uint8_t arg,
+                               const uint8_t *extra, uint16_t extra_len);
 
 int  ble_audio_init(ctrl_handler_t on_ctrl);
 bool ble_audio_connected(void);

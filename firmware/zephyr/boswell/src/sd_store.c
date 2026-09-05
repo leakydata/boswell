@@ -1,6 +1,8 @@
 #include "sd_store.h"
 #include "sd_probe.h"
 #include "proto.h"
+#include "rec_crc.h"
+#include "clock.h"
 
 #include <zephyr/kernel.h>
 #include <zephyr/fs/fs.h>
@@ -31,6 +33,23 @@ LOG_MODULE_REGISTER(boswell_sdstore, LOG_LEVEL_INF);
  * A refusal is not a loss: the record stays in the QSPI ring. */
 #define LOCK_MS  200
 
+/* Delete the oldest recordings when free space falls below this.
+ *
+ * Not delete-on-upload. 14.9 GB is about 23 days at the Opus rate, so there
+ * is no space pressure worth reacting to, and prompt deletion buys nothing
+ * while costing the only copy: an upload that turns out to be truncated or
+ * mis-ingested can be re-read from the card for as long as the card still
+ * holds it. Ageing out at the far end gives that for free.
+ *
+ * 1 GB is still a day and a half of headroom, which is enough that the
+ * warning in the app is seen long before anything is actually removed. */
+#define FREE_FLOOR_MB 1024
+
+/* Checking free space walks the whole allocation table, so it is not
+ * something to do per batch. Every few minutes is far more often than 1 GB
+ * can be consumed at 4 kB/s. */
+#define REAP_EVERY_MS (5 * 60 * 1000)
+
 static uint8_t  batch[BATCH];
 static size_t   batch_len;
 
@@ -44,6 +63,8 @@ static uint32_t fmt_boot;
 static bool     fmt_changed;
 
 static uint32_t n_frames, n_bytes, n_files, n_write_errs, worst_ms;
+static uint32_t n_reaped;
+static int64_t  last_reap_ms;
 static int      last_err;
 static bool     started;
 
@@ -55,9 +76,11 @@ static void put32(uint8_t *p, uint32_t v)
 }
 
 /* Caller holds sd_lock. */
+static uint32_t file_seq;
+static void reap_if_low(void);
+
 static int open_next(void)
 {
-    static uint32_t seq;
 
     /* mkdir every time rather than once: the card can be pulled and a
      * different one put in, and -EEXIST costs nothing. */
@@ -65,7 +88,7 @@ static int open_next(void)
 
     char path[64];
     snprintf(path, sizeof(path), DIR "/b%08x_%04u.bwl",
-             (unsigned)fmt_boot, (unsigned)(seq++));
+             (unsigned)fmt_boot, (unsigned)(file_seq++));
 
     fs_file_t_init(&file);
     int err = fs_open(&file, path, FS_O_CREATE | FS_O_WRITE);
@@ -82,6 +105,12 @@ static int open_next(void)
     hdr[5] = fmt_codec;
     put16(&hdr[6], fmt_rate);
     put32(&hdr[8], fmt_boot);
+    /* Read when the file opens, not when it is written: if a host connects
+     * mid-file the offset appears from nowhere, and a file whose header says
+     * one thing about its first half and another about its second is worse
+     * than one that honestly says it never knew. Zero means unknown, and the
+     * host places those by sequence instead of by a time nobody set. */
+    put32(&hdr[12], clock_boot_epoch());
 
     ssize_t w = fs_write(&file, hdr, sizeof(hdr));
     if (w != (ssize_t)sizeof(hdr)) {
@@ -150,7 +179,99 @@ static int flush_batch(void)
         fs_close(&file);
         file_open = false;
     }
+
+    /* After the write, not before: making room is only worth doing once the
+     * audio in hand is safely down. */
+    reap_if_low();
     return 0;
+}
+
+/* Delete the oldest recording. Caller holds sd_lock.
+ *
+ * Oldest by name, which is the same as oldest in time: the sequence number
+ * in b<boot>_<nnnn>.bwl only ever increases within a run, and a new run gets
+ * a new boot id. It is not a perfect ordering across boots -- boot ids are
+ * random -- but it does not need to be. The question being answered is
+ * "remove something to make room", not "remove exactly the oldest thing",
+ * and every candidate is at least as old as the file being written.
+ */
+static bool reap_one(void)
+{
+    struct fs_dir_t dir;
+    fs_dir_t_init(&dir);
+    if (fs_opendir(&dir, DIR) != 0) {
+        return false;
+    }
+
+    char oldest[MAX_FILE_NAME + 1] = { 0 };
+
+    for (;;) {
+        struct fs_dirent ent;
+        if (fs_readdir(&dir, &ent) != 0 || ent.name[0] == '\0') {
+            break;
+        }
+        if (ent.type != FS_DIR_ENTRY_FILE) {
+            continue;
+        }
+        if (oldest[0] == '\0' || strcmp(ent.name, oldest) < 0) {
+            strncpy(oldest, ent.name, sizeof(oldest) - 1);
+        }
+    }
+    fs_closedir(&dir);
+
+    if (oldest[0] == '\0') {
+        return false;
+    }
+
+    char path[sizeof(DIR) + 1 + MAX_FILE_NAME + 1];
+    snprintf(path, sizeof(path), DIR "/%s", oldest);
+
+    /* Never the file being written into. Deleting the open one would leave
+     * the handle pointing at clusters the allocator has handed back. */
+    if (file_open) {
+        char cur[sizeof(DIR) + 1 + MAX_FILE_NAME + 1];
+        snprintf(cur, sizeof(cur), DIR "/b%08x_%04u.bwl",
+                 (unsigned)fmt_boot, (unsigned)(file_seq - 1));
+        if (strcmp(path, cur) == 0) {
+            return false;
+        }
+    }
+
+    int err = fs_unlink(path);
+    if (err) {
+        LOG_WRN("could not remove %s: %d", path, err);
+        return false;
+    }
+    n_reaped++;
+    LOG_INF("removed %s to make room", oldest);
+    return true;
+}
+
+/* Caller holds sd_lock. */
+static void reap_if_low(void)
+{
+    int64_t now = k_uptime_get();
+    if (last_reap_ms != 0 && now - last_reap_ms < REAP_EVERY_MS) {
+        return;
+    }
+    last_reap_ms = now;
+
+    struct fs_statvfs st;
+    if (fs_statvfs(SD_MOUNT_POINT, &st) != 0) {
+        return;
+    }
+
+    uint64_t free_mb = ((uint64_t)st.f_bfree * st.f_frsize) / (1024 * 1024);
+    if (free_mb >= FREE_FLOOR_MB) {
+        return;
+    }
+
+    /* A handful per pass, not until it is satisfied. Each unlink walks the
+     * allocation table, and this runs on the thread that writes audio; the
+     * next pass is five minutes away and 1 GB is a day and a half. */
+    LOG_WRN("card down to %llu MB, removing oldest recordings", free_mb);
+    for (int i = 0; i < 4 && reap_one(); i++) {
+    }
 }
 
 void sd_store_init(void)
@@ -209,7 +330,7 @@ int sd_store_write(const uint8_t *rec, uint16_t len)
         }
     }
 
-    if (batch_len + 2 + len > sizeof(batch)) {
+    if (batch_len + 3 + len > sizeof(batch)) {
         if (flush_batch() != 0) {
             /* Say "not now" rather than "never": a card that failed one
              * write may take the next. The ring keeps the record, and if the
@@ -222,8 +343,20 @@ int sd_store_write(const uint8_t *rec, uint16_t len)
 
     put16(&batch[batch_len], len);
     batch_len += 2;
-    memcpy(&batch[batch_len], rec, len);
-    batch_len += len;
+
+    uint8_t *payload = &batch[batch_len + 1];
+    memcpy(payload, rec, len);
+
+    /* The file header says which boot this file belongs to; the flag says it
+     * per frame. Both, because a file can be read on its own and a frame can
+     * be lifted out of one. Stamped before the checksum, or the checksum
+     * would be over bytes that are not the ones written. */
+    if (fmt_boot == 0 && len > 2) {
+        payload[2] |= FLAG_PRE_BOOT;
+    }
+
+    batch[batch_len] = rec_crc8(payload, (uint8_t)len);
+    batch_len += 1 + len;
 
     n_frames++;
     n_bytes += len;
@@ -262,6 +395,7 @@ void sd_store_get_stats(struct sd_store_stats *out)
     out->files      = n_files;
     out->write_errs = n_write_errs;
     out->worst_ms   = worst_ms;
+    out->reaped     = n_reaped;
     out->last_err   = last_err;
 }
 
@@ -323,8 +457,13 @@ int sd_store_list(const struct shell *sh)
             if (fs_read(&f, hdr, sizeof(hdr)) == (ssize_t)sizeof(hdr)) {
                 if (memcmp(hdr, SD_FILE_MAGIC, 4) != 0) {
                     verdict = "bad magic";
-                } else if (hdr[4] != SD_FILE_VERSION) {
-                    verdict = "wrong version";
+                } else if (hdr[4] == 0 || hdr[4] > SD_FILE_VERSION) {
+                    /* Newer than this firmware understands. Older is fine
+                     * and is not "unreadable": the host reader accepts every
+                     * version this project has written, and calling a file
+                     * we wrote ourselves last week corrupt is how a real
+                     * recording gets deleted by somebody tidying up. */
+                    verdict = "newer than this firmware";
                 } else {
                     codec = hdr[5];
                     rate  = hdr[6] | (hdr[7] << 8);
@@ -344,8 +483,8 @@ int sd_store_list(const struct shell *sh)
         n++;
         total += ent.size;
 
-        shell_print(sh, "  %-24s %8u B  %s%s codec=%u rate=%u boot=%04x",
-                    ent.name, (unsigned)ent.size, verdict,
+        shell_print(sh, "  %-24s %8u B  v%u %s%s codec=%u rate=%u boot=%04x",
+                    ent.name, (unsigned)ent.size, hdr[4], verdict,
                     strcmp(verdict, "ok") ? "" : ",", codec, rate, boot);
     }
 

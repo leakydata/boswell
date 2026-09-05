@@ -128,6 +128,10 @@ static void flash_maybe_sleep(void)
 
 static void writer_fn(void *a, void *b, void *cc);
 static void saver_fn(void *a, void *b, void *c);
+
+/* Read positions below this hold audio from before the current boot. Zero
+ * once the ring has been read past it, which is the ordinary state. */
+static int64_t pre_boot_end;
 static void do_clear(void);
 
 /* Called by the writer as it works, not only when it goes back to sleep.
@@ -397,6 +401,14 @@ int qspi_store_init(void)
                  * never be committed or cleared, and with strict ordering the
                  * live audio queued behind it never arrived either. */
                 erased_pos = ((saved.w_pos + SECTOR - 1) / SECTOR) * SECTOR;
+
+                /* Everything already in the ring was captured before this
+                 * boot, and its timestamps belong to a run that has ended.
+                 * Anything read from below this mark gets flagged on the way
+                 * out, because device_ms alone cannot say which boot it came
+                 * from and the host keys de-duplication on exactly that. */
+                pre_boot_end = saved.w_pos;
+
                 LOG_INF("backlog recovered: %lld B from the previous boot",
                         (long long)pending);
             } else {
@@ -796,9 +808,29 @@ void qspi_store_pop_stats(uint32_t out[9], int *last_err)
     }
 }
 
+/* Whether the record the last peek returned predates this boot. Captured at
+ * peek time rather than computed later, because committing moves r_pos past
+ * it and the answer would change under the caller. */
+static bool peeked_pre_boot;
+
+bool qspi_store_peek_is_pre_boot(void) { return peeked_pre_boot; }
+
 int qspi_store_peek(uint8_t *out, uint8_t max_len)
 {
-    return qspi_store_pop(out, max_len);
+    /* Read before popping: pop advances r_pos on success. */
+    peeked_pre_boot = (pre_boot_end > 0) && (r_pos < pre_boot_end);
+
+    int n = qspi_store_pop(out, max_len);
+
+    if (pre_boot_end > 0 && r_pos >= pre_boot_end) {
+        /* The ring has been read past the last of the previous run. Clearing
+         * it means the comparison above stops costing anything, and means a
+         * ring that later wraps around to those addresses is not mistaken
+         * for old audio. */
+        pre_boot_end = 0;
+        LOG_INF("backlog from the previous boot is fully replayed");
+    }
+    return n;
 }
 
 int qspi_store_pop(uint8_t *out, uint8_t max_len)

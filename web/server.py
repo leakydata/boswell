@@ -185,6 +185,7 @@ def parse_info(info):
     has_state = bool(caps & 0x0040)
     has_bootid = bool(caps & 0x0080)
     has_ota = bool(caps & 0x0008)
+    has_clock = bool(caps & 0x2000)
     has_tapseq = bool(caps & 0x0400)
     has_tapcfg = bool(caps & 0x0800)
     has_sdcard = bool(caps & 0x1000)
@@ -203,6 +204,14 @@ def parse_info(info):
     out["firmware"] = fw
     out["caps"] = caps
     out["has_ota"] = has_ota
+    out["has_clock"] = has_clock
+    if has_clock and len(info) >= 56:
+        # Unset is a real answer, not a missing one. A device that has been
+        # recording alone since boot has files that can only be placed
+        # relative to each other, and saying so is what lets ingest repair
+        # them instead of trusting an epoch nobody set.
+        out["clock_set"] = bool(info[51])
+        out["device_epoch"] = int.from_bytes(info[52:56], "little")
     out["has_steps"] = has_steps
     out["has_overruns"] = has_overruns
 
@@ -753,6 +762,8 @@ class Device:
             # any residue in flash at all routes every live frame to storage
             # instead of the radio. Two bytes of residue was enough: the link
             # looked healthy from both ends and not one frame arrived.
+            if self.state.get("caps", 0) & 0x2000:      # INFO_CAP_CLOCK
+                await self.send_time()
             if self.state.get("caps", 0) & 0x0100:      # INFO_CAP_SPLITBUF
                 await self._ctrl(0x12, 1)               # CTRL_BUFFER: on
                 await self._ctrl(0x13, 1 if self.state.get("backlog_mode", 1)
@@ -1065,6 +1076,40 @@ class Device:
             self.publish()
             self.event("log", text=f"tap threshold set to {n} "
                                    f"({n * 62.5:.0f} mg)")
+
+    async def send_time(self):
+        """Tell the device what time it is.
+
+        There is no clock on it -- no RTC, nothing battery-backed -- so until
+        a host says, every recording knows only how long after boot it
+        happened. That is fine while a host is always attached and stamps
+        arrival time; it stops being fine the moment the device records
+        alone, which is the whole point of the card.
+
+        Sent on every connect rather than once. It costs six bytes, the
+        device's uptime drifts against real time, and a device that was
+        power-cycled while out of range comes back not knowing -- so the only
+        version that is reliably right is the one that does not try to
+        remember whether it has already done it.
+        """
+        epoch = int(time.time())
+        payload = bytes([0x14, 0]) + epoch.to_bytes(4, "little")
+        if self.client and self.client.is_connected:
+            try:
+                await self.client.write_gatt_char(CTRL_UUID, payload,
+                                                  response=True)
+            except Exception as e:
+                print(f"send_time: {e}", flush=True)
+                return False
+            return True
+        if self.relay is not None:
+            try:
+                await self.relay.send_json({"type": "ctrl_wide",
+                                            "data": list(payload)})
+                return True
+            except Exception:
+                return False
+        return False
 
     async def enter_dfu(self, over_air: bool = False):
         """Reboot the device into its bootloader, over Bluetooth.

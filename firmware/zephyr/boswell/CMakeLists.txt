@@ -11,6 +11,7 @@ target_sources(app PRIVATE
   src/battery.c
   src/led.c
   src/cfg_store.c
+  src/clock.c
   src/fault.c
   src/button.c
   src/qspi_store.c

@@ -9,6 +9,7 @@
 
 #include "ble_audio.h"
 #include "imu_tap.h"
+#include "clock.h"
 #include "battery.h"
 #include "mic.h"
 #include "qspi_store.h"
@@ -99,7 +100,7 @@ static K_WORK_DELAYABLE_DEFINE(idle_link, idle_link_fn);
 static bool notify_enabled;
 static bool imu_notify_enabled;
 static ctrl_handler_t ctrl_cb;
-static uint8_t info_buf[51];
+static uint8_t info_buf[56];
 
 static void apply_conn_params(bool streaming);
 
@@ -144,7 +145,7 @@ static ssize_t ctrl_write(struct bt_conn *conn, const struct bt_gatt_attr *attr,
         return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
     }
     if (ctrl_cb) {
-        ctrl_cb(p[0], p[1]);
+        ctrl_cb(p[0], p[1], len > 2 ? &p[2] : NULL, len > 2 ? len - 2 : 0);
     }
     return len;
 }
@@ -625,7 +626,7 @@ void ble_audio_publish_info(void)
     uint16_t caps = INFO_CAP_STEPS | INFO_CAP_IMU_RAW | INFO_CAP_FLASH |
                     INFO_CAP_OTA | INFO_CAP_STATE | INFO_CAP_BOOTID |
                     INFO_CAP_SPLITBUF | INFO_CAP_DROPS | INFO_CAP_TAPSEQ |
-                    INFO_CAP_TAPCFG;
+                    INFO_CAP_TAPCFG | INFO_CAP_CLOCK;
 #ifdef CONFIG_DISK_DRIVER_SDMMC
     /* Only a build that has a card claims to know anything about one. A
      * wearable without the hardware publishes zeroes in these bytes, and the
@@ -670,6 +671,20 @@ void ble_audio_publish_info(void)
         info_buf[50] = (uint8_t)((sd.free_mb >> 8) & 0xFF);
     }
 #endif
+
+    /* Byte 51 says whether the device knows what time it is, and 52-55 carry
+     * what it thinks. Unset is a real answer, not a missing one: a device
+     * that has recorded alone since boot has files that can only be placed
+     * relative to each other, and the host has to know that rather than
+     * assume an epoch. */
+    info_buf[51] = clock_is_set() ? 1 : 0;
+    {
+        uint32_t now = clock_now();
+        info_buf[52] = (uint8_t)(now & 0xFF);
+        info_buf[53] = (uint8_t)((now >> 8) & 0xFF);
+        info_buf[54] = (uint8_t)((now >> 16) & 0xFF);
+        info_buf[55] = (uint8_t)((now >> 24) & 0xFF);
+    }
     info_buf[40] = (uint8_t)(nd & 0xFF);
     info_buf[41] = (uint8_t)((nd >> 8) & 0xFF);
     info_buf[42] = (uint8_t)((nd >> 16) & 0xFF);

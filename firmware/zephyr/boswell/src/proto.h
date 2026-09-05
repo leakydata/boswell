@@ -36,6 +36,18 @@
 #define FLAG_VOICED    0x02
 #define FLAG_VAD_ON    0x04
 #define FLAG_FROM_FLASH 0x08
+/* This frame was captured before the current boot.
+ *
+ * The backlog survives a reset -- that is the point of saving the cursors --
+ * so a frame replayed after one carries the *previous* run's device_ms while
+ * everything around it reports the current boot_id. The host keys
+ * de-duplication on the pair, so for exactly these frames the pair is a lie,
+ * and audio lands at the wrong time rather than being recognised as already
+ * held. Found by reading the first real card file back and seeing its
+ * timestamps run backwards across one clean discontinuity.
+ */
+#define FLAG_PRE_BOOT      0x20
+
 #define FLAG_OPUS      0x10
 
 /* Published in info byte 0. 20 is Opus because that is the value Omi's
@@ -141,6 +153,7 @@
 #define INFO_CAP_TAPSEQ    0x0400   /* byte 44 counts tap toggles */
 #define INFO_CAP_TAPCFG    0x0800   /* byte 45 is the tap threshold */
 #define INFO_CAP_SDCARD    0x1000   /* bytes 46-50 describe the card */
+#define INFO_CAP_CLOCK     0x2000   /* CTRL_SET_TIME understood; byte 51 says if it is set */
 
 /* Control opcodes, unchanged from the Arduino build. */
 enum {
@@ -169,6 +182,12 @@ enum {
     /* Reboot into the bootloader. Argument must be 0x5A so a stray write
      * cannot take the device offline. */
     CTRL_DFU          = 0x0F,
+    /* Wall-clock, as four more bytes after the opcode: seconds since the
+     * Unix epoch, little-endian. The device has no clock of its own, so
+     * until a host says otherwise every recording knows only how long after
+     * boot it happened -- which is no use at all for a file made at 3 a.m.
+     * on a walk. `arg` is ignored. */
+    CTRL_SET_TIME     = 0x14,
     CTRL_IMU_STREAM   = 0x10,   /* 0 off, else samples per second */
     CTRL_IMU_GYRO     = 0x11,   /* the expensive half; off by default */
 };

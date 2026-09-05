@@ -21,16 +21,30 @@
  *
  * File layout:
  *
- *     "BSWL" | ver:u8 | codec:u8 | rate:u16 | boot_id:u32 | reserved:u32
- *     then repeating:  len:u16 | payload[len]
+ *     "BSWL" | ver:u8 | codec:u8 | rate:u16 | boot_id:u32 | boot_epoch:u32
+ *     then repeating:  len:u16 | crc8 | payload[len]
+ *
+ * The length chain catches a file that was truncated -- the lengths have to
+ * land exactly on one another and finish at the end of the file, and a torn
+ * tail derails that immediately. It does not catch a payload whose bytes were
+ * scrambled while the lengths survived, which the chain walks straight past.
+ * One byte per record closes that, at about 1% of the file, and it is the
+ * same CRC the flash backlog already uses.
  *
  * The payload is a whole proto frame, byte for byte as the radio would have
  * carried it, so the host decodes a docked file with the same code that
  * decodes a live one.
+ *
+ * boot_epoch is the wall-clock second that corresponded to uptime zero, or 0
+ * if no host had told the device the time before this file was opened. It is
+ * stored rather than a per-file timestamp because it is constant for the
+ * whole run: any frame in the file can then be placed from its own device_ms,
+ * which is the one number certainly right, since the same counter stamped
+ * every copy of that frame however it reached the host.
  */
 
 #define SD_FILE_MAGIC   "BSWL"
-#define SD_FILE_VERSION 1
+#define SD_FILE_VERSION 2
 #define SD_HEADER_LEN   16
 
 struct sd_store_stats {
@@ -39,6 +53,7 @@ struct sd_store_stats {
     uint32_t files;         /* files opened */
     uint32_t write_errs;
     uint32_t worst_ms;      /* longest single flush */
+    uint32_t reaped;        /* recordings deleted to make room */
     int      last_err;
 };
 

@@ -87,7 +87,11 @@ class TestControlOpcodes:
         # Arduino dispatches on raw hex in a switch.
         for name, val in z.items():
             if name in ("CTRL_IMU_STREAM", "CTRL_IMU_GYRO",
-                        "CTRL_BUFFER", "CTRL_REPLAY", "CTRL_OTA"):
+                        "CTRL_BUFFER", "CTRL_REPLAY", "CTRL_OTA",
+                        # Only the device that records alone needs to know
+                        # the wall clock. This build records while a host is
+                        # attached, and that host stamps arrival time itself.
+                        "CTRL_SET_TIME"):
                 continue          # Zephyr-only features
             assert re.search(rf"case\s+0x{val:02X}\s*:", ino, re.I), \
                 f"Arduino does not handle {name} ({val:#04x})"

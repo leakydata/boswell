@@ -21,12 +21,12 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from ble_capture import (decode_frame, payload_is_complete,
+from ble_capture import (decode_frame, payload_is_complete, FLAG_PRE_BOOT,
                          HEADER_LEN as FRAME_HEADER_LEN)
 
 MAGIC = b"BSWL"
 HEADER_LEN = 16
-VERSION = 1
+SUPPORTED_VERSIONS = (1, 2)   # 2 added a per-record checksum
 
 CODEC_NAMES = {1: "ADPCM", 20: "Opus"}
 
@@ -42,21 +42,40 @@ def read_header(f):
     if raw[:4] != MAGIC:
         raise BadFile(f"bad magic {raw[:4]!r}")
     version = raw[4]
-    if version != VERSION:
-        raise BadFile(f"version {version}, expected {VERSION}")
-    codec, rate, boot_id = raw[5], *struct.unpack("<HI", raw[6:12])
+    if version not in SUPPORTED_VERSIONS:
+        raise BadFile(f"version {version}, understand {SUPPORTED_VERSIONS}")
+    codec, rate, boot_id, boot_epoch = raw[5], *struct.unpack("<HII", raw[6:16])
     return {"version": version, "codec": codec, "rate": rate,
             "boot_id": boot_id,
+            # The wall-clock second that was uptime zero, or 0 if no host had
+            # told the device the time before this file opened. Any frame can
+            # be placed from this plus its own device_ms.
+            "boot_epoch": boot_epoch,
             "codec_name": CODEC_NAMES.get(codec, f"unknown({codec})")}
 
 
-def read_frames(f):
-    """Yield each frame's payload.
+def crc8(data):
+    """The same CRC the device writes, and the same one its flash backlog
+    already used. Polynomial 0x07, init 0xFF."""
+    crc = 0xFF
+    for b in data:
+        crc ^= b
+        for _ in range(8):
+            crc = ((crc << 1) ^ 0x07) & 0xFF if crc & 0x80 else (crc << 1) & 0xFF
+    return crc
+
+
+def read_frames(f, version):
+    """Yield (payload, ok) for each record.
 
     A file whose tail is torn -- the battery went during a batch -- stops
-    here rather than raising. Everything before the tear is real audio and
-    is worth keeping; refusing the whole file over its last few milliseconds
+    here rather than raising. Everything before the tear is real audio and is
+    worth keeping; refusing the whole file over its last few milliseconds
     would throw away the recording to protect the recording.
+
+    A record whose checksum fails is yielded with ok=False rather than
+    ending the read. The length chain is still intact after it, so the rest
+    of the file is still readable, and one scrambled frame is 20 ms.
     """
     while True:
         head = f.read(2)
@@ -65,10 +84,20 @@ def read_frames(f):
         (n,) = struct.unpack("<H", head)
         if n == 0 or n > 4096:
             return                     # not a length; the file is torn here
+
+        want_crc = None
+        if version >= 2:
+            c = f.read(1)
+            if len(c) < 1:
+                return
+            want_crc = c[0]
+
         payload = f.read(n)
         if len(payload) < n:
             return
-        yield payload
+
+        ok = want_crc is None or crc8(payload) == want_crc
+        yield payload, ok
 
 
 def read_file(path, want_audio=True):
@@ -79,12 +108,22 @@ def read_file(path, want_audio=True):
         torn = False
         samples = []
         first_ms = last_ms = None
+        pre_boot = 0
+        corrupt = 0
+        frame_ms = []
         size = os.path.getsize(path)
         consumed = HEADER_LEN
 
-        for payload in read_frames(f):
+        for payload, ok in read_frames(f, hdr["version"]):
             frames += 1
-            consumed += 2 + len(payload)
+            consumed += 2 + len(payload) + (1 if hdr["version"] >= 2 else 0)
+
+            if not ok:
+                # The bytes are not what was written. Decoding them would
+                # produce noise presented as audio, which is worse than a
+                # gap: a gap is visible.
+                corrupt += 1
+                continue
             if len(payload) < FRAME_HEADER_LEN:
                 short += 1
                 continue
@@ -101,8 +140,11 @@ def read_file(path, want_audio=True):
                 short += 1
                 continue
 
-            first_ms = t_ms if first_ms is None else first_ms
-            last_ms = t_ms
+            if flags & FLAG_PRE_BOOT:
+                pre_boot += 1
+            else:
+                first_ms = t_ms if first_ms is None else first_ms
+                last_ms = t_ms
 
             if want_audio:
                 try:
@@ -112,11 +154,13 @@ def read_file(path, want_audio=True):
                     continue
                 if pcm is not None:
                     samples.append(pcm)
+                    frame_ms.append(t_ms)
 
         torn = consumed != size
 
     hdr.update(frames=frames, short=short, bytes=consumed, size=size,
-               torn=torn, samples=samples,
+               torn=torn, samples=samples, pre_boot=pre_boot,
+               corrupt=corrupt, frame_ms=frame_ms,
                first_ms=first_ms, last_ms=last_ms)
     return hdr
 
@@ -124,14 +168,29 @@ def read_file(path, want_audio=True):
 def describe(path, hdr):
     secs = hdr["frames"] * 20 / 1000.0
     bits = [f"{os.path.basename(path)}", f"{hdr['codec_name']} {hdr['rate']} Hz",
-            f"boot={hdr['boot_id']:04x}",
+            f"boot={hdr['boot_id']:04x}" if hdr["boot_id"]
+            else "boot=unknown (pre-boot audio)",
             f"{hdr['frames']} frames", f"{secs:.1f}s"]
+    if hdr.get("boot_epoch"):
+        import datetime
+        when = datetime.datetime.fromtimestamp(
+            hdr["boot_epoch"] + (hdr["first_ms"] or 0) / 1000.0)
+        bits.append(when.strftime("%Y-%m-%d %H:%M"))
+    else:
+        bits.append("no clock")
     if hdr["first_ms"] is not None:
         # Device uptime, not wall clock -- there is no clock on the device
         # yet, which is what phase 03 is for.
         span = (hdr["last_ms"] - hdr["first_ms"]) / 1000.0
         bits.append(f"device {hdr['first_ms'] / 1000:.0f}-"
                     f"{hdr['last_ms'] / 1000:.0f}s ({span:.0f}s span)")
+    if hdr["pre_boot"]:
+        # These carry a previous run's uptime. Their times cannot be compared
+        # with anything else in the file, and the device says so rather than
+        # letting them be read as though they belonged here.
+        bits.append(f"{hdr['pre_boot']} from an earlier boot")
+    if hdr["corrupt"]:
+        bits.append(f"{hdr['corrupt']} FAILED CHECKSUM")
     if hdr["short"]:
         bits.append(f"{hdr['short']} unusable")
     if hdr["torn"]:

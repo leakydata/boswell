@@ -477,7 +477,7 @@ static void applyGain(int gain) {
 }
 
 static void publishInfo() {
-  uint8_t info[51];
+  uint8_t info[56];
   info[0] = 1;                          // codec: 1 = IMA ADPCM
   info[1] = use16k ? 1 : 0;
   info[2] = FRAME_MS;
@@ -577,6 +577,14 @@ static void publishInfo() {
    * memset, so anything left unfilled is stack residue, and residue in a
    * free-space field reads as a card with an arbitrary amount of room. */
   info[46] = 0; info[47] = 0; info[48] = 0; info[49] = 0; info[50] = 0;
+  /* No clock on this build either, and for a better reason than "not
+   * implemented": this firmware only records while a host is attached, and a
+   * host that is attached stamps arrival time itself. Knowing the wall clock
+   * matters to the device that records alone. The absent INFO_CAP_CLOCK bit
+   * says so; these bytes stay zero, and the length matches the Zephyr build
+   * so a host parses one layout rather than two. */
+  info[51] = 0;
+  info[52] = 0; info[53] = 0; info[54] = 0; info[55] = 0;
   infoChar.write(info, sizeof(info));
 }
 

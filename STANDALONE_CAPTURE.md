@@ -234,16 +234,71 @@ was this captured. The cheap version: record the write cursor at boot, and
 flag any record replayed from before it as belonging to an earlier run, so
 the host knows not to trust its timestamp against the current boot id.
 
+## Phases 03, 04 and 06, and the bug above is fixed
+
+**Time.** The device has no clock, so the host sends one: `CTRL_SET_TIME`
+with the epoch, on every connect rather than once -- it costs six bytes,
+uptime drifts against real time, and a device power-cycled out of range comes
+back not knowing. The offset is deliberately **not persisted**: a device off
+for a week would wake up confidently wrong, and being honestly unset is worth
+more than being plausibly incorrect, because an unset clock can be repaired
+at ingest while a wrong one cannot be detected at all. An epoch before late
+2023 is refused, so a host with a dead RTC cannot stamp a day as 1970.
+
+What the file stores is the epoch that corresponded to **uptime zero**, not a
+per-file timestamp. It is constant for the whole run, so any frame can be
+placed from its own `device_ms` -- the one number certainly right, because
+the same counter stamped every copy of that frame however it reached the host.
+
+Measured: `skew 0 s` against the host, and the first file written afterwards
+reads back as `2026-09-05 17:38` with a monotonic span.
+
+**The boot-boundary bug is fixed.** `FLAG_PRE_BOOT` marks any record replayed
+from below the write cursor as it stood at boot. On the radio the flag rides
+on the frame; on the card those records get `boot_id = 0`, which starts a file
+of their own, because zero means "no boot claims this" and a file that lied
+would be worse than one admitting it does not know. Ingest keeps them rather
+than matching them: a duplicate can be merged later, a discard cannot.
+
+**Checksums.** Format v2 adds one CRC byte per record -- the same CRC the
+flash backlog already uses, so it is the same natively-tested function. The
+length chain catches truncation; it walks straight past a payload whose bytes
+were scrambled while the lengths survived. About 1% of the file. A failed
+record is skipped and counted, not fatal: the chain after it is intact and
+one bad frame is 20 ms. v1 files are still read, by both the firmware listing
+and the host.
+
+**Retention is age-out, not delete-on-upload.** 14.9 GB is about 23 days, so
+there is no space pressure to react to, and prompt deletion costs the only
+copy: an upload that turns out truncated or mis-ingested can be re-read for
+as long as the card still holds it. Oldest-first below 1 GB free -- still a
+day and a half of headroom -- checked every five minutes, never the file
+currently open, a handful per pass.
+
+**Ingest.** `host/ingest_card.py` verifies before trusting, and a file that
+fails is left on the card and retried next dock. Two independent defences
+against importing the same audio twice, both exercised on real data:
+
+| | |
+|---|---|
+| second run, ledger intact | `already ingested` |
+| second run, ledger deleted | `0 new, 7 already held` -- dedup alone caught it |
+
+A clip whose file had no epoch is written with `time_known: false` rather
+than stamped with a plausible time, so nothing downstream reads a placement
+of last resort as a fact.
+
 ## Still ahead on the card
 
-- **03 timestamps.** Files are named by boot id and sequence. A recording
-  made at 3 a.m. on a walk still only knows it happened N minutes after
-  boot; the host has to send wall-clock on connect and the device store the
-  offset.
-- **04 retention.** Nothing deletes anything yet. 14.9 GB is about 23 days
-  at the Opus rate, and after that the card fills and writes start failing.
-- **06 ingest.** `web/dedup.py` has 18 tests and still nothing calls it,
-  because there is no path that brings a file in.
+- **Ingest is a command line, not a button.** `ingest_card.py` has to be run
+  by hand against a mounted card. The app should notice a docked device and
+  offer it.
+- **09 browse and pull over BLE.** Listing and fetching one recording
+  without the cable. The only item here that is a convenience rather than a
+  capability, which is why it is still last.
+- **Nothing transcribes card clips yet.** They land in `data/` with times
+  records like any other clip, so the existing pipeline should pick them up,
+  but that has not been run end to end.
 
 
 ## Waiting on hardware
@@ -288,7 +343,7 @@ BUILD_DIR=/tmp/boswell-full-build \
 ```
 
 The plain image size is the check that none of the card or codec work leaked
-into the build the wearable runs. The baseline is **571,904 bytes** as of the card store.
+into the build the wearable runs. The baseline is **573,440 bytes** as of the clock.
 
 It has moved five times, deliberately. From 571,392 for the saver thread and
 its stack report, which any build with a backlog benefits from. Before that
