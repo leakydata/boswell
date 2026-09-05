@@ -55,6 +55,52 @@ def _store_path(kind):
     if os.path.dirname(p) != os.path.abspath(STORE):
         raise ValueError(f"path escapes the agent store: {kind!r}")
     return p
+# Conversations a reviewer has already been through.
+#
+# The local agent never needed this: it fires once per conversation, when the
+# talking stops, and then that batch is gone. A reviewer working through the
+# MCP has no such position -- it is asked to review, it reads whatever it is
+# given, and nothing anywhere says what it read last time. Ask twice and every
+# fact is recorded twice.
+#
+# Kept out of KINDS on purpose. This is a cursor, not something the agent
+# recorded, and it should not turn up in recorded_items or be merged.
+REVIEWS = os.path.join(DATA, "agent", "reviews.jsonl")
+
+
+def mark_reviewed(clip, by=None, note=None):
+    """Record that the conversation starting at `clip` has been reviewed."""
+    if not clip or os.path.basename(clip) != clip:
+        raise ValueError(f"bad clip name: {clip!r}")
+    rec = {"clip": clip, "by": by or "mcp", "note": note,
+           "at": time.strftime("%Y-%m-%d %H:%M:%S")}
+    os.makedirs(os.path.dirname(REVIEWS), exist_ok=True)
+    with _store_lock():
+        with open(REVIEWS, "a") as f:
+            f.write(json.dumps(rec) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+    return rec
+
+
+def reviewed_clips():
+    """The set of conversation-start clips already reviewed."""
+    if not os.path.exists(REVIEWS):
+        return set()
+    out = set()
+    for line in open(REVIEWS):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            c = json.loads(line).get("clip")
+        except Exception:
+            continue
+        if c:
+            out.add(c)
+    return out
+
+
 OLLAMA = "http://localhost:11434/api/chat"
 
 # gpt-oss:20b is ~13 GB and fits beside Whisper's ~9 GB on a 24 GB card.

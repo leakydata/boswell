@@ -54,7 +54,13 @@ server = MCPServer(
         "Speaker labels are only as good as the voiceprints behind them -- "
         "check `identified` on a conversation before attributing a quote, and "
         "prefer quoting a conversation over a single clip, because a clip is a "
-        "transport unit and usually cuts mid-sentence."
+        "transport unit and usually cuts mid-sentence. You can also write "
+        "to it: work through `unreviewed_conversations`, record what is "
+        "worth keeping with record_fact / record_task / record_event / "
+        "record_note, label it with tag_conversation, then mark_reviewed. "
+        "Always pass the clips an item came from. Speech by anyone whose "
+        "kind is media in list_people was audio playing nearby -- never "
+        "record it as something the user said, planned or committed to."
     ),
 )
 
@@ -320,6 +326,155 @@ def recorded_items(kind: str = "notes", limit: int = 50) -> list:
     if kind not in agent_runner.KINDS:
         return [{"error": f"kind must be one of {list(agent_runner.KINDS)}"}]
     return agent_runner.load_items(kind, limit=limit)
+
+
+# ---------------------------------------------------------------- writing
+#
+# The archive used to be read-only here, and everything below was done instead
+# by a 20B model running locally against the same transcripts. It was the weak
+# link: it recorded a video host's claims as durable facts about the user, wrote
+# "SPEAKER_00 has a COO, CCO, CFO" as a fact about a person, and recorded the
+# same sentence four times because it could not tell it had written it before.
+# The tools it used were fine; the judgement was not. So the tools are exposed
+# here instead, for a model that can weigh who is speaking and whether a
+# sentence is worth keeping at all.
+
+_ctx = __import__("threading").Lock()
+
+
+def _write(fn_name, clips, **kw):
+    """Call a tools_impl writer with provenance attached.
+
+    tools_impl carries the clip list in a module global that the local agent
+    sets once per batch. There are no batches here -- each call arrives on its
+    own -- so the caller passes clips explicitly and they are installed around
+    the one call. The lock is because that global is shared: two writes racing
+    would otherwise stamp each other's provenance onto the wrong record.
+
+    Provenance is required rather than optional. An item with no clips cannot
+    be traced back to what was actually said, which is how the store ended up
+    with 74 facts nobody could check.
+    """
+    import tools_impl
+    if isinstance(clips, str):
+        clips = [clips]
+    try:
+        # A structured error, not a traceback: the caller is a model, and an
+        # exception out of a tool tells it nothing it can act on.
+        clips = [_safe(c) for c in (clips or []) if c]
+    except ValueError as e:
+        return {"ok": False, "error": str(e)}
+    if not clips:
+        return {"ok": False, "error": "clips is required -- pass the clip "
+                                      "name(s) this came from, so the item "
+                                      "can be traced back to the audio"}
+    missing = [c for c in clips if _load_transcript(c) is None]
+    if missing:
+        return {"ok": False, "error": f"no transcript for {missing[:3]} -- "
+                                      f"use a clip name from list_conversations"}
+    with _ctx:
+        tools_impl.set_context(clips)
+        try:
+            return tools_impl.REGISTRY[fn_name](**kw)
+        finally:
+            tools_impl.set_context([])
+
+
+@server.tool(description="Record a durable fact about a person or project. "
+                         "Pass the clip name(s) it came from.")
+def record_fact(subject: str, fact: str, clips: list) -> dict:
+    return _write("remember_fact", clips, subject=subject, fact=fact)
+
+
+@server.tool(description="Record an action item someone committed to. `due` is "
+                         "free text or a date. Pass the clip name(s) it came from.")
+def record_task(text: str, clips: list, due: str = None,
+                owner: str = None) -> dict:
+    return _write("add_task", clips, text=text, due=due, owner=owner)
+
+
+@server.tool(description="Record a meeting or deadline mentioned in "
+                         "conversation. Pass the clip name(s) it came from.")
+def record_event(title: str, start: str, clips: list, end: str = None,
+                 attendees: list = None) -> dict:
+    return _write("add_calendar_event", clips, title=title, start=start,
+                  end=end, attendees=attendees or [])
+
+
+@server.tool(description="Record context worth keeping that is not a fact, "
+                         "task or event. Pass the clip name(s) it came from.")
+def record_note(title: str, body: str, clips: list,
+                tags: list = None) -> dict:
+    return _write("add_note", clips, title=title, body=body, tags=tags or [])
+
+
+@server.tool(description="Label a conversation with the subjects it covered, "
+                         "so later conversations on the same subject can be "
+                         "found with it. Short plain labels, not sentences.")
+def tag_conversation(clips: list, topics: list) -> dict:
+    return _write("tag_topics", clips, topics=topics)
+
+
+@server.tool(description="Fold duplicate recorded items into one. The survivor "
+                         "keeps its id, gains the others' clips, and may have "
+                         "its wording replaced.")
+def merge_recorded(kind: str, keep_id: str, drop_ids: list,
+                   text: str = None) -> dict:
+    import agent_runner, tools_impl
+    if kind not in agent_runner.KINDS:
+        return {"ok": False, "error": f"kind must be one of {list(agent_runner.KINDS)}"}
+    if isinstance(drop_ids, str):
+        drop_ids = [drop_ids]
+    return tools_impl.merge_items(kind, keep_id, drop_ids, text=text)
+
+
+@server.tool(description="Delete one recorded item by id -- something that was "
+                         "never worth recording, or came from audio playing "
+                         "nearby rather than from the user.")
+def delete_recorded(kind: str, item_id: str) -> dict:
+    import agent_runner
+    if kind not in agent_runner.KINDS:
+        return {"ok": False, "error": f"kind must be one of {list(agent_runner.KINDS)}"}
+    ok = agent_runner.delete_item(kind, item_id)
+    return {"ok": bool(ok), "deleted": item_id if ok else None,
+            "error": None if ok else "no item with that id"}
+
+
+@server.tool(description="Conversations nobody has reviewed yet, oldest first. "
+                         "This is the queue to work through; mark_reviewed "
+                         "takes one off it.")
+def unreviewed_conversations(limit: int = 20) -> list:
+    import agent_runner, index_db
+    done = agent_runner.reviewed_clips()
+    out = []
+    for conv in reversed(index_db.conversations(300, 400)):
+        first = conv["clips"][0] if conv.get("clips") else None
+        if not first or first in done:
+            continue
+        out.append({
+            "first_clip": first,
+            "start": _fmt_time(conv.get("start")),
+            "minutes": round((conv.get("seconds") or 0) / 60.0, 1),
+            "clips": len(conv["clips"]),
+            # Resolved names, so the queue shows at a glance whether a
+            # conversation is the user or a video that happened to be playing.
+            "speakers": conv.get("speakers") or [],
+            "preview": (conv.get("preview") or "")[:160],
+        })
+        if len(out) >= limit:
+            break
+    return out
+
+
+@server.tool(description="Mark a conversation reviewed so it leaves the queue. "
+                         "Call it after recording whatever was worth keeping -- "
+                         "including when nothing was.")
+def mark_reviewed(clip: str, note: str = None) -> dict:
+    import agent_runner
+    try:
+        return {"ok": True, **agent_runner.mark_reviewed(_safe(clip), note=note)}
+    except ValueError as e:
+        return {"ok": False, "error": str(e)}
 
 
 def _require_http_ack():
