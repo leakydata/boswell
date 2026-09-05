@@ -15,6 +15,8 @@ What is built, and what is waiting on a decision or on hardware.
 | Push button | gesture driver on D7, single press toggles capture | builds; 11 tests; **no switch to press yet** |
 | Card capture | audio spills to FAT files past a 75% ring mark | **on hardware**: 600 KB written, header read back, 0 errors |
 | USB offload | the card mounts on the host as a drive | **on hardware**: file read and decoded to 126 s of audio |
+| Import | the app finds a docked card and imports it | **on hardware**: clicked in the browser, 0 duplicates |
+| Transcription | card clips go through the ordinary pipeline | **on hardware**: 476 words, diarized into two speakers |
 | Card capture | audio spills to FAT files past a 75% ring mark | **on hardware**: 600 KB written, header verified, 0 errors |
 | OTA | `CTRL_DFU` sent from the app, gated on the capability bit | 8 tests; not yet triggered on hardware |
 | Device selection | `BOSWELL_DEVICE` picks a board by address or name | 10 tests |
@@ -288,17 +290,35 @@ A clip whose file had no epoch is written with `time_known: false` rather
 than stamped with a plausible time, so nothing downstream reads a placement
 of last resort as a fact.
 
+## The loop is closed
+
+Audio that never touched the radio is in the archive and transcribed:
+
+    microphone -> Opus -> QSPI ring -> spill to a FAT file -> dock over USB
+      -> the app finds the card -> verify -> de-duplicate -> archive
+      -> transcribe -> diarize
+
+Measured on the real device: **476 words across 7 clips, two speakers**, from
+files the device wrote while nothing was listening. The import was clicked in
+a browser rather than run from a terminal, and produced **0 duplicate clips**
+-- checked by clearing the ledger first, so de-duplication alone had to carry
+it.
+
+The card is found by content, not by device node or volume label: a directory
+with `.bwl` files in it was written by a Boswell, wherever the desktop
+decided to mount it, and a USB stick that happens to be the right size is
+not. The search is deliberately shallow -- walking a 16 GB card to find a
+directory is slow, and the answer is always a level or two down.
+
 ## Still ahead on the card
 
-- **Ingest is a command line, not a button.** `ingest_card.py` has to be run
-  by hand against a mounted card. The app should notice a docked device and
-  offer it.
 - **09 browse and pull over BLE.** Listing and fetching one recording
   without the cable. The only item here that is a convenience rather than a
   capability, which is why it is still last.
-- **Nothing transcribes card clips yet.** They land in `data/` with times
-  records like any other clip, so the existing pipeline should pick them up,
-  but that has not been run end to end.
+- **The import is manual.** The app spots the card and offers the button; it
+  does not import on its own. That is deliberate for now -- importing writes
+  to the archive, and doing it the moment a drive appears is the kind of
+  helpfulness that is hard to undo.
 
 
 ## Waiting on hardware

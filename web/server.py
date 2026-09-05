@@ -67,6 +67,7 @@ from bleak import BleakClient
 
 import agent_runner
 import index_db
+import card_scan
 import pipeline
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -1662,6 +1663,77 @@ async def api_envelope(name: str):
                "peak": int(np.abs(audio).max())}
     atomicio.write_json(cache, out)
     return JSONResponse(out)
+
+
+@app.get("/api/card")
+async def api_card():
+    """Is there a docked card, and is there anything on it we do not hold?
+
+    Recognised by content rather than by device node or label: a directory
+    with .bwl files in it was written by a Boswell, wherever the desktop
+    decided to mount it.
+    """
+    import sys
+    sys.path.insert(0, os.path.join(HERE, "..", "host"))
+    import ingest_card
+
+    cards = card_scan.find_cards()
+    if not cards:
+        return {"found": False}
+
+    path = cards[0]
+    files = card_scan.recordings(path)
+    ledger = ingest_card.load_ledger()
+    fresh = [f for f in files if ingest_card.ledger_key(f) not in ledger]
+
+    return {"found": True, "path": path,
+            "files": len(files), "new": len(fresh)}
+
+
+@app.post("/api/card/ingest")
+async def api_card_ingest():
+    """Import what the archive does not already hold.
+
+    Runs off the event loop: verifying and decoding a day of audio is minutes
+    of CPU, and doing it inline would stop the server answering -- including
+    stopping it accepting the live audio that is still arriving.
+    """
+    import sys
+    sys.path.insert(0, os.path.join(HERE, "..", "host"))
+    import ingest_card
+
+    cards = card_scan.find_cards()
+    if not cards:
+        return {"ok": False, "error": "no docked card found"}
+
+    path = cards[0]
+
+    def run():
+        ledger = ingest_card.load_ledger()
+        held = ingest_card.held_records()
+        lines = []
+        for f in card_scan.recordings(path):
+            lines.append(ingest_card.ingest_file(f, held, ledger, write=True))
+        ingest_card.save_ledger(ledger)
+        return lines
+
+    lines = await asyncio.to_thread(run)
+    for line in lines:
+        device.event("log", text=line)
+
+    # Card clips are clips. Whatever the pipeline does to a live one it
+    # should do to these, and it will not notice them on its own.
+    queued = 0
+    for f in sorted(os.listdir(DATA)):
+        if f.startswith("card_") and f.endswith(".wav"):
+            if not os.path.exists(pipeline.transcript_path(f)):
+                if worker.submit(f):
+                    queued += 1
+    if queued:
+        device.event("log", text=f"queued {queued} card clip(s) for transcription")
+
+    return {"ok": True, "files": len(lines), "queued": queued,
+            "lines": lines}
 
 
 @app.post("/api/transcribe_all")

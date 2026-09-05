@@ -575,6 +575,16 @@ html{scroll-padding-top:120px}
         The charger defaults to 50 mA, so a 500 mAh cell takes about ten hours.
         100 mA halves that. Only raise it on a cell rated for the current.
       </div>
+      <label class="row" id="cardrow" hidden>Docked card
+        <span class="val" id="cardnew">—</span>
+        <button id="cardimport" class="pri">Import</button>
+      </label>
+      <div id="cardnote" hidden style="font-size:12.5px;color:var(--muted);margin-top:-4px">
+        Recordings the device made while it was away from the computer. Nothing
+        is deleted from the card when they are imported — it holds about three
+        weeks and ages out the oldest on its own, so if an import goes wrong
+        the recordings are still there to read again.
+      </div>
       <label class="row" id="dfurow" hidden>Update the firmware
         <button id="dfubtn" class="dang" disabled>Reboot to bootloader</button>
       </label>
@@ -4711,6 +4721,46 @@ function toggleVad(){
   send({cmd:"vad", on});
 }
 vad.onclick = toggleVad;
+
+// A docked card is found by looking, not by being told: the desktop mounts it
+// wherever it likes and does not say. Polled slowly, because the answer only
+// changes when somebody physically plugs something in.
+let cardBusy = false;
+async function pollCard(){
+  if (cardBusy) return;
+  let s;
+  try { s = await (await fetch("/api/card")).json(); } catch(e){ return; }
+  const show = !!(s && s.found);
+  $("cardrow").hidden = !show;
+  $("cardnote").hidden = !show;
+  if (!show) return;
+  const n = s.new || 0;
+  $("cardnew").textContent = n
+    ? `${n} new of ${s.files} recording${s.files === 1 ? "" : "s"}`
+    : `${s.files} recording${s.files === 1 ? "" : "s"}, all imported`;
+  $("cardimport").disabled = n === 0;
+}
+setInterval(pollCard, 5000);
+pollCard();
+
+$("cardimport").onclick = async () => {
+  cardBusy = true;
+  $("cardimport").disabled = true;
+  $("cardimport").textContent = "Importing…";
+  try {
+    const r = await (await fetch("/api/card/ingest", {method:"POST"})).json();
+    if (r && r.ok){
+      log(`imported from the card: ${r.files} file(s), ${r.queued} queued to transcribe`);
+    } else {
+      log(`import failed: ${(r && r.error) || "unknown"}`);
+    }
+  } catch(e){
+    log(`import failed: ${e}`);
+  }
+  $("cardimport").textContent = "Import";
+  cardBusy = false;
+  pollCard();
+};
 
 // Rebooting into the bootloader takes the device off the air until something
 // flashes it, so it uses the same tap-twice guard as discarding the buffer --
