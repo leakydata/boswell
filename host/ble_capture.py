@@ -75,6 +75,93 @@ def decode_block(nibbles, predictor, index, nsamples):
     return out
 
 
+# ---------------------------------------------------------------- opus
+
+FLAG_16K = 0x01
+FLAG_OPUS = 0x10
+
+# libopus through ctypes rather than a wheel.
+#
+# opuslib and pyogg both wrap this same shared object, and both would be one
+# more thing to install on a machine that already has it -- Opus is a
+# dependency of half the desktop. What arrives over the air is a bare Opus
+# packet with no Ogg container, which the file-oriented wrappers make awkward
+# anyway; opus_decode() takes exactly that.
+_OPUS_LIB = None
+_OPUS_DECODERS = {}
+
+
+def _opus_lib():
+    global _OPUS_LIB
+    if _OPUS_LIB is not None:
+        return _OPUS_LIB
+    import ctypes
+    import ctypes.util
+    path = ctypes.util.find_library("opus") or "libopus.so.0"
+    lib = ctypes.CDLL(path)
+    lib.opus_decoder_create.restype = ctypes.c_void_p
+    lib.opus_decoder_create.argtypes = [ctypes.c_int32, ctypes.c_int,
+                                        ctypes.POINTER(ctypes.c_int)]
+    lib.opus_decode.restype = ctypes.c_int
+    lib.opus_decode.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_int32,
+                                ctypes.POINTER(ctypes.c_int16), ctypes.c_int,
+                                ctypes.c_int]
+    _OPUS_LIB = lib
+    return lib
+
+
+def _opus_decoder(rate):
+    """One decoder per rate, kept.
+
+    Opus decoding is stateful -- the decoder carries filter memory across
+    packets -- so building a fresh one per frame would decode every frame as
+    though it followed silence, which sounds like a click at every 20 ms
+    boundary rather than like audio.
+    """
+    dec = _OPUS_DECODERS.get(rate)
+    if dec is None:
+        import ctypes
+        err = ctypes.c_int()
+        dec = _opus_lib().opus_decoder_create(rate, 1, ctypes.byref(err))
+        if not dec or err.value != 0:
+            raise RuntimeError(f"opus_decoder_create({rate}) failed: {err.value}")
+        _OPUS_DECODERS[rate] = dec
+    return dec
+
+
+def decode_opus(payload, nsamples, rate):
+    import ctypes
+    buf = (ctypes.c_int16 * nsamples)()
+    n = _opus_lib().opus_decode(_opus_decoder(rate), bytes(payload),
+                                len(payload), buf, nsamples, 0)
+    if n < 0:
+        raise RuntimeError(f"opus_decode failed: {n}")
+    return np.frombuffer(buf, dtype=np.int16, count=n).copy()
+
+
+def decode_frame(payload, flags, predictor, index, nsamples):
+    """Whichever codec this frame was actually captured with.
+
+    The flag and not the device's advertised codec: a backlog written to
+    flash before a firmware change is replayed after it, so the two disagree
+    for exactly as long as it takes to drain, and the frame is the one that
+    knows.
+    """
+    if flags & FLAG_OPUS:
+        return decode_opus(payload, nsamples, 16000 if flags & FLAG_16K else 8000)
+    return decode_block(payload, predictor, index, nsamples)
+
+
+def payload_is_complete(payload, flags, nsamples):
+    """ADPCM packs two samples per byte and is short if it is truncated. An
+    Opus payload is compressed and has no such relationship to nsamples --
+    the length check that guards ADPCM would reject every Opus frame, which
+    is a silent capture stop rather than an error."""
+    if flags & FLAG_OPUS:
+        return len(payload) > 0
+    return len(payload) >= nsamples // 2
+
+
 async def do_scan():
     print("scanning 8s ...")
     devices = await BleakScanner.discover(timeout=8.0)

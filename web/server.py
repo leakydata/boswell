@@ -60,7 +60,8 @@ from fastapi.staticfiles import StaticFiles
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "host"))
 from ble_capture import (AUDIO_UUID, CTRL_UUID, INFO_UUID, DEVICE_NAME,
-                         HEADER_LEN, decode_block)
+                         HEADER_LEN, decode_block, decode_frame,
+                         payload_is_complete)
 from bleak import BleakClient, BleakScanner
 
 import agent_runner
@@ -504,7 +505,7 @@ class Device:
         seq, flags, index, predictor, nsamples, t_ms = struct.unpack(
             "<HBBhHI", data[:HEADER_LEN])
         payload = data[HEADER_LEN:]
-        if len(payload) < nsamples // 2:
+        if not payload_is_complete(payload, flags, nsamples):
             return
         if self._last_seq is not None:
             gap = (seq - self._last_seq - 1) & 0xFFFF
@@ -519,7 +520,7 @@ class Device:
             self._clock_host = time.time()
             self._clock_dev = t_ms
 
-        pcm = decode_block(payload, predictor, index, nsamples)
+        pcm = decode_frame(payload, flags, predictor, index, nsamples)
         if flags & 0x08:                     # recovered from device flash
             if not self._recovered:
                 # When the backlog started arriving. Used only to name a

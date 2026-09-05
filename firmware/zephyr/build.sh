@@ -32,12 +32,26 @@ export ZEPHYR_SDK_INSTALL_DIR="$ZEPHYR_SDK_DIR"
 #
 # Paths are relative to the application directory. Unset, nothing changes and
 # the wearable builds byte-for-byte as before.
+# Both accept a semicolon-separated list, because a board can want more than
+# one: the Audio BFF build wants the card overlay and, once the codec is
+# switched, the Opus fragment as well. Each entry is resolved against the
+# application directory separately -- prefixing the whole string would leave
+# every path after the first relative to wherever the build was started.
 EXTRA_ARGS=()
+_resolve() {
+  local out="" item
+  local IFS=';'
+  for item in $1; do
+    [ -n "$item" ] || continue
+    out="${out:+$out;}$HERE/boswell/$item"
+  done
+  printf '%s' "$out"
+}
 if [ -n "${EXTRA_OVERLAY:-}" ]; then
-  EXTRA_ARGS+=(-DEXTRA_DTC_OVERLAY_FILE="$HERE/boswell/$EXTRA_OVERLAY")
+  EXTRA_ARGS+=(-DEXTRA_DTC_OVERLAY_FILE="$(_resolve "$EXTRA_OVERLAY")")
 fi
 if [ -n "${EXTRA_CONF:-}" ]; then
-  EXTRA_ARGS+=(-DEXTRA_CONF_FILE="$HERE/boswell/$EXTRA_CONF")
+  EXTRA_ARGS+=(-DEXTRA_CONF_FILE="$(_resolve "$EXTRA_CONF")")
 fi
 
 west build -p auto --no-sysbuild -b "$BOARD" -d "$BUILD_DIR" "$HERE/boswell" \

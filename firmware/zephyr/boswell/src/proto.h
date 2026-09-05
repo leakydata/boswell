@@ -2,15 +2,24 @@
  * Wire protocol, shared with the Arduino build so the host is unaffected.
  *
  *   [0] seq       u16
- *   [2] flags     u8   bit0 16kHz, bit1 voiced, bit2 VAD on, bit3 from flash
- *   [3] stepIndex u8   ADPCM state for THIS frame
- *   [4] predictor i16  ADPCM state for THIS frame
- *   [6] nsamples  u16
+ *   [2] flags     u8   bit0 16kHz, bit1 voiced, bit2 VAD on, bit3 from flash,
+ *                       bit4 Opus payload
+ *   [3] stepIndex u8   ADPCM state for THIS frame; 0 when Opus
+ *   [4] predictor i16  ADPCM state for THIS frame; 0 when Opus
+ *   [6] nsamples  u16  decoded sample count, both codecs
  *   [8] t_ms      u32  uptime at capture
- *  [12] nibbles   nsamples/2 bytes
+ *  [12] payload        ADPCM: nsamples/2 bytes. Opus: variable, and the
+ *                      transport's own length is what bounds it.
  *
- * Every frame carries its own ADPCM state, so a lost frame costs one frame
- * rather than desynchronising the decoder for the rest of the stream.
+ * Every ADPCM frame carries its own decoder state, so a lost frame costs one
+ * frame rather than desynchronising the rest of the stream. Opus frames are
+ * independently decodable for the same reason.
+ *
+ * The codec is a per-frame flag and not a property of the device, because the
+ * two outlive each other: a backlog written to flash before a firmware change
+ * is replayed after it, and the host has to decode each frame as whatever it
+ * actually was when it was captured. The info characteristic still publishes
+ * a codec id, but that only says what the device is producing now.
  */
 #ifndef BOSWELL_PROTO_H
 #define BOSWELL_PROTO_H
@@ -27,6 +36,13 @@
 #define FLAG_VOICED    0x02
 #define FLAG_VAD_ON    0x04
 #define FLAG_FROM_FLASH 0x08
+#define FLAG_OPUS      0x10
+
+/* Published in info byte 0. 20 is Opus because that is the value Omi's
+ * firmware uses for it, and there is no reason for two projects on the same
+ * hardware to disagree about a number that costs nothing to share. */
+#define PROTO_CODEC_ADPCM  1
+#define PROTO_CODEC_OPUS   20
 
 /* 128-bit UUIDs, byte-reversed as they go on the wire.
  * service 4b1a0001-8f2c-4d5e-9a3b-1c7e6f8d0a21 */

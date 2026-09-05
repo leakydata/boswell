@@ -560,7 +560,15 @@ void ble_audio_publish_info(void)
 {
     uint16_t ns = g_state.use16k ? MAX_SAMPLES : MAX_SAMPLES / 2;
     memset(info_buf, 0, sizeof(info_buf));
-    info_buf[0] = 1;                       /* codec: IMA ADPCM */
+    /* What this device is producing now. Each frame also carries FLAG_OPUS,
+     * and that is the authority when decoding -- a backlog written before a
+     * firmware change replays after it. This byte is for the host to report
+     * and to size buffers with, not to decode by. */
+#ifdef CONFIG_BOSWELL_OPUS
+    info_buf[0] = PROTO_CODEC_OPUS;
+#else
+    info_buf[0] = PROTO_CODEC_ADPCM;
+#endif
     info_buf[1] = g_state.use16k;
     info_buf[2] = PROTO_FRAME_MS;
     info_buf[3] = ns & 0xFF;
