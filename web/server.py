@@ -187,6 +187,15 @@ def parse_info(info):
     has_tapseq = bool(caps & 0x0400)
     has_tapcfg = bool(caps & 0x0800)
     has_sdcard = bool(caps & 0x1000)
+    # Byte 0 is what the device is producing *now*, which is the right thing
+    # for a status line. It is not what a decoder should obey: each frame
+    # carries its own FLAG_OPUS, and a backlog written before a firmware
+    # change replays after it, so the two legitimately disagree while a
+    # device drains.
+    codec = info[0] if len(info) >= 1 else None
+    out["codec"] = codec
+    out["codec_name"] = {1: "ADPCM", 20: "Opus"}.get(codec) or (
+        f"codec {codec}" if codec is not None else None)
     out["boot_id"] = (info[22] | (info[23] << 8)) if (
         has_bootid and len(info) >= 24) else None
     out["info_version"] = version
@@ -314,6 +323,7 @@ class Device:
             "backlog_seconds": 0.0, "qspi_mb": 0, "imu": False,
             "peak": 0, "rms": 0.0, "level": 0.0, "error": None,
             "clip_seconds": 0.0, "source": None,
+            "codec": None, "codec_name": None,
             # None means "this firmware has no card support", which is not
             # the same as False, meaning "it has support and no card".
             "card_present": None, "card_total_mb": 0, "card_free_mb": 0,

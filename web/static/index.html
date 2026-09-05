@@ -1070,7 +1070,7 @@ function paint(s){
                         : disagreeing
                           ? "asked to stop and still capturing; retrying — audio "
                             + "arriving now is being saved"
-                          : `${s.rate/1000} kHz · ADPCM · ${s.frames} frames`;
+                          : `${s.rate/1000} kHz · ${s.codec_name || "ADPCM"} · ${s.frames} frames`;
   $("ver").textContent = s.connected ? "XIAO-MIC" : "disconnected";
   lastStateAt = Date.now();
 

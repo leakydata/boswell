@@ -83,3 +83,31 @@ def test_the_ui_distinguishes_all_three_states():
     assert "function cardLabel" in ui
     assert "not supported by this firmware" in ui
     assert '"no card"' in ui
+
+
+# --------------------------------------------------------------- codec id
+
+def test_the_status_line_says_which_codec_the_device_is_using():
+    """The label was hardcoded to ADPCM, so a board encoding Opus still
+    reported ADPCM in the status line -- and the firmware had been publishing
+    the real value in info byte 0 the whole time with nothing reading it."""
+    buf = bytearray(info(0x1000))
+    buf[0] = 1
+    assert server.parse_info(bytes(buf))["codec_name"] == "ADPCM"
+    buf[0] = 20
+    assert server.parse_info(bytes(buf))["codec_name"] == "Opus"
+
+
+def test_an_unknown_codec_is_reported_not_guessed():
+    """A firmware newer than this host should say so rather than be labelled
+    with whichever codec happened to be in the dictionary."""
+    buf = bytearray(info(0x1000))
+    buf[0] = 77
+    parsed = server.parse_info(bytes(buf))
+    assert parsed["codec"] == 77
+    assert "77" in parsed["codec_name"]
+
+
+def test_the_ui_no_longer_hardcodes_a_codec():
+    ui = open(UI).read()
+    assert "s.codec_name" in ui, "the status line still ignores the device"
