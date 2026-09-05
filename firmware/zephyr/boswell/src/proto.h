@@ -72,6 +72,36 @@
 #define BOSWELL_UUID_IMU \
     BT_UUID_128_ENCODE(0x4b1a0005, 0x8f2c, 0x4d5e, 0x9a3b, 0x1c7e6f8d0a21)
 
+/* Browsing and collecting card recordings without the cable.
+ *
+ * Written to with a command, notified back with the answer. Notifications
+ * rather than an L2CAP channel -- which is what Omi use and is the faster
+ * answer -- because the live audio path already sustains twice the rate a
+ * recording needs to move at, using exactly this mechanism. A second
+ * transport would be a second thing to get wrong for a convenience.
+ */
+#define BOSWELL_UUID_FILES \
+    BT_UUID_128_ENCODE(0x4b1a0006, 0x8f2c, 0x4d5e, 0x9a3b, 0x1c7e6f8d0a21)
+
+/* Commands, written to the files characteristic. */
+enum {
+    FILES_LIST   = 0x01,   /* no argument */
+    FILES_READ   = 0x02,   /* u16 index, as given by the listing */
+    FILES_STOP   = 0x03,   /* abandon whatever is in flight */
+};
+
+/* Notification kinds, first byte of every reply. */
+enum {
+    FILES_ENTRY  = 0x01,   /* [1][index:u16][size:u32][name...] */
+    FILES_END    = 0x02,   /* [2] -- the listing is complete */
+    FILES_DATA   = 0x03,   /* [3][seq:u16][bytes...] */
+    FILES_DONE   = 0x04,   /* [4][seq:u16] -- that was the whole file */
+    FILES_ERROR  = 0x05,   /* [5][errno:i8] */
+};
+
+/* Byte 51 aside, this is the bit that says the characteristic is there. */
+#define INFO_CAP_FILES     0x4000
+
 /* IMU frame: [seq:u16][flags:u8][count:u8][hz:u16][t_ms:u32] then `count`
  * samples of int16 x,y,z -- accelerometer, and gyroscope too when asked.
  *

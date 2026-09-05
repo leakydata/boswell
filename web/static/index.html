@@ -575,6 +575,17 @@ html{scroll-padding-top:120px}
         The charger defaults to 50 mA, so a 500 mAh cell takes about ten hours.
         100 mA halves that. Only raise it on a cell rated for the current.
       </div>
+      <label class="row" id="devfilesrow" hidden>On the device
+        <span class="val" id="devfilesv">—</span>
+        <button id="devfilesbtn">Look</button>
+      </label>
+      <div id="devfileslist" hidden style="font-size:12.5px;margin-top:-4px"></div>
+      <div id="devfilesnote" hidden style="font-size:12.5px;color:var(--muted);margin-top:2px">
+        Recordings still on the device, fetched over Bluetooth without the
+        cable. It is about twenty times slower than docking — a four-minute
+        recording takes roughly four minutes — so it is for when you want one
+        conversation now, not for collecting a day.
+      </div>
       <label class="row" id="cardrow" hidden>Docked card
         <span class="val" id="cardnew">—</span>
         <button id="cardimport" class="pri">Import</button>
@@ -1177,6 +1188,12 @@ function paint(s){
   // Only offered when the firmware says it understands the Bluetooth variant
   // of CTRL_DFU. An older build would take the write and ignore it, which
   // looks exactly like the button being broken.
+  $("devfilesrow").hidden = !s.has_files;
+  $("devfilesnote").hidden = !s.has_files;
+  $("devfilesbtn").disabled = !s.has_files || !s.connected || devFilesBusy;
+  if (typeof s.card_pull_pct === "number")
+    $("devfilesv").textContent = `fetching… ${s.card_pull_pct}%`;
+
   $("dfurow").hidden = !s.has_ota;
   $("dfunote").hidden = !s.has_ota;
   $("dfubtn").disabled = !s.has_ota || !s.connected;
@@ -4721,6 +4738,89 @@ function toggleVad(){
   send({cmd:"vad", on});
 }
 vad.onclick = toggleVad;
+
+// Recordings still on the device. Not polled: asking costs a directory walk
+// on the card and a round trip over the radio, and the answer only changes
+// when the device records something new. Asked for when somebody wants it.
+let devFilesBusy = false;
+
+function devFilesRender(files){
+  const el = $("devfileslist");
+  if (!files || !files.length){
+    el.hidden = false;
+    el.textContent = "nothing on the card yet";
+    return;
+  }
+  el.hidden = false;
+  el.innerHTML = "";
+  for (const f of files){
+    const row = document.createElement("div");
+    row.style.cssText = "display:flex;gap:8px;align-items:center;padding:2px 0";
+    const kb = Math.round(f.size / 1024);
+    const nm = document.createElement("span");
+    nm.style.cssText = "font-family:var(--mono);flex:1";
+    nm.textContent = `${f.name}  ${kb} kB`;
+    const b = document.createElement("button");
+    b.className = "sound";
+    if (f.ingested){
+      b.textContent = "already have it";
+      b.disabled = true;
+    } else {
+      b.textContent = "Fetch";
+      b.onclick = () => devFilesPull(f, b);
+    }
+    row.appendChild(nm);
+    row.appendChild(b);
+    el.appendChild(row);
+  }
+}
+
+async function devFilesLook(){
+  if (devFilesBusy) return;
+  devFilesBusy = true;
+  $("devfilesbtn").disabled = true;
+  $("devfilesbtn").textContent = "Looking…";
+  try {
+    const r = await (await fetch("/api/device_files")).json();
+    if (!r.supported){ $("devfilesrow").hidden = true; return; }
+    if (r.error){ $("devfilesv").textContent = "the card is busy"; }
+    else {
+      const n = (r.files || []).length;
+      $("devfilesv").textContent = n ? `${n} recording${n===1?"":"s"}` : "empty";
+      devFilesRender(r.files);
+    }
+  } catch(e){
+    $("devfilesv").textContent = "could not ask";
+  }
+  $("devfilesbtn").textContent = "Look";
+  $("devfilesbtn").disabled = false;
+  devFilesBusy = false;
+}
+$("devfilesbtn").onclick = devFilesLook;
+
+async function devFilesPull(f, btn){
+  btn.disabled = true;
+  btn.textContent = "Fetching…";
+  try {
+    const r = await (await fetch("/api/device_files/pull", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({index: f.index, name: f.name, size: f.size}),
+    })).json();
+    if (r.ok){
+      log(`fetched ${f.name}: ${r.line}`);
+      btn.textContent = "already have it";
+    } else {
+      log(`fetch failed: ${r.error || "unknown"}`);
+      btn.textContent = "Fetch";
+      btn.disabled = false;
+    }
+  } catch(e){
+    log(`fetch failed: ${e}`);
+    btn.textContent = "Fetch";
+    btn.disabled = false;
+  }
+}
 
 // A docked card is found by looking, not by being told: the desktop mounts it
 // wherever it likes and does not say. Polled slowly, because the answer only

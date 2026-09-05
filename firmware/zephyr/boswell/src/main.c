@@ -14,6 +14,7 @@
 #include "imu_tap.h"
 #ifdef CONFIG_DISK_DRIVER_SDMMC
 #include "sd_probe.h"
+#include "sd_xfer.h"
 #endif
 /* Unconditional: the header stubs itself out when there is no card slot, so
  * the drain path reads the same in both builds. */
@@ -2004,6 +2005,7 @@ int main(void)
      * microphone was not running. */
     sd_probe_init();
     sd_store_init();
+    sd_xfer_init();
 #endif
 
     /* After the drivers exist, so applying a restored value reaches hardware

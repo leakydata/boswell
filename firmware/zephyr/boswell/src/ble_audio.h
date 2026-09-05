@@ -53,4 +53,8 @@ int  ble_audio_advertise_now(void);
 /* Identifies this run. Zero until Bluetooth has started. */
 uint16_t ble_audio_boot_id(void);
 
+/* Notify on the files characteristic. Returns 0, or a negative errno when
+ * there is nobody to notify. */
+int ble_audio_send_files(const uint8_t *data, uint16_t len);
+
 #endif

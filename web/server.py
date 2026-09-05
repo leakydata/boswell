@@ -187,6 +187,7 @@ def parse_info(info):
     has_bootid = bool(caps & 0x0080)
     has_ota = bool(caps & 0x0008)
     has_clock = bool(caps & 0x2000)
+    has_files = bool(caps & 0x4000)
     has_tapseq = bool(caps & 0x0400)
     has_tapcfg = bool(caps & 0x0800)
     has_sdcard = bool(caps & 0x1000)
@@ -206,6 +207,7 @@ def parse_info(info):
     out["caps"] = caps
     out["has_ota"] = has_ota
     out["has_clock"] = has_clock
+    out["has_files"] = has_files
     if has_clock and len(info) >= 56:
         # Unset is a real answer, not a missing one. A device that has been
         # recording alone since boot has files that can only be placed
@@ -1078,6 +1080,120 @@ class Device:
             self.event("log", text=f"tap threshold set to {n} "
                                    f"({n * 62.5:.0f} mg)")
 
+    # ---- browsing the card over the radio ------------------------------
+    #
+    # The cable is twenty times faster and already works, so this exists for
+    # the moment you want one conversation from this morning and the device
+    # is on your chest rather than on the desk.
+
+    FILES_UUID = "4b1a0006-8f2c-4d5e-9a3b-1c7e6f8d0a21"
+
+    async def _files_start(self):
+        """Subscribe to the transfer characteristic, once."""
+        if getattr(self, "_files_sub", False):
+            return True
+        if not (self.client and self.client.is_connected):
+            return False
+        self._files_q = asyncio.Queue()
+
+        def on_notify(_h, data):
+            try:
+                self._files_q.put_nowait(bytes(data))
+            except asyncio.QueueFull:
+                pass
+
+        await self.client.start_notify(self.FILES_UUID, on_notify)
+        self._files_sub = True
+        return True
+
+    async def list_card_files(self, timeout=20.0):
+        """What is on the card, as [{index, name, size}]."""
+        if not await self._files_start():
+            return None
+        await self.client.write_gatt_char(self.FILES_UUID, bytes([0x01]),
+                                          response=True)
+        out = []
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while True:
+            left = deadline - loop.time()
+            if left <= 0:
+                break
+            try:
+                msg = await asyncio.wait_for(self._files_q.get(), left)
+            except asyncio.TimeoutError:
+                break
+            if not msg:
+                continue
+            if msg[0] == 0x02:                       # FILES_END
+                break
+            if msg[0] == 0x05:                       # FILES_ERROR
+                self.event("log", text="the device cannot read its card now")
+                return None
+            if msg[0] == 0x01 and len(msg) > 7:      # FILES_ENTRY
+                out.append({
+                    "index": msg[1] | (msg[2] << 8),
+                    "size": int.from_bytes(msg[3:7], "little"),
+                    "name": msg[7:].decode("utf-8", "replace"),
+                })
+        return out
+
+    async def pull_card_file(self, index, size_hint=0, timeout=600.0):
+        """Fetch one recording. Returns the bytes, or None.
+
+        Chunks are reassembled by their sequence number rather than by
+        arrival, and a gap is fatal rather than papered over: a hole in a
+        .bwl file is a torn record the reader would stop at anyway, and
+        silently returning a short file would have it ingested as complete.
+        """
+        if not await self._files_start():
+            return None
+        cmd = bytes([0x02, index & 0xFF, (index >> 8) & 0xFF])
+        await self.client.write_gatt_char(self.FILES_UUID, cmd, response=True)
+
+        chunks = {}
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        expected = None
+        last_report = 0.0
+
+        while True:
+            left = deadline - loop.time()
+            if left <= 0:
+                self.event("log", text="the transfer timed out")
+                return None
+            try:
+                msg = await asyncio.wait_for(self._files_q.get(), min(left, 30))
+            except asyncio.TimeoutError:
+                self.event("log", text="the device stopped sending")
+                return None
+            if not msg:
+                continue
+            if msg[0] == 0x05:
+                self.event("log", text="the device refused the transfer")
+                return None
+            if msg[0] == 0x03 and len(msg) > 3:      # FILES_DATA
+                seq = msg[1] | (msg[2] << 8)
+                chunks[seq] = msg[3:]
+                if size_hint and loop.time() - last_report > 3:
+                    last_report = loop.time()
+                    have = sum(len(c) for c in chunks.values())
+                    self.state["card_pull_pct"] = min(
+                        99, int(100 * have / size_hint))
+                    self.publish()
+            elif msg[0] == 0x04:                     # FILES_DONE
+                expected = msg[1] | (msg[2] << 8)
+                break
+
+        if expected is None or len(chunks) != expected:
+            self.event("log", text=f"transfer incomplete: {len(chunks)} of "
+                                   f"{expected} chunks")
+            return None
+
+        self.state.pop("card_pull_pct", None)
+        self.publish()
+        return b"".join(chunks[i] for i in range(expected))
+
     async def send_time(self):
         """Tell the device what time it is.
 
@@ -1663,6 +1779,88 @@ async def api_envelope(name: str):
                "peak": int(np.abs(audio).max())}
     atomicio.write_json(cache, out)
     return JSONResponse(out)
+
+
+@app.get("/api/device_files")
+async def api_device_files():
+    """What is on the card, asked over the radio rather than the cable."""
+    if not device.state.get("has_files"):
+        return {"supported": False}
+    if not device.state.get("connected"):
+        return {"supported": True, "connected": False}
+    files = await device.list_card_files()
+    if files is None:
+        return {"supported": True, "connected": True, "error": True}
+
+    import sys
+    sys.path.insert(0, os.path.join(HERE, "..", "host"))
+    import ingest_card
+    ledger = ingest_card.load_ledger()
+
+    for f in files:
+        # Same key the cable path uses, so a file collected either way is
+        # only ever ingested once.
+        f["ingested"] = f"{f['name']}:{f['size']}" in ledger
+    return {"supported": True, "connected": True, "files": files}
+
+
+@app.post("/api/device_files/pull")
+async def api_device_files_pull(request: Request):
+    """Fetch one recording over the radio and put it in the archive.
+
+    The bytes are written to a real file first and then handed to exactly the
+    same verify-and-ingest path the docked card uses. Two ways in, one set of
+    rules about what is trustworthy -- a second ingest path would be a second
+    place for de-duplication to be subtly wrong.
+    """
+    body = await request.json()
+    index = int(body.get("index", -1))
+    name = str(body.get("name") or f"pulled_{index}.bwl")
+    size = int(body.get("size") or 0)
+    if index < 0:
+        return {"ok": False, "error": "no index"}
+    if not device.state.get("connected"):
+        return {"ok": False, "error": "not connected"}
+
+    device.event("log", text=f"pulling {name} over Bluetooth ({size} bytes)")
+    data = await device.pull_card_file(index, size_hint=size)
+    if data is None:
+        return {"ok": False, "error": "transfer failed"}
+
+    import sys
+    sys.path.insert(0, os.path.join(HERE, "..", "host"))
+    import ingest_card
+
+    pulled = os.path.join(DATA, "pulled")
+    os.makedirs(pulled, exist_ok=True)
+    path = os.path.join(pulled, os.path.basename(name))
+    tmp = path + ".part"
+    with open(tmp, "wb") as f:
+        f.write(data)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+
+    def run():
+        ledger = ingest_card.load_ledger()
+        held = ingest_card.held_records()
+        line = ingest_card.ingest_file(path, held, ledger, write=True)
+        ingest_card.save_ledger(ledger)
+        return line
+
+    line = await asyncio.to_thread(run)
+    device.event("log", text=line)
+
+    queued = 0
+    for f in sorted(os.listdir(DATA)):
+        if f.startswith("card_") and f.endswith(".wav"):
+            if not os.path.exists(pipeline.transcript_path(f)):
+                if worker.submit(f):
+                    queued += 1
+    if queued:
+        device.event("log", text=f"queued {queued} clip(s) for transcription")
+
+    return {"ok": True, "bytes": len(data), "line": line, "queued": queued}
 
 
 @app.get("/api/card")

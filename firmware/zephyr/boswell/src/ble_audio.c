@@ -10,6 +10,9 @@
 #include "ble_audio.h"
 #include "imu_tap.h"
 #include "clock.h"
+#ifdef CONFIG_DISK_DRIVER_SDMMC
+#include "sd_xfer.h"
+#endif
 #include "battery.h"
 #include "mic.h"
 #include "qspi_store.h"
@@ -30,6 +33,9 @@ LOG_MODULE_REGISTER(ble_audio, LOG_LEVEL_INF);
 
 static struct bt_uuid_128 svc_uuid   = BT_UUID_INIT_128(BOSWELL_UUID_SERVICE);
 static struct bt_uuid_128 audio_uuid = BT_UUID_INIT_128(BOSWELL_UUID_AUDIO);
+#ifdef CONFIG_DISK_DRIVER_SDMMC
+static struct bt_uuid_128 files_uuid = BT_UUID_INIT_128(BOSWELL_UUID_FILES);
+#endif
 /* Whether a control write needs an encrypted link.
  *
  * The control characteristic arms the microphone, erases the backlog and can
@@ -150,6 +156,33 @@ static ssize_t ctrl_write(struct bt_conn *conn, const struct bt_gatt_attr *attr,
     return len;
 }
 
+#ifdef CONFIG_DISK_DRIVER_SDMMC
+static void files_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value)
+{
+    ARG_UNUSED(attr);
+    if (value == 0) {
+        /* Unsubscribing mid-transfer is a person closing the page. Reading
+         * the card for nobody costs power and stalls the writer. */
+        sd_xfer_abort();
+    }
+}
+
+static ssize_t files_write(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+                           const void *b, uint16_t len, uint16_t offset,
+                           uint8_t flags)
+{
+    ARG_UNUSED(conn); ARG_UNUSED(attr); ARG_UNUSED(offset); ARG_UNUSED(flags);
+    if (len < 1) {
+        return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
+    }
+    /* Handed straight to the transfer thread. Listing a directory or reading
+     * a megabyte must not happen here: this is the Bluetooth RX thread, and
+     * it carries the live audio's acknowledgements. */
+    sd_xfer_command(b, len);
+    return len;
+}
+#endif
+
 static ssize_t info_read(struct bt_conn *conn, const struct bt_gatt_attr *attr,
                          void *buf, uint16_t len, uint16_t offset)
 {
@@ -176,6 +209,15 @@ BT_GATT_SERVICE_DEFINE(boswell_svc,
     BT_GATT_CHARACTERISTIC(&imu_uuid.uuid, BT_GATT_CHRC_NOTIFY,
                            BT_GATT_PERM_NONE, NULL, NULL, NULL),
     BT_GATT_CCC(imu_ccc_changed, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+#ifdef CONFIG_DISK_DRIVER_SDMMC
+    /* Browsing and collecting recordings. Same permission as the control
+     * characteristic, and for the same reason: this reads audio off a
+     * device somebody is wearing. */
+    BT_GATT_CHARACTERISTIC(&files_uuid.uuid,
+                           BT_GATT_CHRC_WRITE | BT_GATT_CHRC_NOTIFY,
+                           BOSWELL_CTRL_PERM, NULL, files_write, NULL),
+    BT_GATT_CCC(files_ccc_changed, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+#endif
 );
 
 /* The value attributes to notify on, found by UUID rather than counted.
@@ -192,6 +234,9 @@ BT_GATT_SERVICE_DEFINE(boswell_svc,
  */
 static const struct bt_gatt_attr *audio_attr;
 static const struct bt_gatt_attr *imu_attr;
+#ifdef CONFIG_DISK_DRIVER_SDMMC
+static const struct bt_gatt_attr *files_attr;
+#endif
 
 static const struct bt_gatt_attr *find_value_attr(const struct bt_uuid *uuid)
 {
@@ -424,6 +469,27 @@ int ble_imu_send(const uint8_t *frame, uint16_t len)
     return bt_gatt_notify(current_conn, imu_attr, frame, len);
 }
 
+#ifdef CONFIG_DISK_DRIVER_SDMMC
+int ble_audio_send_files(const uint8_t *data, uint16_t len)
+{
+    if (!ble_audio_connected() || files_attr == NULL) {
+        return -ENOTCONN;
+    }
+    /* Waits for a slot rather than dropping, the same way audio does -- a
+     * chunk lost here is a hole in a file the host will try to decode, not a
+     * gap it can notice. Longer patience than audio gets: nothing is arriving
+     * behind this that goes stale. */
+    for (int attempt = 0; attempt < 100; attempt++) {
+        int err = bt_gatt_notify(current_conn, files_attr, data, len);
+        if (err != -ENOMEM && err != -EAGAIN) {
+            return err;
+        }
+        k_sleep(K_MSEC(5));
+    }
+    return -ENOMEM;
+}
+#endif
+
 bool ble_audio_linked(void)
 {
     return current_conn != NULL;
@@ -632,7 +698,7 @@ void ble_audio_publish_info(void)
      * wearable without the hardware publishes zeroes in these bytes, and the
      * absent bit is what tells the host those zeroes mean "no card fitted"
      * rather than "a card with no space left". */
-    caps |= INFO_CAP_SDCARD;
+    caps |= INFO_CAP_SDCARD | INFO_CAP_FILES;
 #endif
     info_buf[20] = (uint8_t)(caps & 0xFF);
     info_buf[21] = (uint8_t)(caps >> 8);
@@ -707,6 +773,9 @@ int ble_audio_init(ctrl_handler_t on_ctrl)
 {
     audio_attr = find_value_attr(&audio_uuid.uuid);
     imu_attr   = find_value_attr(&imu_uuid.uuid);
+#ifdef CONFIG_DISK_DRIVER_SDMMC
+    files_attr = find_value_attr(&files_uuid.uuid);
+#endif
     if (audio_attr == NULL || imu_attr == NULL) {
         LOG_ERR("audio or motion characteristic missing from the service");
         return -ENOENT;

@@ -18,6 +18,7 @@ What is built, and what is waiting on a decision or on hardware.
 | Import | the app finds a docked card and imports it | **on hardware**: clicked in the browser, 0 duplicates |
 | Push button | single press toggles capture, hold powers off | **on hardware**: 1 press, 1 single, 0 bounces |
 | Speaker | rising/falling pairs on arm and disarm | **on hardware**: heard |
+| Browse and pull | list and fetch a recording over the radio | **on hardware**: 253 KB in 50 s, byte-perfect |
 | Transcription | card clips go through the ordinary pipeline | **on hardware**: 476 words, diarized into two speakers |
 | Card capture | audio spills to FAT files past a 75% ring mark | **on hardware**: 600 KB written, header verified, 0 errors |
 | OTA | `CTRL_DFU` sent from the app, gated on the capability bit | 8 tests; not yet triggered on hardware |
@@ -312,16 +313,48 @@ decided to mount it, and a USB stick that happens to be the right size is
 not. The search is deliberately shallow -- walking a 16 GB card to find a
 directory is slow, and the answer is always a level or two down.
 
-## Still ahead on the card
+## Phase 09: the cable is optional now
 
-- **09 browse and pull over BLE.** Listing and fetching one recording
-  without the cable. The only item here that is a convenience rather than a
-  capability, which is why it is still last.
-- **The import is manual.** The app spots the card and offers the button; it
-  does not import on its own. That is deliberate for now -- importing writes
-  to the archive, and doing it the moment a drive appears is the kind of
-  helpfulness that is hard to undo.
+`boswell files` over a GATT characteristic: write a command, get the answer
+back as notifications. Notifications rather than the L2CAP channel Omi use,
+because the live audio path already sustains twice the rate a recording needs
+and a second transport would be a second thing to get wrong for a
+convenience.
 
+**Measured on hardware:** 253,609 bytes in 50 seconds -- **5.07 kB/s**, above
+the 4 kB/s this was estimated at. Every byte arrived, and the pulled file
+parses to exactly what the docked copy did: 2642 frames, 52.8 s, the same
+timestamp and the same span. The device stayed connected and recording
+throughout.
+
+What the design had to get right, none of which is about throughput:
+
+- **Nothing slow on the Bluetooth thread.** That thread carries the live
+  audio's acknowledgements; a directory walk or a megabyte read there stops
+  the recording the device exists for. The command is handed to a worker and
+  the write returns.
+- **The card lock is taken per chunk, not for the file.** A megabyte at this
+  rate is four minutes, and holding the card that long would stall the
+  writer behind it. The transfer also sleeps between chunks so live audio
+  and the flash writer get time.
+- **A USB host owning the volume refuses the transfer** rather than reading
+  a filesystem somebody else is editing.
+- **A gap is fatal.** Chunks are reassembled by sequence number and a missing
+  one fails the transfer, because a hole in a `.bwl` is a torn record the
+  reader stops at anyway -- and a short file returned as complete would be
+  ingested as complete.
+- **One set of rules.** A pulled file is written to disk and handed to
+  exactly the ingest path the docked card uses, keyed the same way, so a
+  recording collected either way is ingested once. The listing already says
+  which files the archive holds, from the ledger the cable path wrote.
+- **Unsubscribing abandons it.** Somebody closed the page; reading the card
+  for nobody costs power and stalls the writer.
+
+Asked for rather than polled: a listing costs a directory walk on the card
+and a round trip, and the answer only changes when the device records
+something new.
+
+## Still ahead
 
 ## The button, and three pin conflicts
 
