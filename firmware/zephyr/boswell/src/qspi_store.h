@@ -91,8 +91,19 @@ int      qspi_store_pop(uint8_t *out, uint8_t max_len);
 void     qspi_store_reset(void);
 /* pushes, pages written, sector erases, writer wakeups */
 void     qspi_store_stats(uint32_t out[4]);
+/* Cursor saves written, snapshots superseded before they reached flash, and
+ * the longest single write. The middle number is the interesting one: it
+ * counts saves that fell behind the radio, which is the condition that used
+ * to reset the board when this ran on the writer thread. */
+void     qspi_store_save_stats(uint32_t *saves, uint32_t *coalesced,
+                               uint32_t *worst_ms);
 /* Called from the writer thread each time round its loop, so the watchdog
  * has evidence it is still running rather than an assumption. */
 void     qspi_store_set_alive_cb(void (*cb)(void));
+
+/* High-water marks for the two threads this file owns. Declared here rather
+ * than exporting the thread objects, because the sizes are private. */
+struct shell;
+void     qspi_store_report_stacks(const struct shell *sh);
 
 #endif

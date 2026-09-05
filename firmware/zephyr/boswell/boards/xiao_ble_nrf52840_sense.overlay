@@ -130,3 +130,36 @@
 		pwm_b: pwm_b { pwms = <&pwm0 2 PWM_MSEC(20) PWM_POLARITY_INVERTED>; };
 	};
 };
+
+/*
+ * The push button.
+ *
+ * A momentary switch between the pin and ground -- no external resistor,
+ * because the internal pull-up holds the line high and a press pulls it low.
+ *
+ * D7 (P1.12) is chosen because it is free in every build this project has.
+ * The Audio BFF takes D8/D9/D10 for the card's SPI and D0 for its chip
+ * select, and the speaker wants D1/D2/D3 for I2S; D4 and D5 are the header's
+ * I2C pair, and D6/D7 its UART pair, which nothing uses here because the
+ * console is USB CDC. That leaves D6 and D7, and D7 is the corner pin --
+ * easiest of the lot to get a soldering iron onto.
+ *
+ * Declared unconditionally, including on boards with no switch fitted. An
+ * unconnected pin is held high by the pull-up, which reads as "not pressed",
+ * so the cost of it being here is one configured input.
+ *
+ * To move it: change the pin below. Nothing else refers to it.
+ */
+/ {
+	buttons {
+		compatible = "gpio-keys";
+		boswell_button: button_0 {
+			gpios = <&gpio1 12 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+			label = "Boswell button";
+		};
+	};
+
+	aliases {
+		sw0 = &boswell_button;
+	};
+};

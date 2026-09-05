@@ -22,6 +22,7 @@
 #include "cfg_store.h"
 #include "qspi_store.h"
 #include "fault.h"
+#include "button.h"
 
 #include <stdlib.h>
 #include <zephyr/kernel.h>
@@ -527,6 +528,9 @@ static int cmd_status(const struct shell *sh, size_t argc, char **argv)
                 qspi_store_dropped(), qspi_store_capacity() / 1024);
     shell_print(sh, "qspi pushes=%u pages=%u erases=%u wake=%u",
                 qs[0], qs[1], qs[2], qs[3]);
+    uint32_t sv, sc, sw;
+    qspi_store_save_stats(&sv, &sc, &sw);
+    shell_print(sh, "cursor saves=%u coalesced=%u worst=%u ms", sv, sc, sw);
     shell_print(sh, "cfg store=%d  tap_thresh=%u debounce=%u ms",
                 cfg_store_ready(), imu_tap_get_threshold(),
                 imu_tap_get_debounce());
@@ -603,6 +607,16 @@ static void print_fault(const struct shell *sh)
 
 static void report_last_fault(void) { print_fault(NULL); }
 
+static int cmd_button(const struct shell *sh, size_t argc, char **argv)
+{
+    ARG_UNUSED(argc); ARG_UNUSED(argv);
+    uint32_t p, si, d, l, b;
+    button_counters(&p, &si, &d, &l, &b);
+    shell_print(sh, "presses=%u single=%u double=%u long=%u bounces=%u down=%d",
+                p, si, d, l, b, button_is_down() ? 1 : 0);
+    return 0;
+}
+
 static int cmd_fault(const struct shell *sh, size_t argc, char **argv)
 {
     if (argc > 1 && strcmp(argv[1], "clear") == 0) {
@@ -632,6 +646,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(boswell_cmds,
 #endif
     SHELL_CMD(tap, NULL, "Set double-tap threshold (0-31)", cmd_tap),
     SHELL_CMD(taps, NULL, "Show tap counters", cmd_taps),
+    SHELL_CMD(button, NULL, "Show push-button counters", cmd_button),
     SHELL_CMD(steps, NULL, "Show step count, or 'steps reset'", cmd_steps),
     SHELL_CMD(unpair, NULL, "Forget every paired host", cmd_unpair),
     SHELL_CMD(adv, NULL, "Force advertising to restart", cmd_adv),
@@ -828,6 +843,45 @@ static void on_double_tap(void)
     ble_audio_apply_conn_params(g_state.streaming);
     ble_audio_publish_info();
     led_state();
+}
+
+/* The switch, once one is fitted.
+ *
+ * A single press toggles capture, and it is the single -- not the double --
+ * because a button has none of the ambiguity that made the accelerometer
+ * need two. The IMU cannot tell a deliberate tap from the device being set
+ * down, so it asked for a pair to raise the bar; a switch is only ever
+ * pressed on purpose, and making the everyday action the easy one is the
+ * point of fitting hardware for it.
+ *
+ * Both routes end at the same place, so the host cannot tell them apart and
+ * does not need to: tap_seq moves, and it adopts the new state.
+ */
+static void on_button(enum button_gesture g)
+{
+    switch (g) {
+    case BUTTON_SINGLE:
+        on_double_tap();
+        break;
+
+    case BUTTON_DOUBLE:
+        /* Deliberately nothing yet. An unused gesture is easy to add later;
+         * a gesture wired to something nobody asked for is a device that
+         * does surprising things when a press is misread. */
+        LOG_INF("button: double (no action bound)");
+        break;
+
+    case BUTTON_LONG:
+        /* This is where power-off goes. It is not wired up, and the reason
+         * is worth stating: the wake path is a GPIO sense on this same pin,
+         * and if it is wrong the device is off until somebody finds the
+         * reset button. That is a bad thing to ship untested, and it cannot
+         * be tested until the switch exists. Once a real press has proved
+         * reliable, this becomes sys_poweroff() with the pin as the wake
+         * source. */
+        LOG_INF("button: long press (power-off not wired yet)");
+        break;
+    }
 }
 
 /* ---------------------------------------------------------- settings glue */
@@ -1261,6 +1315,7 @@ static void stacks_report(const struct shell *sh)
 {
     report_stack(sh, "capture", &capture_thread, CAPTURE_STACK);
     report_stack(sh, "imu", &imu_thread, IMU_STACK);
+    qspi_store_report_stacks(sh);
 }
 
 static void capture_fn(void *a, void *b, void *c)
@@ -1449,6 +1504,12 @@ int main(void)
 
     err = battery_init();
     LOG_INF("battery_init -> %d", err);
+
+    /* -ENODEV here is the ordinary case on a board with no switch fitted,
+     * so it is logged at info and the device carries on with the tap. */
+    int btn_err = button_init(on_button);
+    LOG_INF("button_init -> %d%s", btn_err,
+            btn_err == -ENODEV ? " (no switch fitted)" : "");
 
     err = imu_tap_init(on_double_tap);
     LOG_INF("imu_tap_init -> %d", err);

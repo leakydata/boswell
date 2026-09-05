@@ -184,6 +184,7 @@ def parse_info(info):
     has_overruns = bool(caps & 0x0020)
     has_state = bool(caps & 0x0040)
     has_bootid = bool(caps & 0x0080)
+    has_ota = bool(caps & 0x0008)
     has_tapseq = bool(caps & 0x0400)
     has_tapcfg = bool(caps & 0x0800)
     has_sdcard = bool(caps & 0x1000)
@@ -201,6 +202,7 @@ def parse_info(info):
     out["info_version"] = version
     out["firmware"] = fw
     out["caps"] = caps
+    out["has_ota"] = has_ota
     out["has_steps"] = has_steps
     out["has_overruns"] = has_overruns
 
@@ -1063,6 +1065,40 @@ class Device:
             self.publish()
             self.event("log", text=f"tap threshold set to {n} "
                                    f"({n * 62.5:.0f} mg)")
+
+    async def enter_dfu(self, over_air: bool = False):
+        """Reboot the device into its bootloader, over Bluetooth.
+
+        CTRL_DFU and INFO_CAP_OTA have been in the firmware from the start
+        and nothing ever sent them, so updating a device that is meant to be
+        worn has always meant finding the USB cable -- and, when the shell
+        did not answer, double-tapping a reset button by feel.
+
+        The argument is deliberately awkward on the firmware side: 0x5A for
+        the mass-storage bootloader, 0xA5 for the Bluetooth one, and anything
+        else ignored, so a stray control write cannot take the device
+        offline.
+
+        This is one-way. The device drops the connection as it reboots and
+        comes back as a bootloader, which does not advertise the audio
+        service -- so the reconnect loop is stopped rather than left chasing
+        something that will not answer until it has been flashed.
+        """
+        if over_air and not self.state.get("has_ota"):
+            self.event("log", text="this firmware has no over-the-air DFU")
+            return False
+
+        arg = 0xA5 if over_air else 0x5A
+        which = "bluetooth" if over_air else "USB"
+
+        if not await self._ctrl(0x0F, arg):
+            self.event("log", text="could not reach the device to reboot it")
+            return False
+
+        self.event("log", text=f"rebooting into the {which} bootloader")
+        # Stop reconnecting. The device is about to stop being a Boswell.
+        self.want(False)
+        return True
 
     async def set_led(self, level: int, pulse: bool):
         self.state["led_level"] = max(0, min(255, int(level)))
@@ -3517,6 +3553,8 @@ async def ws(sock: WebSocket):
                 await device.set_tap_enabled(bool(msg.get("on", True)))
             elif cmd == "tap_thresh":
                 await device.set_tap_threshold(int(msg.get("value", 12)))
+            elif cmd == "dfu":
+                await device.enter_dfu(bool(msg.get("over_air", False)))
             elif cmd == "clear_buffer":
                 await device.clear_buffer()
             elif cmd == "fast_charge":

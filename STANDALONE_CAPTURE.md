@@ -11,6 +11,9 @@ What is built, and what is waiting on a decision or on hardware.
 | Opus | vendored, encoder wired, host decodes either codec | **on hardware**: captured, encoded, transcribed; 11 min clean |
 | Card | mounts, round-trips a file, reports capacity | **measured on hardware**: 30535680 sectors, 14893 MB |
 | Crash log | fatal errors survive the reset, `boswell fault` | **caught the bug it was written for** |
+| Cursor save | moved off the writer thread onto `qspi-save` | **on hardware**: two backlogs drained while connected, 0 resets |
+| Push button | gesture driver on D7, single press toggles capture | builds; 11 tests; **no switch to press yet** |
+| OTA | `CTRL_DFU` sent from the app, gated on the capability bit | 8 tests; not yet triggered on hardware |
 | Device selection | `BOSWELL_DEVICE` picks a board by address or name | 10 tests |
 | De-duplication | `web/dedup.py`, `boot_id` in every times record | 18 tests; not wired to an ingest path |
 | Tap controls | enable + threshold from the app | 6 tests |
@@ -72,12 +75,44 @@ under the load you are asking about.
 **Verified.** 11 minutes streaming, 0 reboots, high-water flat at 17,944 from
 the first two seconds. See the soak below.
 
-**What this does not change.** The `persist_cursors()` exposure is real and
-still there — an internal-flash write on the writer thread can block past the
-watchdog window when the radio is busy. It is now instrumented (a save over
-500 ms warns) but not moved off that thread. It was *not* the cause of this
-fault: the earlier "backlog cleared, 31 minutes clean" runs were idle and
-disconnected, so the encoder never ran and the test could not have failed.
+**The `persist_cursors()` exposure is now closed too.** It was a separate
+fault from the stack overflow and was never the cause of it, but it was real:
+an internal-flash write on the writer thread, scheduled around the radio by
+MPSL, with no bound on how long it could wait. If it waited past the watchdog
+window, `writer_fn` was blocked *inside* the save and `WDT_QSPI` never checked
+in again.
+
+The fix is the split that was identified as the right one and deferred:
+deciding *what* to save stays on the writer, where the cursors live and the
+work is arithmetic; the flash write moved to a `qspi-save` thread at
+`K_PRIO_PREEMPT(13)` that no watchdog waits on. A snapshot is handed over
+under a mutex held only for a struct copy -- the saver drops it before
+touching flash, because a lock held across the slow part would put the writer
+straight back where it started. A snapshot superseded before it reaches flash
+is counted rather than lost, since newer cursors describe strictly more
+drained backlog.
+
+`boswell status` now reports `cursor saves=N coalesced=N worst=N ms`. The
+middle number is the one to watch: it counts saves that fell behind the radio,
+which is the condition that used to reset the board.
+
+**Verified** under the exact condition that used to reset it -- armed and
+disconnected until a backlog built, then a host connected at a short interval:
+
+| backlog at connect | drained to | saves | coalesced | worst | resets |
+|---|---|---|---|---|---|
+| 608 KB | 2 B | 16 | 0 | 2 ms | **0** in 11.5 min |
+| 219 KB | 2 B | 6 | 0 | 2 ms | **0** |
+
+Before this, the same board went down roughly once a minute whenever it held
+a backlog.
+
+**Two stacks were raised on the way past, for the reason CAPTURE_STACK
+taught.** Measured while connected and draining -- not at an idle prompt --
+`qspi` was using 784 bytes of 1024 (23% headroom) and `qspi-save` 600 of 1024.
+Neither was failing, and neither was a margin worth keeping on a device that
+resets in the field with no console attached. They are 2048 and 1536 now, 61%
+and 60% headroom at the same measured peaks, and `boswell stacks` reports both.
 
 ## Waiting on a decision
 
@@ -106,6 +141,19 @@ have this audio" from `(boot_id, device_ms)` regardless of how it arrived.
 
 ## Waiting on hardware
 
+**The push button is written and cannot be pressed.** `src/button.c` reads a
+switch on D7 (P1.12) -- the one header pin free in every build here, since the
+card takes D8/D9/D10 and D0, the speaker wants D1/D2/D3, and D4/D5 are the
+I2C pair. Single press toggles capture; a switch is only ever pressed on
+purpose, so the everyday action is the easy one rather than needing a pair the
+way the accelerometer did. Double is detected and bound to nothing.
+
+Long press is detected and **deliberately not wired to power-off**. The wake
+path would be a GPIO sense on that same pin, and if it is wrong the device is
+off until somebody finds the reset button -- which is a bad thing to ship
+untested, and it cannot be tested until there is a switch. Once a real press
+proves reliable it becomes `sys_poweroff()` with the pin as the wake source.
+
 **Measured, and trimmed.** `boswell opus` on the board reports the encoder
 wants **7,180 bytes** against the 20 KB that had been set aside — 2.9 times
 larger than needed. `enc_mem` is now 8 KB, leaving about a kilobyte of
@@ -133,9 +181,14 @@ BUILD_DIR=/tmp/boswell-full-build \
 ```
 
 The plain image size is the check that none of the card or codec work leaked
-into the build the wearable runs. The baseline is **566,784 bytes** as of the crash log.
+into the build the wearable runs. The baseline is **571,392 bytes** as of the push button.
 
-It has moved three times, deliberately. From 564,736 for `src/fault.c` and
+It has moved five times, deliberately. From 571,392 for the saver thread and
+its stack report, which any build with a backlog benefits from. Before that
+from 569,856 for `src/button.c`: the switch is not fitted to the wearable
+either, but the driver costs one configured input on a board without one and
+the alternative is two firmwares that drift. Before that from 564,736 for
+`src/fault.c` and
 `boswell fault`: a wearable that resets in the field with no console attached
 is precisely the case that record exists for, so it belongs in both builds.
 Before that from 564,224 for `boswell stacks`, a thread high-water report that

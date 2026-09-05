@@ -72,3 +72,48 @@ def test_missing_does_not_dump_the_whole_room():
     msg = bc.describe_missing(None, seen)
     assert "+14 more" in msg
     assert msg.count("dev") == 6
+
+
+# ------------------------------------------------------- USB serial confusion
+#
+# The board carries two identifiers and neither is labelled on the desk. The
+# USB serial is what the bootloader and `lsusb` show; Bluetooth answers to a
+# different, shorter one. Pasting the USB serial into BOSWELL_DEVICE used to
+# match nothing and report the board simply missing, which reads as a dead
+# board rather than a typo.
+
+def test_usb_serial_is_recognised_as_such():
+    assert bc.looks_like_usb_serial("A4C0D6ECF3D91437")
+    assert bc.looks_like_usb_serial("a4c0d6ecf3d91437")
+
+
+def test_bluetooth_address_is_not_mistaken_for_a_serial():
+    for form in ("D9:66:CF:BB:58:A4", "d9-66-cf-bb-58-a4", "d966cfbb58a4"):
+        assert not bc.looks_like_usb_serial(form)
+
+
+def test_a_name_is_not_mistaken_for_a_serial():
+    assert not bc.looks_like_usb_serial("XIAO-MIC")
+
+
+def test_usb_serial_matches_nothing():
+    assert not bc.device_matches(
+        "A4C0D6ECF3D91437", "D9:66:CF:BB:58:A4", "XIAO-MIC")
+
+
+def test_the_address_still_matches_after_the_change():
+    for form in ("D9:66:CF:BB:58:A4", "d9-66-cf-bb-58-a4", "d966cfbb58a4"):
+        assert bc.device_matches(form, "D9:66:CF:BB:58:A4", "XIAO-MIC")
+
+
+def test_the_message_says_it_is_a_serial_rather_than_missing():
+    msg = bc.describe_missing(
+        "A4C0D6ECF3D91437", [("D9:66:CF:BB:58:A4", "XIAO-MIC")])
+    assert "USB serial" in msg
+    assert "not found" not in msg          # it was found; it was asked for wrongly
+    assert "D9:66:CF:BB:58:A4" in msg      # and here is the one to use
+
+
+def test_the_serial_message_survives_an_empty_scan():
+    msg = bc.describe_missing("A4C0D6ECF3D91437", [])
+    assert "USB serial" in msg

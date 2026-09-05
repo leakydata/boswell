@@ -175,7 +175,26 @@ int imu_tap_init(void (*cb)(void))
     reg_write(REG_CTRL1_XL,    0x60);   /* 416 Hz, +/-2 g; tap needs a high ODR */
     reg_write(REG_TAP_CFG,     0x8F);   /* interrupts on, tap X/Y/Z, latched */
     reg_write(REG_TAP_THS_6D,  0x84);   /* D4D_EN | threshold 4 */
-    reg_write(REG_INT_DUR2,    0x7F);   /* gap/quiet/shock windows reject bumps */
+    /* INT_DUR2 is DUR[7:4] | QUIET[3:2] | SHOCK[1:0], and at 416 Hz one LSB
+     * is 32/ODR = 76.9 ms for DUR, 4/ODR = 9.6 ms for QUIET and 8/ODR =
+     * 19.2 ms for SHOCK.
+     *
+     * This was 0x7F, with a comment claiming those windows "reject bumps".
+     * They did the opposite. 0x7F is SHOCK = 0b11, the *most permissive*
+     * setting the register has: 58 ms of acceleration may sit above the
+     * threshold and still be accepted as an impulse, which is long enough
+     * that setting the device down on a desk qualifies. Raising the
+     * threshold to 750 mg hid that; it did not fix it.
+     *
+     * 0x4D is SHOCK = 0b01 (19 ms), so only a genuine impulse counts, and
+     * DUR = 0b0100 (308 ms), so two unrelated knocks half a second apart no
+     * longer pair into a double tap.
+     *
+     * The one thing 308 ms costs is a leisurely deliberate double tap. If
+     * that turns out to be too brisk to perform reliably, DUR is the top
+     * nibble: 0x5D is 385 ms and 0x6D is 462 ms, without giving back the
+     * SHOCK window that caused the problem. */
+    reg_write(REG_INT_DUR2,    0x4D);   /* DUR 308 ms, QUIET 29 ms, SHOCK 19 ms */
     reg_write(REG_WAKE_UP_THS, 0x80);   /* SINGLE_DOUBLE_TAP: double-tap mode */
     reg_write(REG_MD1_CFG,     0x08);   /* route double-tap to INT1 */
 

@@ -14,6 +14,7 @@ HERE = os.path.dirname(__file__)
 SERVER = os.path.join(HERE, "..", "web", "server.py")
 PROTO = os.path.join(HERE, "..", "firmware", "zephyr", "boswell", "src", "proto.h")
 BLE_AUDIO = os.path.join(HERE, "..", "firmware", "zephyr", "boswell", "src", "ble_audio.c")
+IMU_TAP = os.path.join(HERE, "..", "firmware", "zephyr", "boswell", "src", "imu_tap.c")
 
 
 def read(p):
@@ -66,3 +67,23 @@ def test_the_websocket_accepts_both():
     s = read(SERVER)
     assert 'cmd == "tap_enabled"' in s
     assert 'cmd == "tap_thresh"' in s
+
+
+# ----------------------------------------------------- the tap timing window
+#
+# The threshold is only half of what decides whether a knock counts. INT_DUR2
+# holds the SHOCK window -- how long acceleration may stay above that
+# threshold and still be read as an impulse -- and it was set to the most
+# permissive value the register has, under a comment claiming the opposite.
+
+def test_the_shock_window_is_the_strict_one():
+    src = read(IMU_TAP)
+    assert "reg_write(REG_INT_DUR2,    0x4D)" in src, \
+        "INT_DUR2 should be 0x4D: SHOCK 0b01 (19 ms), not 0b11 (58 ms)"
+    assert "reg_write(REG_INT_DUR2,    0x7F)" not in src
+
+
+def test_the_comment_that_had_it_backwards_is_gone():
+    src = read(IMU_TAP)
+    assert "gap/quiet/shock windows reject bumps" not in src, \
+        "0x7F was the most permissive SHOCK setting, not a rejecting one"

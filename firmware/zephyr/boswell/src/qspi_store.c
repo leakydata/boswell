@@ -1,4 +1,6 @@
 #include "qspi_store.h"
+
+#include <zephyr/shell/shell.h>
 #include "cfg_store.h"
 #include "rec_crc.h"
 
@@ -62,10 +64,23 @@ static uint8_t peeked_len;
  * erase latency. Sized for roughly two seconds at 8 kHz, which covers a
  * sector erase many times over. */
 #define STAGE_BYTES  8192
-#define WRITER_STACK 1024
+/* Measured under load -- armed, connected, draining a 600 KB backlog -- this
+ * thread reached 784 bytes of the 1024 it had: 23% headroom, which is the
+ * same shape of margin CAPTURE_STACK died on. Nothing here is known to need
+ * more, but the cost of finding out the other way is a board that resets in
+ * the field with no console attached. */
+#define WRITER_STACK 2048
+/* The saver only calls into NVS, so its needs are modest. Measured while it
+ * was actually writing -- which is the only reading that means anything, as
+ * CAPTURE_STACK found out the hard way -- it uses 600 bytes. 1536 leaves
+ * better than half spare, and `boswell stacks` reports it so the number stays
+ * a measurement. */
+#define SAVER_STACK  1536
 
 RING_BUF_DECLARE(stage, STAGE_BYTES);
 static K_THREAD_STACK_DEFINE(writer_stack, WRITER_STACK);
+static K_THREAD_STACK_DEFINE(saver_stack, SAVER_STACK);
+static struct k_thread saver_thread;
 static struct k_thread writer_thread;
 static struct k_sem    writer_wake;
 static uint32_t        stage_drops;
@@ -112,6 +127,7 @@ static void flash_maybe_sleep(void)
 }
 
 static void writer_fn(void *a, void *b, void *cc);
+static void saver_fn(void *a, void *b, void *c);
 static void do_clear(void);
 
 /* Called by the writer as it works, not only when it goes back to sleep.
@@ -399,6 +415,15 @@ int qspi_store_init(void)
                     writer_fn, NULL, NULL, NULL,
                     K_PRIO_PREEMPT(12), 0, K_NO_WAIT);
     k_thread_name_set(&writer_thread, "qspi");
+
+    /* Lower priority than the writer: this is bookkeeping, and it must never
+     * be the reason an audio frame waits. Deliberately absent from the
+     * watchdog mask -- a save that blocks on the radio is the normal case
+     * this thread exists to absorb, not a fault to reset the board over. */
+    k_thread_create(&saver_thread, saver_stack, SAVER_STACK,
+                    saver_fn, NULL, NULL, NULL,
+                    K_PRIO_PREEMPT(13), 0, K_NO_WAIT);
+    k_thread_name_set(&saver_thread, "qspi-save");
     LOG_INF("QSPI ready: %u KB, %u B sectors", capacity / 1024, info.size);
 
     return 0;
@@ -489,16 +514,105 @@ int qspi_store_push(const uint8_t *data, uint8_t len)
  */
 #define CURSOR_SAVE_MS 60000
 
+/* The save is split across two threads, and the split is the whole point.
+ *
+ * Deciding *what* to save is arithmetic on cursors the writer owns, and it
+ * costs nothing. Actually writing it lands in internal flash, which with
+ * Bluetooth running has to be scheduled around the radio by MPSL; at a short
+ * connection interval there is very little room to grant a timeslot, and a
+ * write that cannot get one waits. There is no bound on that wait.
+ *
+ * While it sat on the writer, that wait was inside the thread that feeds
+ * WDT_QSPI, so a save which blocked past the thirty-second window took the
+ * board down with it. Nothing here makes the flash write faster. What it does
+ * is put the unbounded part somewhere its blocking is harmless -- a thread
+ * that no watchdog waits on -- so the writer goes on checking in, goes on
+ * draining the backlog to the host, and the slow write finishes when the
+ * radio lets it.
+ *
+ * Bookkeeping does not belong on the audio path in any case.
+ */
+struct cursor_snapshot {
+    int64_t w;
+    int64_t r;
+    uint8_t fp[8];
+};
+
+static K_MUTEX_DEFINE(save_lock);      /* guards the slot below, nothing else */
+static struct cursor_snapshot save_pending;
+static bool                   save_have_pending;
+static K_SEM_DEFINE(save_wake, 0, 1);
+
+static uint32_t save_count;            /* saves actually written */
+static uint32_t save_coalesced;        /* superseded before they were written */
+static int64_t  save_worst_ms;
+
+/* Runs on the writer. Takes the snapshot -- so what gets stored is the state
+ * at the moment the decision was made, not whatever the cursors have moved on
+ * to by the time the flash is free -- and hands it over. */
 static void save_cursors_now(void)
 {
-    uint8_t fp[8] = { 0 };
+    struct cursor_snapshot snap = { .w = w_pos, .r = r_pos, .fp = { 0 } };
 
     /* Best effort: a fingerprint we could not read is stored as zeroes, and
      * a zero fingerprint simply fails to match on restore. */
-    if ((w_pos - r_pos) >= (int64_t)sizeof(fp)) {
-        (void)read_wrapped(r_pos, fp, sizeof(fp));
+    if ((w_pos - r_pos) >= (int64_t)sizeof(snap.fp)) {
+        (void)read_wrapped(r_pos, snap.fp, sizeof(snap.fp));
     }
-    cfg_store_save_backlog(w_pos, r_pos, fp);
+
+    /* Held for a struct copy and nothing else. The saver deliberately drops
+     * this before it touches flash, because a lock held across the slow part
+     * would put the writer straight back where it started. */
+    k_mutex_lock(&save_lock, K_FOREVER);
+    if (save_have_pending) {
+        /* An earlier snapshot never made it to flash. Superseding it is
+         * correct -- the newer cursors describe strictly more drained
+         * backlog -- but it means flash is falling behind the radio, which
+         * is worth being able to see. */
+        save_coalesced++;
+    }
+    save_pending = snap;
+    save_have_pending = true;
+    k_mutex_unlock(&save_lock);
+
+    k_sem_give(&save_wake);
+}
+
+static void saver_fn(void *a, void *b, void *c)
+{
+    ARG_UNUSED(a); ARG_UNUSED(b); ARG_UNUSED(c);
+
+    for (;;) {
+        k_sem_take(&save_wake, K_FOREVER);
+
+        struct cursor_snapshot snap;
+
+        k_mutex_lock(&save_lock, K_FOREVER);
+        if (!save_have_pending) {
+            k_mutex_unlock(&save_lock);
+            continue;
+        }
+        snap = save_pending;
+        save_have_pending = false;
+        k_mutex_unlock(&save_lock);
+
+        /* No lock, no watchdog, no audio waiting on this. It can take as
+         * long as the radio makes it take. */
+        int64_t t0 = k_uptime_get();
+        cfg_store_save_backlog(snap.w, snap.r, snap.fp);
+        int64_t took = k_uptime_get() - t0;
+
+        save_count++;
+        if (took > save_worst_ms) {
+            save_worst_ms = took;
+        }
+        if (took > 500) {
+            /* Still worth saying. It is no longer dangerous, but it is the
+             * measurement that showed why this thread exists. */
+            LOG_WRN("cursor save took %lld ms (off the writer, so harmless)",
+                    took);
+        }
+    }
 }
 
 static void persist_cursors(void)
@@ -521,6 +635,39 @@ static void persist_cursors(void)
     }
 }
 
+void qspi_store_save_stats(uint32_t *saves, uint32_t *coalesced,
+                           uint32_t *worst_ms)
+{
+    if (saves)    *saves    = save_count;
+    if (coalesced) *coalesced = save_coalesced;
+    if (worst_ms) *worst_ms = (uint32_t) save_worst_ms;
+}
+
+void qspi_store_report_stacks(const struct shell *sh)
+{
+    static const struct {
+        const char      *name;
+        struct k_thread *t;
+        size_t           size;
+    } threads[] = {
+        { "qspi",      &writer_thread, WRITER_STACK },
+        { "qspi-save", &saver_thread,  SAVER_STACK  },
+    };
+
+    for (size_t i = 0; i < ARRAY_SIZE(threads); i++) {
+        size_t unused = 0;
+        if (k_thread_stack_space_get(threads[i].t, &unused) != 0) {
+            shell_print(sh, "  %-9s (unavailable)", threads[i].name);
+            continue;
+        }
+        shell_print(sh, "  %-9s %5u of %5u used, %u free (%u%% headroom)",
+                    threads[i].name,
+                    (unsigned)(threads[i].size - unused),
+                    (unsigned)threads[i].size, (unsigned)unused,
+                    (unsigned)(100 * unused / threads[i].size));
+    }
+}
+
 static void writer_fn(void *a, void *b, void *cc)
 {
     ARG_UNUSED(a); ARG_UNUSED(b); ARG_UNUSED(cc);
@@ -535,33 +682,12 @@ static void writer_fn(void *a, void *b, void *cc)
             alive_cb();
         }
 
-        /* The cursor save is the one thing on this thread that can block for
-         * an unbounded time, and it is bracketed for that reason.
-         *
-         * It writes to internal flash, which with Bluetooth running has to be
-         * scheduled around the radio by MPSL. A connection at a short
-         * interval leaves very little room for that, and a write that cannot
-         * get a timeslot waits. If the wait runs past the watchdog window,
-         * WDT_QSPI never checks in again and the board resets -- which is
-         * consistent with a board that reset roughly once a minute while it
-         * held a backlog, since the save only happens when there is one, and
-         * that is the only periodic event at that cadence.
-         *
-         * Checking in either side does not make a long write safe; it removes
-         * the check-in immediately before it from the accounting, so the
-         * window measures the write rather than the write plus a whole idle
-         * pass. The warning is what turns the next occurrence from a bare
-         * reset code into evidence.
-         */
-        int64_t save_t0 = k_uptime_get();
+        /* Decides whether a save is due and snapshots the cursors if so. The
+         * flash write itself happens on the saver thread -- see the comment
+         * above save_cursors_now() -- so nothing here can block on the radio.
+         * This used to be bracketed and timed because it was the one
+         * unbounded call on this thread; it no longer is. */
         persist_cursors();
-        int64_t save_ms = k_uptime_get() - save_t0;
-        if (save_ms > 500) {
-            LOG_WRN("cursor save blocked for %lld ms", save_ms);
-        }
-        if (alive_cb) {
-            alive_cb();
-        }
 
         /* Replay to the host before anything else: the backlog is older
          * audio and has to reach the host ahead of what is being captured

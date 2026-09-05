@@ -49,6 +49,19 @@ def _norm_addr(s):
     return "".join(c for c in s.lower() if c in "0123456789abcdef")
 
 
+def looks_like_usb_serial(want):
+    """Is this the board's USB serial rather than its Bluetooth address?
+
+    The two sit next to each other on the desk and neither is labelled. The
+    USB serial is what `lsusb` and the bootloader show -- sixteen hex digits,
+    e.g. A4C0D6ECF3D91437 -- and it is not the Bluetooth address, which is
+    twelve. Pasting the wrong one used to fall through to the name comparison
+    and match nothing, so the scan simply reported the board missing while it
+    sat there advertising.
+    """
+    return len(_norm_addr(want)) == 16 and _norm_addr(want) == want.strip().lower()
+
+
 def device_matches(want, address, name):
     """Does this advertisement satisfy `want`?
 
@@ -60,8 +73,11 @@ def device_matches(want, address, name):
     name = name or ""
     if not want:
         return name == DEVICE_NAME
+    if looks_like_usb_serial(want):
+        # Never matches anything. describe_missing() says why.
+        return False
     addr = _norm_addr(want)
-    if len(addr) == 12 and _norm_addr(want) == addr:
+    if len(addr) == 12:
         return _norm_addr(address or "") == addr
     return name.lower() == want.lower()
 
@@ -91,10 +107,22 @@ async def find_device(want=None, timeout=20.0):
 def describe_missing(want, seen):
     """A sentence worth putting in front of somebody at 2 a.m."""
     asked = want or DEVICE_NAME
-    if not seen:
-        return f"{asked} not found; nothing was advertising"
     named = ", ".join(f"{n} [{a}]" for a, n in seen[:6])
     more = f" (+{len(seen) - 6} more)" if len(seen) > 6 else ""
+
+    if want and looks_like_usb_serial(want):
+        # The likeliest mistake, and the one that looks least like a mistake:
+        # a real identifier for this exact board, just not the one Bluetooth
+        # answers to. Say which board it is rather than that it is absent.
+        hint = (f"BOSWELL_DEVICE={want} is a USB serial, not a Bluetooth "
+                f"address -- Bluetooth never advertises it, so nothing can "
+                f"match")
+        if seen:
+            return f"{hint}. Boards advertising now: {named}{more}"
+        return f"{hint}, and nothing was advertising either"
+
+    if not seen:
+        return f"{asked} not found; nothing was advertising"
     return f"{asked} not found; saw {named}{more}"
 HEADER_LEN = 12   # seq,flags,state,nsamples,t_ms
 # The firmware's largest frame is 20 ms at 16 kHz. Anything claiming more is
