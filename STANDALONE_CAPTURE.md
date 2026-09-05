@@ -15,6 +15,58 @@ What is built, and what is waiting on a decision or on hardware.
 | Tap controls | enable + threshold from the app | 6 tests |
 | Card status | presence and free space in the UI | 7 tests |
 
+## The watchdog resets — cause, and what was not done
+
+The board reset roughly every forty seconds with `last reset=0x00000002
+watchdog`. Cause found, board stable, exposure not removed.
+
+**What it was.** `persist_cursors()` in `qspi_store.c` writes the backlog
+cursors to *internal* flash every `CURSOR_SAVE_MS` (60 s), and only while
+`(w_pos - r_pos) > 0`. Internal flash writes have to be scheduled around the
+radio by MPSL, and the board was connected at a 15 ms interval, which leaves
+very little room to grant a timeslot. A write that cannot get one waits — and
+if it waits past the 30 s watchdog window, `writer_fn` is blocked *inside* the
+save, so `WDT_QSPI` never checks in again and the SoC resets.
+
+**Evidence.** Cleared the backlog with `boswell drop` (457,472 B → 0). Then:
+
+| build | observed | reboots |
+|---|---|---|
+| Opus only | 11 minutes | **0** |
+| Card + Opus | 31 minutes | **0** |
+
+`wake` climbed linearly throughout both, 50/s, exactly the writer's 20 ms
+tick. Before clearing, the same board went down inside forty seconds.
+
+**Two things that were believed and are false.** A missing watchdog check-in
+was never the cause — all four were read and are sound (`WDT_MAIN` 500 ms,
+`WDT_TX` 500 ms, `WDT_CAPTURE` 50 ms idle, `WDT_QSPI` 20 ms). And the card
+does not do a slow FAT walk: with the card formatted, boot logs `mount:
+mounted in 7 ms` and `stat: took 0 ms`, because FATFS reads the cached free
+count from the FSINFO sector. The sixteen seconds seen once was the first
+mount formatting a blank card — which is also why `boswell sd` hung then and
+does not now.
+
+**What was deliberately not changed.** The exposure remains: a backlog plus a
+tight connection interval can still put an unbounded flash write on the
+writer thread. Four options were weighed.
+
+- *Raise the watchdog window.* Rejected. It masks genuine wedges, doubles how
+  long a truly dead device stays dead, and the block can exceed any window.
+- *Move the cursor save to its own thread.* The right fix, and the one to
+  make. The writer would keep checking in while a slow save blocks
+  harmlessly, and bookkeeping does not belong on the audio path anyway.
+- *Save only when the radio is idle.* Rejected. MPSL does not usefully expose
+  that, and a device that is always connected would never save at all.
+- *Accept it, understood and logged.* Where this stands tonight.
+
+The reason the right fix is not in this commit: it touches crash-recovery
+correctness, and neither it nor the bug it fixes can be tested without a
+backlog — which needs capture armed. Shipping an untested change to the path
+that decides whether buffered audio survives a reset is a worse trade than
+leaving a known, instrumented exposure in place. `boswell drop` recovers a
+board that hits it, and a slow save now warns in the log.
+
 ## Waiting on a decision
 
 **The capture path onto the card cannot be written yet, because writing it
