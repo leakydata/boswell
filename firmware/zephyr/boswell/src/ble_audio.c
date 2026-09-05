@@ -86,7 +86,7 @@ static K_WORK_DELAYABLE_DEFINE(idle_link, idle_link_fn);
 static bool notify_enabled;
 static bool imu_notify_enabled;
 static ctrl_handler_t ctrl_cb;
-static uint8_t info_buf[45];
+static uint8_t info_buf[46];
 
 static void apply_conn_params(bool streaming);
 
@@ -611,7 +611,8 @@ void ble_audio_publish_info(void)
     info_buf[19] = INFO_FW_ZEPHYR;
     uint16_t caps = INFO_CAP_STEPS | INFO_CAP_IMU_RAW | INFO_CAP_FLASH |
                     INFO_CAP_OTA | INFO_CAP_STATE | INFO_CAP_BOOTID |
-                    INFO_CAP_SPLITBUF | INFO_CAP_DROPS | INFO_CAP_TAPSEQ;
+                    INFO_CAP_SPLITBUF | INFO_CAP_DROPS | INFO_CAP_TAPSEQ |
+                    INFO_CAP_TAPCFG;
     info_buf[20] = (uint8_t)(caps & 0xFF);
     info_buf[21] = (uint8_t)(caps >> 8);
     /* Which boot this is.
@@ -628,6 +629,11 @@ void ble_audio_publish_info(void)
      * to know the value changed, not what it counts. */
     uint32_t nd = ble_audio_notify_drops();
     info_buf[44] = g_state.tap_seq;
+    /* The threshold the device is actually using, which is not necessarily
+     * the one this host last asked for: it lives in cfg_store and survives a
+     * reflash, so a board that has been tuned by somebody else, or not tuned
+     * at all, reports its own truth rather than the host's assumption. */
+    info_buf[45] = imu_tap_get_threshold();
     info_buf[40] = (uint8_t)(nd & 0xFF);
     info_buf[41] = (uint8_t)((nd >> 8) & 0xFF);
     info_buf[42] = (uint8_t)((nd >> 16) & 0xFF);

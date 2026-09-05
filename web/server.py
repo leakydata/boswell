@@ -129,6 +129,7 @@ NOT_A_PERSON_NAMES = ("Media", "Someone else", "Not speech")
 NEVER_ENROL_NAMES = ("Someone else", "Not speech")
 
 PREF_KEYS = ("armed", "vad", "backlog_mode", "gain", "led_level", "led_mode",
+        "tap_enabled", "tap_thresh",
              "fast_charge", "mic_power_save", "rate16",
              "agent_enabled", "agent_model", "agent_idle_seconds")
 
@@ -184,6 +185,7 @@ def parse_info(info):
     has_state = bool(caps & 0x0040)
     has_bootid = bool(caps & 0x0080)
     has_tapseq = bool(caps & 0x0400)
+    has_tapcfg = bool(caps & 0x0800)
     out["boot_id"] = (info[22] | (info[23] << 8)) if (
         has_bootid and len(info) >= 24) else None
     out["info_version"] = version
@@ -241,6 +243,12 @@ def parse_info(info):
         # capability rather than the length alone: the Arduino build has no
         # double tap and publishes a constant zero in this byte.
         out["tap_seq"] = info[44]
+    if has_tapcfg and len(info) >= 46:
+        # What the device is actually using. The threshold lives in the
+        # board's own settings and survives a reflash, so a board tuned on
+        # another machine -- or never tuned -- reports its own value rather
+        # than whatever this host last asked for.
+        out["tap_thresh"] = info[45]
     if len(info) >= 39:
         # Samples the microphone produced with nowhere to put them. Any value
         # above zero is audible as a click. Only meaningful on a firmware that
@@ -301,6 +309,7 @@ class Device:
             "recovered_seconds": 0.0, "recovered_frames": 0,
             "backlog_mode": 1,
             "steps": 0, "tilt": False, "moving": False, "tap_enabled": True,
+            "tap_thresh": None,
             "led_level": 255, "led_mode": 1,
             "ring_overruns": 0,
             "battery_mv": 0, "battery_pct": 0, "charging": False,
@@ -333,7 +342,7 @@ class Device:
         # anything is compared against it removes the race rather than
         # sequencing it.
         for k in ("vad", "backlog_mode", "led_level", "led_mode", "gain",
-                  "armed"):
+                  "tap_enabled", "tap_thresh", "armed"):
             if k in PREFS:
                 self.state[k] = PREFS[k]
         self.relay: WebSocket | None = None
@@ -729,7 +738,15 @@ class Device:
                                      (0x0A, "led_level", None),
                                      (0x0B, "led_mode", None),
                                      (0x0C, "fast_charge", None),
-                                     (0x0D, "mic_power_save", None)):
+                                     (0x0D, "mic_power_save", None),
+                                     # Tap settings live in the board's own
+                                     # flash, so a replacement board arrives
+                                     # at the shipped default of 4 (250 mg)
+                                     # however carefully the last one was
+                                     # tuned -- which is exactly how a fresh
+                                     # board ends up toggling itself.
+                                     (0x06, "tap_enabled", None),
+                                     (0x07, "tap_thresh", None)):
                 if key in PREFS:
                     await self._ctrl(op, int(PREFS[key]))
 
@@ -992,6 +1009,36 @@ class Device:
             self.state["gain"] = g
             self.publish()
             self.event("log", text=f"gain set to {g}")
+
+    async def set_tap_enabled(self, on: bool):
+        """Double-tap on or off, without a serial cable.
+
+        CTRL_TAP_ENABLE has been in the firmware since the tap existed and
+        nothing ever sent it, so the only way to stop a board toggling itself
+        was to reflash it or unplug it.
+        """
+        if await self._ctrl(0x06, 1 if on else 0):
+            self.remember(tap_enabled=bool(on))
+            self.state["tap_enabled"] = bool(on)
+            self.publish()
+            self.event("log", text=f"double tap {'on' if on else 'off'}")
+
+    async def set_tap_threshold(self, n: int):
+        """How hard a tap has to be, 0-31.
+
+        The register is five bits and the units are the accelerometer's full
+        scale over 32 -- at the +/-2 g this firmware configures, one step is
+        62.5 mg. The shipped default of 4 is therefore 250 mg, which is a
+        wake-on-motion level rather than a tap level, and is why setting the
+        device down registered as a double tap.
+        """
+        n = max(0, min(31, int(n)))
+        if await self._ctrl(0x07, n):
+            self.remember(tap_thresh=n)
+            self.state["tap_thresh"] = n
+            self.publish()
+            self.event("log", text=f"tap threshold set to {n} "
+                                   f"({n * 62.5:.0f} mg)")
 
     async def set_led(self, level: int, pulse: bool):
         self.state["led_level"] = max(0, min(255, int(level)))
@@ -3442,6 +3489,10 @@ async def ws(sock: WebSocket):
                 await device.set_gain(int(msg.get("value", 50)))
             elif cmd == "vad":
                 await device.set_vad(bool(msg.get("on", False)))
+            elif cmd == "tap_enabled":
+                await device.set_tap_enabled(bool(msg.get("on", True)))
+            elif cmd == "tap_thresh":
+                await device.set_tap_threshold(int(msg.get("value", 12)))
             elif cmd == "clear_buffer":
                 await device.clear_buffer()
             elif cmd == "fast_charge":

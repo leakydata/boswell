@@ -477,7 +477,7 @@ static void applyGain(int gain) {
 }
 
 static void publishInfo() {
-  uint8_t info[45];
+  uint8_t info[46];
   info[0] = 1;                          // codec: 1 = IMA ADPCM
   info[1] = use16k ? 1 : 0;
   info[2] = FRAME_MS;
@@ -566,6 +566,12 @@ static void publishInfo() {
   // stack garbage here would read as a counter that keeps moving, which is
   // precisely the signal the host adopts capture state from.
   info[44] = 0;
+  /* Nothing memsets this array, so a byte the Arduino build does not fill is
+   * whatever was on the stack -- and the host would read that as a tap
+   * threshold this build does not have. Zero says "no tap configuration",
+   * which the capability bit already says; the point is that it says it
+   * consistently rather than differently on every notification. */
+  info[45] = 0;
   infoChar.write(info, sizeof(info));
 }
 

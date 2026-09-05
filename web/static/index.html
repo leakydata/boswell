@@ -552,6 +552,19 @@ html{scroll-padding-top:120px}
       <label class="row">Voice activity gating
         <span class="switch" id="vad" role="switch" aria-checked="false" tabindex="0"></span>
       </label>
+      <label class="row">Double tap to start and stop
+        <span class="switch" id="tapon" role="switch" aria-checked="false" tabindex="0"></span>
+      </label>
+      <label class="row">Tap firmness
+        <input type="range" id="tapths" min="1" max="31" value="12" step="1" disabled>
+        <span class="val" id="tapthsv">12 · 750 mg</span>
+      </label>
+      <div style="font-size:12.5px;color:var(--muted);margin-top:-4px">
+        How hard a tap has to be before the device counts it. Lower is more
+        sensitive: the shipped default of 4 is 250&nbsp;mg, which is light
+        enough that setting the device down registers as a double tap. Kept on
+        the board itself, so a replacement starts at 4 again.
+      </div>
       <label class="row">Fast charge (100 mA)
         <span class="switch" id="fastchg" role="switch" aria-checked="false" tabindex="0"></span>
       </label>
@@ -1132,6 +1145,16 @@ function paint(s){
   $("bSave").disabled = !s.connected;
   $("bDis").disabled = !s.connected && !s.scanning;
   $("gain").disabled = !s.connected;
+  $("tapths").disabled = !s.connected;
+  if (typeof s.tap_enabled === "boolean")
+    $("tapon").setAttribute("aria-checked", s.tap_enabled ? "true" : "false");
+  // Only when the device told us. A board whose firmware predates the
+  // capability reports nothing, and showing the slider's own position as
+  // though it came from the device would be a confident guess.
+  if (typeof s.tap_thresh === "number" && document.activeElement !== $("tapths")){
+    $("tapths").value = s.tap_thresh;
+    $("tapthsv").textContent = tapLabel(s.tap_thresh);
+  }
   /* Show what the microphone is actually set to, not the slider's default.
      Skipped while the slider has focus so it does not fight a drag -- the
      same rule the brightness slider below already follows. */
@@ -4625,6 +4648,25 @@ gain.oninput = () => {
   $("gainv").textContent = gainLabel(v);
 };
 gain.onchange = () => send({cmd:"gain", value:+gain.value});
+
+// One step of TAP_THS_6D is the accelerometer's full scale over 32, and the
+// firmware configures +/-2 g, so a step is 62.5 mg. Showing the number alone
+// would mean nothing; showing what it is in g is the difference between
+// "12" and "about the firmness of a deliberate knock".
+function tapLabel(v){
+  const mg = v * 62.5;
+  return mg >= 1000 ? `${v} · ${(mg/1000).toFixed(2)} g` : `${v} · ${mg.toFixed(0)} mg`;
+}
+const tapths = $("tapths");
+tapths.oninput = () => { $("tapthsv").textContent = tapLabel(+tapths.value); };
+tapths.onchange = () => send({cmd:"tap_thresh", value:+tapths.value});
+
+const tapon = $("tapon");
+tapon.onclick = () => {
+  const on = tapon.getAttribute("aria-checked") !== "true";
+  tapon.setAttribute("aria-checked", on);
+  send({cmd:"tap_enabled", on});
+};
 
 const vad = $("vad");
 function toggleVad(){

@@ -139,6 +139,7 @@
  * with what we last asked for -- and they want opposite responses: undo
  * the drift, or accept the decision. Only on_double_tap() moves it. */
 #define INFO_CAP_TAPSEQ    0x0400   /* byte 44 counts tap toggles */
+#define INFO_CAP_TAPCFG    0x0800   /* byte 45 is the tap threshold */
 
 /* Control opcodes, unchanged from the Arduino build. */
 enum {
