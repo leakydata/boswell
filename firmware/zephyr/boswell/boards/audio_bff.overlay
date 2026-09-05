@@ -1,0 +1,56 @@
+/*
+ * Adafruit Audio BFF stacked on the XIAO nRF52840 Sense.
+ *
+ * Pin assignments are not a guess: they are the ones the BFF's own
+ * documentation specifies, and they match the overlay Omi ships for the same
+ * pair of boards (firmware/devkit/overlay/xiao_ble_sense_devkitv2-adafruit).
+ * On the XIAO header they land as SD on D8/D9/D10 with CS on D0, and I2S on
+ * A1/A2/A3 -- none of which Boswell's base overlay uses, so nothing collides.
+ *
+ * Applied on top of the board overlay, not instead of it, and only for a
+ * build that wants the card:
+ *
+ *     EXTRA_OVERLAY=boards/audio_bff.overlay EXTRA_CONF=sdcard.conf \
+ *         firmware/zephyr/build.sh
+ *
+ * The amplifier's I2S pins are deliberately left out until there is something
+ * to play through them; declaring a peripheral that nothing drives only costs
+ * current. They are recorded above so the next person does not have to work
+ * them out again.
+ */
+
+&spi2 {
+	status = "okay";
+	pinctrl-0 = <&sd_spi>;
+	pinctrl-1 = <&sd_spi>;
+	pinctrl-names = "default", "sleep";
+
+	/* D0. Omi's overlay carries a comment saying P0.28 here, which is
+	 * wrong -- it is left over from their v1 board, where the card really
+	 * was on P0.28. On this one P0.28 is the I2S word-select line, and the
+	 * chip select moved to P0.02. Their code is right and their comment is
+	 * not; this is the sort of thing that costs an evening. */
+	cs-gpios = <&gpio0 2 GPIO_ACTIVE_LOW>;
+
+	sdhc0: sdhc@0 {
+		compatible = "zephyr,sdhc-spi-slot";
+		reg = <0>;
+		status = "okay";
+		spi-max-frequency = <24000000>;
+
+		mmc {
+			compatible = "zephyr,sdmmc-disk";
+			status = "okay";
+		};
+	};
+};
+
+&pinctrl {
+	sd_spi: sd_spi {
+		group1 {
+			psels = <NRF_PSEL(SPIM_SCK, 1, 13)>,    /* D8  */
+				<NRF_PSEL(SPIM_MOSI, 1, 15)>,   /* D10 */
+				<NRF_PSEL(SPIM_MISO, 1, 14)>;   /* D9  */
+		};
+	};
+};

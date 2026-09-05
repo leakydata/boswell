@@ -12,6 +12,9 @@
 #include "mic.h"
 #include "ble_audio.h"
 #include "imu_tap.h"
+#ifdef CONFIG_DISK_DRIVER_SDMMC
+#include "sd_probe.h"
+#endif
 #include "battery.h"
 #include "led.h"
 #include <zephyr/bluetooth/hci.h>
@@ -291,6 +294,14 @@ static int cmd_ota(const struct shell *sh, size_t argc, char **argv)
     return 0;
 }
 
+#ifdef CONFIG_DISK_DRIVER_SDMMC
+static int cmd_sd(const struct shell *sh, size_t argc, char **argv)
+{
+    ARG_UNUSED(argc); ARG_UNUSED(argv);
+    return sd_probe(sh);
+}
+#endif
+
 static int cmd_imu(const struct shell *sh, size_t argc, char **argv)
 {
     ARG_UNUSED(argc); ARG_UNUSED(argv);
@@ -506,6 +517,9 @@ SHELL_STATIC_SUBCMD_SET_CREATE(boswell_cmds,
     SHELL_CMD(reboot, NULL, "Restart the firmware", cmd_reboot),
     SHELL_CMD(stream, NULL, "Arm/disarm capture (on|off)", cmd_stream),
     SHELL_CMD(imu, NULL, "Re-probe the IMU and report", cmd_imu),
+#ifdef CONFIG_DISK_DRIVER_SDMMC
+    SHELL_CMD(sd, NULL, "Probe the SD card and round-trip a file", cmd_sd),
+#endif
     SHELL_CMD(tap, NULL, "Set double-tap threshold (0-31)", cmd_tap),
     SHELL_CMD(taps, NULL, "Show tap counters", cmd_taps),
     SHELL_CMD(steps, NULL, "Show step count, or 'steps reset'", cmd_steps),

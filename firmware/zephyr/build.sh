@@ -24,7 +24,24 @@ export ZEPHYR_SDK_INSTALL_DIR="$ZEPHYR_SDK_DIR"
 # The Adafruit bootloader then writes it at 0x27000, so the vector table sits
 # where the code was not built for and the board hard-faults on boot: no LED,
 # no USB, nothing to debug with.
-west build -p auto --no-sysbuild -b "$BOARD" -d "$BUILD_DIR" "$HERE/boswell"
+# Optional extras, for a build that is not the plain wearable: a second
+# devicetree overlay and a second Kconfig fragment, both applied on top of the
+# board's own rather than replacing them. The Audio BFF build uses both:
+#
+#   EXTRA_OVERLAY=boards/audio_bff.overlay EXTRA_CONF=sdcard.conf build.sh
+#
+# Paths are relative to the application directory. Unset, nothing changes and
+# the wearable builds byte-for-byte as before.
+EXTRA_ARGS=()
+if [ -n "${EXTRA_OVERLAY:-}" ]; then
+  EXTRA_ARGS+=(-DEXTRA_DTC_OVERLAY_FILE="$HERE/boswell/$EXTRA_OVERLAY")
+fi
+if [ -n "${EXTRA_CONF:-}" ]; then
+  EXTRA_ARGS+=(-DEXTRA_CONF_FILE="$HERE/boswell/$EXTRA_CONF")
+fi
+
+west build -p auto --no-sysbuild -b "$BOARD" -d "$BUILD_DIR" "$HERE/boswell" \
+     "${EXTRA_ARGS[@]}"
 
 UF2="$BUILD_DIR/zephyr/zephyr.uf2"
 echo "built: $UF2"

@@ -13,4 +13,9 @@ target_sources(app PRIVATE
   src/cfg_store.c
   src/qspi_store.c
 )
+
+# Only built for a board that has a card. See boards/audio_bff.overlay.
+if(CONFIG_DISK_DRIVER_SDMMC)
+  target_sources(app PRIVATE src/sd_probe.c)
+endif()
 target_include_directories(app PRIVATE src)
