@@ -42,27 +42,20 @@ have this audio" from `(boot_id, device_ms)` regardless of how it arrived.
 
 ## Waiting on hardware
 
-**The Opus encoder's reserve has not been measured.** `codec.c` sets aside
-20 KB for the encoder state and checks at init that the real figure fits.
-The real figure is a runtime property of how the library was configured and
-cannot be known at compile time, so it has never been compared against the
-reserve.
+**Measured, and trimmed.** `boswell opus` on the board reports the encoder
+wants **7,180 bytes** against the 20 KB that had been set aside — 2.9 times
+larger than needed. `enc_mem` is now 8 KB, leaving about a kilobyte of
+headroom and handing back twelve. RAM on the combined build went 60.63% to
+55.94%.
 
-`boswell opus` now reports both. Run it after the next flash:
+The check at init is what makes tightening it safe: a build configured
+differently — SILK, or stereo — would want far more, and would say so at
+init rather than running off the end of the array.
 
-```
-boswell opus
-opus: encoder needs N bytes, reserved 20480 (M spare)
-```
-
-Then `enc_mem` can be trimmed to N plus a margin. It is deliberately *not*
-trimmed on a calculated guess: too small means `opus_encoder_init` fails,
-and a codec that fails to initialise presents as a silent capture stop,
-which is the failure this project keeps finding in other forms.
-
-**Nothing Opus-related has run on a board.** The encoder builds and the host
-decodes what libopus produces, but no audio has made the trip. First flash
-should be the combined build, then listen to a clip before trusting it.
+**No audio has been through Opus on a board.** The encoder initialises on
+hardware and the host decodes what libopus produces, but nothing has been
+captured, encoded, transmitted and played back end to end. That needs
+capture armed, and it is the one thing still unproven.
 
 ## Building the variants
 

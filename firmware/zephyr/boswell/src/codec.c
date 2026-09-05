@@ -18,11 +18,17 @@ LOG_MODULE_REGISTER(codec, LOG_LEVEL_INF);
  * allocation happens once, at link time, and either fits or does not.
  *
  * The size is a runtime property of how the library was configured, so it
- * cannot size this array at compile time. 20 KB is comfortably above what a
- * mono CELT-only encoder needs; the check below is what makes that a fact
- * rather than a hope.
+ * cannot size this array at compile time. This was 20 KB while that figure
+ * was unknown; measured on the board with `boswell opus`, a mono CELT-only
+ * encoder wants 7,180 bytes, so 8 KB carries about a kilobyte of headroom
+ * and hands back twelve.
+ *
+ * The check below is what makes the number safe to tighten: a build that
+ * configured the codec differently -- SILK, or stereo -- would need far more
+ * than this, and would say so at init rather than running off the end of
+ * the array.
  */
-static uint8_t      enc_mem[20 * 1024] __aligned(4);
+static uint8_t      enc_mem[8 * 1024] __aligned(4);
 static OpusEncoder *enc;
 static int          enc_rate;
 
