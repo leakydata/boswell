@@ -8,64 +8,76 @@ What is built, and what is waiting on a decision or on hardware.
 
 | | what | verified |
 |---|---|---|
-| Opus | vendored, encoder wired, host decodes either codec | 4 tests; never run on a board |
+| Opus | vendored, encoder wired, host decodes either codec | **on hardware**: captured, encoded, transcribed; 11 min clean |
 | Card | mounts, round-trips a file, reports capacity | **measured on hardware**: 30535680 sectors, 14893 MB |
+| Crash log | fatal errors survive the reset, `boswell fault` | **caught the bug it was written for** |
 | Device selection | `BOSWELL_DEVICE` picks a board by address or name | 10 tests |
 | De-duplication | `web/dedup.py`, `boot_id` in every times record | 18 tests; not wired to an ingest path |
 | Tap controls | enable + threshold from the app | 6 tests |
 | Card status | presence and free space in the UI | 7 tests |
 
-## The watchdog resets — cause, and what was not done
+## The watchdog resets — found, fixed, and why it took three tries
 
-The board reset roughly every forty seconds with `last reset=0x00000002
-watchdog`. Cause found, board stable, exposure not removed.
+The Opus build reset a second or two after capture started, every time, and
+reported `last reset=0x00000002 watchdog` with no explanation. It is a **stack
+overflow in the `capture` thread**, and it is fixed.
 
-**What it was.** `persist_cursors()` in `qspi_store.c` writes the backlog
-cursors to *internal* flash every `CURSOR_SAVE_MS` (60 s), and only while
-`(w_pos - r_pos) > 0`. Internal flash writes have to be scheduled around the
-radio by MPSL, and the board was connected at a 15 ms interval, which leaves
-very little room to grant a timeslot. A write that cannot get one waits — and
-if it waits past the 30 s watchdog window, `writer_fn` is blocked *inside* the
-save, so `WDT_QSPI` never checks in again and the SoC resets.
+**What it was.** Opus is compiled here with `USE_ALLOCA`, so `opus_encode()`
+takes its working buffers from the stack of whoever calls it, and the amount
+scales with the frame length. This project encodes 20 ms frames; Omi, on the
+same part, encodes 10 ms and still gives its codec a dedicated 32,000-byte
+thread. `capture` was handing it 4,096, then 16,384. Measured on the board
+while streaming, one 20 ms CELT frame at 16 kHz needs **17,944 bytes**.
 
-**Evidence.** Cleared the backlog with `boswell drop` (457,472 B → 0). Then:
+16,384 is 1,560 bytes short. That margin is why it was so hard to see: the
+board booted, advertised, connected and idled perfectly, and only died once
+audio started flowing through the encoder.
 
-| build | observed | reboots |
-|---|---|---|
-| Opus only | 11 minutes | **0** |
-| Card + Opus | 31 minutes | **0** |
+**Why it looked like a hang.** Three things conspired.
 
-`wake` climbed linearly throughout both, 50/s, exactly the writer's 20 ms
-tick. Before clearing, the same board went down inside forty seconds.
+- `CONFIG_MPU_STACK_GUARD` turns the overrun into a fatal MPU fault, and
+  Zephyr's default fatal handler **halts the CPU**.
+- The console is **USB CDC**. USB stops being serviced the instant the CPU
+  halts, so the panic banner is written into a buffer nothing will ever
+  drain. `LOG_PANIC()` cannot help — there is no working transport left.
+- With the CPU halted, nothing feeds the watchdog, so thirty seconds later
+  the board resets and the reset register says `watchdog`.
 
-**Two things that were believed and are false.** A missing watchdog check-in
-was never the cause — all four were read and are sound (`WDT_MAIN` 500 ms,
-`WDT_TX` 500 ms, `WDT_CAPTURE` 50 ms idle, `WDT_QSPI` 20 ms). And the card
-does not do a slow FAT walk: with the card formatted, boot logs `mount:
-mounted in 7 ms` and `stat: took 0 ms`, because FATFS reads the cached free
-count from the FSINFO sector. The sixteen seconds seen once was the first
-mount formatting a blank card — which is also why `boswell sd` hung then and
-does not now.
+From the outside: shell dies instantly, board reboots half a minute later,
+no banner, reset reason `watchdog`. Which is exactly what a deadlock looks
+like, and it was diagnosed as one twice.
 
-**What was deliberately not changed.** The exposure remains: a backlog plus a
-tight connection interval can still put an unbounded flash write on the
-writer thread. Four options were weighed.
+**The measurement that misled.** `boswell stacks` reported `capture 80 of
+16384 used, 99% headroom`, and that reading was taken as proof the stack was
+innocent. It was taken **at the prompt, after the reboot**, where capture is
+idle and the thread has touched 80 bytes. The same command run *while
+streaming* reads 17,944 immediately. A stack high-water is only meaningful
+under the load you are asking about.
 
-- *Raise the watchdog window.* Rejected. It masks genuine wedges, doubles how
-  long a truly dead device stays dead, and the block can exceed any window.
-- *Move the cursor save to its own thread.* The right fix, and the one to
-  make. The writer would keep checking in while a slow save blocks
-  harmlessly, and bookkeeping does not belong on the audio path anyway.
-- *Save only when the radio is idle.* Rejected. MPSL does not usefully expose
-  that, and a device that is always connected would never save at all.
-- *Accept it, understood and logged.* Where this stands tonight.
+**The fix, in two parts.**
 
-The reason the right fix is not in this commit: it touches crash-recovery
-correctness, and neither it nor the bug it fixes can be tested without a
-backlog — which needs capture armed. Shipping an untested change to the path
-that decides whether buffered audio survives a reset is a worse trade than
-leaving a known, instrumented exposure in place. `boswell drop` recovers a
-board that hits it, and a slow save now warns in the log.
+1. `CAPTURE_STACK` is **24,576** on the Opus build — 6.6 KB over the measured
+   high-water. Unchanged at 4,096 for ADPCM, which does not need it.
+2. `src/fault.c` records the fatal error into `__noinit` RAM — which a soft
+   or watchdog reset does not clear — and reboots instead of halting. The
+   next boot logs one line saying what happened, and `boswell fault` repeats
+   it on demand. This is what turns the next occurrence of this class of bug
+   from an evening into a sentence:
+
+   ```
+   <err> main: last boot ended in a fault: stack overflow in thread
+   'capture' at 13497 ms, pc=0x0006a878 lr=0xffffffff stack=16448
+   ```
+
+**Verified.** 11 minutes streaming, 0 reboots, high-water flat at 17,944 from
+the first two seconds. See the soak below.
+
+**What this does not change.** The `persist_cursors()` exposure is real and
+still there — an internal-flash write on the writer thread can block past the
+watchdog window when the radio is busy. It is now instrumented (a save over
+500 ms warns) but not moved off that thread. It was *not* the cause of this
+fault: the earlier "backlog cleared, 31 minutes clean" runs were idle and
+disconnected, so the encoder never ran and the test could not have failed.
 
 ## Waiting on a decision
 
@@ -104,10 +116,10 @@ The check at init is what makes tightening it safe: a build configured
 differently — SILK, or stereo — would want far more, and would say so at
 init rather than running off the end of the array.
 
-**No audio has been through Opus on a board.** The encoder initialises on
-hardware and the host decodes what libopus produces, but nothing has been
-captured, encoded, transmitted and played back end to end. That needs
-capture armed, and it is the one thing still unproven.
+**Opus is proven end to end.** Audio has been captured, encoded on the
+board, transmitted, decoded by the host and transcribed correctly. The
+encoder reserve is measured (7,180 bytes of the 8 KB set aside) and so is the
+stack it encodes on (17,944 of 24,576).
 
 ## Building the variants
 
@@ -121,11 +133,13 @@ BUILD_DIR=/tmp/boswell-full-build \
 ```
 
 The plain image size is the check that none of the card or codec work leaked
-into the build the wearable runs. The baseline is **564,736 bytes** as of
-`boswell stacks`.
+into the build the wearable runs. The baseline is **566,784 bytes** as of the crash log.
 
-It has moved twice, deliberately. From 564,224 for `boswell stacks`, a
-thread high-water report that any build benefits from. And before that, from 563,712: the backlog-clear command is not
+It has moved three times, deliberately. From 564,736 for `src/fault.c` and
+`boswell fault`: a wearable that resets in the field with no console attached
+is precisely the case that record exists for, so it belongs in both builds.
+Before that from 564,224 for `boswell stacks`, a thread high-water report that
+any build benefits from. And before that, from 563,712: the backlog-clear command is not
 card code or codec code, it is a general diagnostic that a wearable with a
 stuck backlog needs just as much, so it belongs in both builds and costs 512
 bytes there. Every other change to this number has meant something leaked and

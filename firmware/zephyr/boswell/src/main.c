@@ -21,6 +21,7 @@
 #include <zephyr/bluetooth/hci_vs.h>
 #include "cfg_store.h"
 #include "qspi_store.h"
+#include "fault.h"
 
 #include <stdlib.h>
 #include <zephyr/kernel.h>
@@ -562,6 +563,57 @@ static int cmd_status(const struct shell *sh, size_t argc, char **argv)
     return 0;
 }
 
+/* A watchdog reset says the board stopped answering. It does not say why,
+ * and on this hardware the usual answer -- the panic banner -- cannot get
+ * out, because the console is USB CDC and USB dies with the CPU. fault.c
+ * writes the reason into RAM the reset does not clear; this reads it back. */
+static void print_fault(const struct shell *sh)
+{
+    struct fault_record f;
+
+    if (!fault_last(&f)) {
+        if (sh) {
+            shell_print(sh, "no fault recorded since the last power-on");
+        }
+        return;
+    }
+
+    if (sh) {
+        shell_print(sh, "last fault: %s (reason %u) in thread '%s' at %u ms",
+                    fault_reason_name(f.reason), f.reason,
+                    f.thread[0] ? f.thread : "?", f.uptime_ms);
+        if (f.repeats > 1) {
+            shell_print(sh, "  %u boots in a row have ended this way", f.repeats);
+        }
+        shell_print(sh, "  pc=0x%08x lr=0x%08x psr=0x%08x", f.pc, f.lr, f.psr);
+        if (f.stack_size) {
+            shell_print(sh, "  thread stack %u bytes", f.stack_size);
+        }
+    } else {
+        LOG_ERR("last boot ended in a fault: %s in thread '%s' at %u ms, "
+                "pc=0x%08x lr=0x%08x stack=%u",
+                fault_reason_name(f.reason), f.thread[0] ? f.thread : "?",
+                f.uptime_ms, f.pc, f.lr, f.stack_size);
+        if (f.repeats > 1) {
+            LOG_ERR("that is %u boots in a row -- this needs a reflash, not "
+                    "another reset", f.repeats);
+        }
+    }
+}
+
+static void report_last_fault(void) { print_fault(NULL); }
+
+static int cmd_fault(const struct shell *sh, size_t argc, char **argv)
+{
+    if (argc > 1 && strcmp(argv[1], "clear") == 0) {
+        fault_clear();
+        shell_print(sh, "cleared");
+        return 0;
+    }
+    print_fault(sh);
+    return 0;
+}
+
 SHELL_STATIC_SUBCMD_SET_CREATE(boswell_cmds,
     SHELL_CMD(dfu, NULL, "Reboot into the bootloader for flashing", cmd_dfu),
     SHELL_CMD(ota, NULL, "Reboot into the bootloader's BLE DFU mode", cmd_ota),
@@ -571,6 +623,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(boswell_cmds,
     SHELL_CMD(drop, NULL, "Discard the buffered backlog in flash", cmd_drop),
     SHELL_CMD(imu, NULL, "Re-probe the IMU and report", cmd_imu),
     SHELL_CMD(stacks, NULL, "Thread stack high-water marks", cmd_stacks),
+    SHELL_CMD(fault, NULL, "Why the last boot ended, or 'fault clear'", cmd_fault),
 #ifdef CONFIG_BOSWELL_OPUS
     SHELL_CMD(opus, NULL, "Report the Opus encoder's memory use", cmd_opus),
 #endif
@@ -989,22 +1042,29 @@ static int decimate_2to1(const int16_t *in, int n, int16_t *out)
  * compiled here with USE_ALLOCA, so opus_encode() takes its working buffers
  * from the stack of whoever calls it, and the amount scales with the frame:
  * this project encodes 20 ms -- 320 samples at 16 kHz -- where Omi's
- * firmware, on this same part, encodes 10 ms. They give their codec a
- * dedicated thread with 32,000 bytes. This one was handing it 4,096 and also
- * asking it to do twice the work per call.
+ * firmware, on this same part, encodes 10 ms and still hands its codec a
+ * dedicated 32,000-byte thread.
  *
- * With CONFIG_MPU_STACK_GUARD the overrun is not silent corruption, it is a
- * fatal MPU fault -- the thread stops, nothing feeds WDT_CAPTURE, and thirty
- * seconds later the board resets. Which is exactly the fault this was:
- * resets only ever while capture was running, never while idle or
- * disconnected, and never on the ADPCM build.
+ * Measured, not guessed. `boswell stacks` read while capture is actually
+ * running reports a high-water of 17,944 bytes, reached within the first
+ * two seconds and flat from there. 24 KB carries about 6.6 KB over that.
  *
- * 16 KB is chosen to be comfortably above what one 20 ms CELT frame needs
- * and below Omi's, and `boswell stacks` reports the high-water mark so it
- * can be trimmed against a measurement rather than another guess.
+ * The number matters more than it looks. 16,384 was tried first and is 1,560
+ * bytes short -- close enough that it survived boot, idle and advertising,
+ * and only blew up a second or two after capture started. With
+ * CONFIG_MPU_STACK_GUARD the overrun is a fatal MPU fault rather than silent
+ * corruption, and the default fatal handler halts the CPU: USB stops being
+ * serviced, the panic banner never leaves the buffer, and thirty seconds
+ * later the watchdog resets the board. From the outside that is
+ * indistinguishable from a hang, and it was misdiagnosed twice as one.
+ * src/fault.c exists so that the next time this happens the board says so.
+ *
+ * Do not trim this against a `boswell stacks` taken at the prompt. Capture
+ * is idle there, the thread has touched 80 bytes, and the reading means
+ * nothing -- that reading is what made 16 KB look like it had worked.
  */
 #ifdef CONFIG_BOSWELL_OPUS
-#define CAPTURE_STACK 16384
+#define CAPTURE_STACK 24576
 #else
 #define CAPTURE_STACK 4096
 #endif
@@ -1358,6 +1418,7 @@ int main(void)
      * Several evenings of this project were spent unable to tell a reset
      * from a hang, which the reset register answers immediately. */
     report_reset_reason();
+    report_last_fault();
 
     int led_err = led_init();
     led_set_level(g_state.led_level);
