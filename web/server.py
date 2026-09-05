@@ -606,9 +606,18 @@ class Device:
         if index_db.implausible_span(started, ended, seconds):
             started = ended - seconds
         os.makedirs(TIMES, exist_ok=True)
+        # The boot id is what makes device_ms usable as an identity.
+        #
+        # Those milliseconds are an uptime counter, so 41,900 happens once per
+        # boot and says nothing on its own -- two clips from different
+        # sessions can carry the same span and be unrelated audio. Recorded
+        # here so the catch-up transfer can tell what the host already has;
+        # see web/dedup.py. Clips written before this was recorded have no id
+        # and are treated as unmatchable, which errs toward keeping audio.
         rec = {"name": os.path.basename(path), "started": round(started, 3),
                "ended": round(ended, 3), "seconds": round(seconds, 3),
-               "source": source, "device_ms": [first_ms, last_ms]}
+               "source": source, "device_ms": [first_ms, last_ms],
+               "boot_id": self.state.get("boot_id")}
         try:
             atomicio.write_json(os.path.join(TIMES, os.path.basename(path) + ".json"), rec)
         except Exception:
