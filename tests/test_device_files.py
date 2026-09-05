@@ -109,3 +109,30 @@ def test_the_list_is_asked_for_rather_than_polled():
     html = read(INDEX)
     assert "setInterval(devFilesLook" not in html
     assert '$("devfilesbtn").onclick = devFilesLook;' in html
+
+
+def test_the_subscription_is_dropped_when_the_link_is():
+    # A subscription belongs to a connection, not to the Device object. Left
+    # set across a reconnect it claims a handler the new link does not have,
+    # the device answers into nothing, and the timeout reads as an empty
+    # card -- which is how a working listing started reporting "empty" for a
+    # card holding two recordings.
+    src = read(SERVER)
+    fn = src[src.index("async def _session(self):"):]
+    fn = fn[:fn.index("\n    async def ", 10)]
+    assert "self._files_sub = False" in fn
+
+
+def test_a_timeout_is_not_reported_as_an_empty_card():
+    src = read(SERVER)
+    fn = src[src.index("async def list_card_files"):]
+    fn = fn[:fn.index("\n    async def ")]
+    assert "finished" in fn
+    assert "if not finished:" in fn
+    assert "return None" in fn
+
+
+def test_the_ui_distinguishes_no_answer_from_nothing_there():
+    html = read(INDEX)
+    assert "no answer from the device" in html
+    assert "nothing on the card" in html

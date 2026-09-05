@@ -701,6 +701,13 @@ class Device:
                 await asyncio.sleep(2)
 
     async def _session(self):
+        # A subscription belongs to a connection, not to this object. Left
+        # set across a reconnect it claims a notify handler the new link does
+        # not have: the device answers into nothing, the host waits out its
+        # timeout, and an empty result is indistinguishable from a card with
+        # nothing on it. Which is exactly how a listing that worked once
+        # started reporting "empty" for a card holding two recordings.
+        self._files_sub = False
         self.state.update(scanning=True, error=None)
         self.publish()
         want = wanted_device()
@@ -1113,6 +1120,7 @@ class Device:
         await self.client.write_gatt_char(self.FILES_UUID, bytes([0x01]),
                                           response=True)
         out = []
+        finished = False
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
         while True:
@@ -1126,6 +1134,7 @@ class Device:
             if not msg:
                 continue
             if msg[0] == 0x02:                       # FILES_END
+                finished = True
                 break
             if msg[0] == 0x05:                       # FILES_ERROR
                 self.event("log", text="the device cannot read its card now")
@@ -1136,6 +1145,13 @@ class Device:
                     "size": int.from_bytes(msg[3:7], "little"),
                     "name": msg[7:].decode("utf-8", "replace"),
                 })
+
+        if not finished:
+            # No end marker. The device never answered, or stopped partway --
+            # either way what arrived is not the list, and returning it as
+            # though it were says "empty" about a card that may be full.
+            self.event("log", text="the device did not answer the listing")
+            return None
         return out
 
     async def pull_card_file(self, index, size_hint=0, timeout=600.0):

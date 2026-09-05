@@ -4783,10 +4783,14 @@ async function devFilesLook(){
   try {
     const r = await (await fetch("/api/device_files")).json();
     if (!r.supported){ $("devfilesrow").hidden = true; return; }
-    if (r.error){ $("devfilesv").textContent = "the card is busy"; }
+    // "the device did not answer" and "the card is empty" look the same from
+    // here unless they are told apart deliberately, and telling somebody
+    // their recordings are gone when the radio simply timed out is the worse
+    // of the two mistakes.
+    if (r.error){ $("devfilesv").textContent = "no answer from the device"; }
     else {
       const n = (r.files || []).length;
-      $("devfilesv").textContent = n ? `${n} recording${n===1?"":"s"}` : "empty";
+      $("devfilesv").textContent = n ? `${n} recording${n===1?"":"s"}` : "nothing on the card";
       devFilesRender(r.files);
     }
   } catch(e){
