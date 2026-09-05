@@ -24,6 +24,7 @@
 #include <zephyr/bluetooth/hci_vs.h>
 #include "cfg_store.h"
 #include "clock.h"
+#include "tone.h"
 #include "qspi_store.h"
 #include "fault.h"
 #include "button.h"
@@ -35,6 +36,7 @@
 #include <zephyr/drivers/watchdog.h>
 #include <zephyr/usb/usb_device.h>
 #include <zephyr/sys/reboot.h>
+#include <zephyr/sys/poweroff.h>
 #include <hal/nrf_power.h>
 #include <zephyr/shell/shell.h>
 #include <zephyr/logging/log.h>
@@ -722,17 +724,108 @@ static int cmd_card(const struct shell *sh, size_t argc, char **argv)
  */
 static int cmd_pins(const struct shell *sh, size_t argc, char **argv)
 {
-    static const struct { const char *name; int port, pin; } cand[] = {
+    /* The safe set, and the set the card's SPI owns.
+     *
+     * Scanning the second one means taking D0, D8, D9 and D10 away from the
+     * SPI driver, which stops the card working until the board is restarted.
+     * That is a fine thing to do deliberately and a terrible thing to do by
+     * surprise, so it takes an explicit "all" and says what it did. */
+    struct pin_ref { const char *name; int port, pin; };
+
+    static const struct pin_ref safe[] = {
         { "D1", 0,  3 }, { "D2", 0, 28 }, { "D3", 0, 29 },
         { "D4", 0,  4 }, { "D5", 0,  5 },
         { "D6", 1, 11 }, { "D7", 1, 12 },
     };
+    static const struct pin_ref spi_pins[] = {
+        { "D0", 0,  2 }, { "D8", 1, 13 }, { "D9", 1, 14 }, { "D10", 1, 15 },
+    };
 
+    bool all = false;
+    bool omi = false;
     int secs = 10;
-    if (argc > 1) {
-        secs = atoi(argv[1]);
+    int argi = 1;
+
+    if (argc > argi && strcmp(argv[argi], "all") == 0) {
+        all = true;
+        argi++;
+    } else if (argc > argi && strcmp(argv[argi], "omi") == 0) {
+        omi = true;
+        argi++;
+    }
+    if (argc > argi) {
+        secs = atoi(argv[argi]);
         if (secs < 1)  secs = 1;
         if (secs > 30) secs = 30;
+    }
+
+    struct pin_ref cand[ARRAY_SIZE(safe) + ARRAY_SIZE(spi_pins)];
+    size_t n_cand = 0;
+    for (size_t i = 0; i < ARRAY_SIZE(safe); i++) {
+        cand[n_cand++] = safe[i];
+    }
+    if (all) {
+        if (g_state.streaming) {
+            shell_print(sh, "capture is running -- stop it first "
+                            "('boswell stream off'), this takes the card's "
+                            "pins away");
+            return 0;
+        }
+        for (size_t i = 0; i < ARRAY_SIZE(spi_pins); i++) {
+            cand[n_cand++] = spi_pins[i];
+        }
+    }
+
+    /* Omi's devkit wires the switch between two pins rather than to ground:
+     * D4 is driven high as the supply and D5 is the sense line. A scan that
+     * pulls both up sees nothing when the button bridges them, because it is
+     * shorting two pins that already agree -- which is exactly the null
+     * result this kept producing before the schematic turned up.
+     *
+     * So this drives D4 and watches D5, and reports the level under each
+     * pull in turn. Whichever one moves says how the switch is actually
+     * wired, without having to guess the polarity first. */
+    if (omi) {
+        const struct device *g0 = DEVICE_DT_GET(DT_NODELABEL(gpio0));
+        if (!device_is_ready(g0)) {
+            shell_print(sh, "gpio not ready");
+            return 0;
+        }
+
+        gpio_pin_configure(g0, 4, GPIO_OUTPUT_ACTIVE);   /* D4 = supply */
+
+        static const struct { const char *what; gpio_flags_t flag; } modes[] = {
+            { "no pull",   0 },
+            { "pull-down", GPIO_PULL_DOWN },
+            { "pull-up",   GPIO_PULL_UP },
+        };
+
+        shell_print(sh, "D4 driven high; watching D5 for %d s in three "
+                        "pull settings -- keep pressing", secs);
+
+        for (size_t m = 0; m < ARRAY_SIZE(modes); m++) {
+            gpio_pin_configure(g0, 5, GPIO_INPUT | modes[m].flag);
+            int idle = gpio_pin_get_raw(g0, 5);
+            int last = idle, moves = 0, high = 0, total = 0;
+
+            int64_t stop = k_uptime_get() + (secs * 1000) / ARRAY_SIZE(modes);
+            while (k_uptime_get() < stop) {
+                int v = gpio_pin_get_raw(g0, 5);
+                total++;
+                if (v) high++;
+                if (v != last) {
+                    moves++;
+                    last = v;
+                }
+                k_msleep(5);
+            }
+            shell_print(sh, "  D5 %-9s idle=%d  %d change(s), high %d%% of "
+                            "the time", modes[m].what, idle, moves,
+                        total ? (100 * high) / total : 0);
+        }
+
+        gpio_pin_configure(g0, 4, GPIO_INPUT);   /* stop driving it */
+        return 0;
     }
 
     const struct device *p0 = DEVICE_DT_GET(DT_NODELABEL(gpio0));
@@ -746,7 +839,7 @@ static int cmd_pins(const struct shell *sh, size_t argc, char **argv)
     int changes[ARRAY_SIZE(cand)] = { 0 };
     int last[ARRAY_SIZE(cand)];
 
-    for (size_t i = 0; i < ARRAY_SIZE(cand); i++) {
+    for (size_t i = 0; i < n_cand; i++) {
         const struct device *d = cand[i].port ? p1 : p0;
         /* Pull-up and active-low, the same way the button is declared, so a
          * switch to ground reads 1 when pressed whichever pin it is on. */
@@ -755,11 +848,12 @@ static int cmd_pins(const struct shell *sh, size_t argc, char **argv)
         start[i] = last[i] = gpio_pin_get(d, cand[i].pin);
     }
 
-    shell_print(sh, "watching D1-D7 for %d s -- press the button now", secs);
+    shell_print(sh, "watching %s for %d s -- press the button now",
+                all ? "D0-D10" : "D1-D7", secs);
 
     int64_t end = k_uptime_get() + secs * 1000;
     while (k_uptime_get() < end) {
-        for (size_t i = 0; i < ARRAY_SIZE(cand); i++) {
+        for (size_t i = 0; i < n_cand; i++) {
             const struct device *d = cand[i].port ? p1 : p0;
             int v = gpio_pin_get(d, cand[i].pin);
             if (v != last[i]) {
@@ -771,7 +865,7 @@ static int cmd_pins(const struct shell *sh, size_t argc, char **argv)
     }
 
     bool any = false;
-    for (size_t i = 0; i < ARRAY_SIZE(cand); i++) {
+    for (size_t i = 0; i < n_cand; i++) {
         if (changes[i]) {
             any = true;
             shell_print(sh, "  %s (P%d.%02d): %d change(s), now %d",
@@ -781,7 +875,7 @@ static int cmd_pins(const struct shell *sh, size_t argc, char **argv)
     }
     if (!any) {
         shell_print(sh, "  nothing moved. Idle levels (1 = pulled to ground):");
-        for (size_t i = 0; i < ARRAY_SIZE(cand); i++) {
+        for (size_t i = 0; i < n_cand; i++) {
             shell_print(sh, "    %s (P%d.%02d) = %d",
                         cand[i].name, cand[i].port, cand[i].pin, start[i]);
         }
@@ -789,6 +883,15 @@ static int cmd_pins(const struct shell *sh, size_t argc, char **argv)
 
     /* Put D7 back the way button.c wants it; the others were unclaimed. */
     gpio_pin_configure(p1, 12, GPIO_INPUT | GPIO_PULL_UP | GPIO_ACTIVE_LOW);
+
+    if (all) {
+        /* The SPI driver's pins were reconfigured out from under it. Rather
+         * than half-restore them and leave the card working-ish, say so
+         * plainly: a reboot puts every pin back the way the devicetree
+         * describes it. */
+        shell_print(sh, "the card's pins were borrowed -- run 'boswell reboot' "
+                        "to put them back");
+    }
     return 0;
 }
 
@@ -832,7 +935,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(boswell_cmds,
     SHELL_CMD(tap, NULL, "Set double-tap threshold (0-31)", cmd_tap),
     SHELL_CMD(taps, NULL, "Show tap counters", cmd_taps),
     SHELL_CMD(button, NULL, "Show push-button counters", cmd_button),
-    SHELL_CMD(pins, NULL, "Watch header pins to find the button", cmd_pins),
+    SHELL_CMD(pins, NULL, "Find the button: 'pins [all|omi] [secs]'", cmd_pins),
     SHELL_CMD(card, NULL, "Show what has been written to the card", cmd_card),
     SHELL_CMD(cardls, NULL, "List recordings on the card and check them", cmd_cardls),
 #ifdef CONFIG_DISK_DRIVER_SDMMC
@@ -1147,10 +1250,61 @@ static void on_double_tap(void)
     /* Only here. The host adopts the device's state when this moves, so any
      * other writer would make a lost command look like somebody's decision. */
     g_state.tap_seq++;
-    LOG_INF("double tap -> %s", g_state.streaming ? "capturing" : "stopped");
+    LOG_INF("toggle -> %s", g_state.streaming ? "capturing" : "stopped");
+    /* Say it out loud. The status light is on the device, and the device is
+     * on your chest -- you cannot see it without taking the thing off, which
+     * is exactly when you want to know whether the press you just made
+     * started or stopped a recording. */
+    tone_play(g_state.streaming ? TONE_ARM : TONE_DISARM);
     ble_audio_apply_conn_params(g_state.streaming);
     ble_audio_publish_info();
     led_state();
+}
+
+/* System OFF, with the button as the way back.
+ *
+ * The wake path is the thing to get right, because getting it wrong means a
+ * device that is off until somebody finds the reset button. The switch
+ * sources 3.3 V into the sense pin from the rail on D4, and on this part
+ * GPIO output state is retained through System OFF -- so the rail stays up,
+ * a press still drives the sense pin high, and a level-triggered sense on
+ * that pin is what the hardware wakes on.
+ *
+ * Waking is a reset, not a resume: RAM is gone and the firmware starts from
+ * the top. That is the honest behaviour to offer, and it is why the card is
+ * flushed before this is called rather than after.
+ */
+static void power_off(void)
+{
+#if DT_NODE_EXISTS(DT_ALIAS(sw0)) && defined(CONFIG_POWEROFF)
+    static const struct gpio_dt_spec wake =
+        GPIO_DT_SPEC_GET(DT_ALIAS(sw0), gpios);
+
+    /* Level, not edge. System OFF has no clocks to detect an edge with; the
+     * DETECT signal is a level comparison and nothing else. */
+    int err = gpio_pin_interrupt_configure_dt(&wake, GPIO_INT_LEVEL_ACTIVE);
+    if (err) {
+        /* Refuse rather than strand the device. A board that cannot arm its
+         * own wake source is one that would need the reset button to come
+         * back, and staying on is the better failure. */
+        LOG_ERR("no wake source (%d) -- staying on rather than becoming "
+                "unwakeable", err);
+        return;
+    }
+
+    /* Let the tone finish and the button be released. Powering off with the
+     * switch still held would arm the wake source against a level that is
+     * already true, and the device would come straight back up. */
+    for (int i = 0; i < 50 && button_is_down(); i++) {
+        k_msleep(100);
+    }
+    k_msleep(200);
+
+    LOG_INF("system off; press the button to wake");
+    sys_poweroff();
+#else
+    LOG_WRN("power-off not built into this image");
+#endif
 }
 
 /* The switch, once one is fitted.
@@ -1180,14 +1334,19 @@ static void on_button(enum button_gesture g)
         break;
 
     case BUTTON_LONG:
-        /* This is where power-off goes. It is not wired up, and the reason
-         * is worth stating: the wake path is a GPIO sense on this same pin,
-         * and if it is wrong the device is off until somebody finds the
-         * reset button. That is a bad thing to ship untested, and it cannot
-         * be tested until the switch exists. Once a real press has proved
-         * reliable, this becomes sys_poweroff() with the pin as the wake
-         * source. */
-        LOG_INF("button: long press (power-off not wired yet)");
+        /* Off, and it says so first.
+         *
+         * A device that goes quiet with no warning is indistinguishable from
+         * one that has crashed, and this project has spent two evenings on
+         * exactly that confusion. The tone plays before anything else stops,
+         * so the last thing the wearer hears is a deliberate one.
+         */
+        LOG_INF("long press -> powering off");
+        g_state.streaming = 0;
+        sd_store_flush();          /* whatever is in RAM reaches the card */
+        tone_play(TONE_OFF);
+        led_set_colour(false, false, false);
+        power_off();
         break;
     }
 }
@@ -1818,6 +1977,8 @@ int main(void)
     int btn_err = button_init(on_button);
     LOG_INF("button_init -> %d%s", btn_err,
             btn_err == -ENODEV ? " (no switch fitted)" : "");
+
+    tone_init();
 
     err = imu_tap_init(on_double_tap);
     LOG_INF("imu_tap_init -> %d", err);

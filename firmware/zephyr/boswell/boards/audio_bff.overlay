@@ -54,3 +54,33 @@
 		};
 	};
 };
+
+/*
+ * The speaker, so the device can say what it has just done.
+ *
+ * A wearable that toggles on a press and shows the answer on an LED you
+ * cannot see while wearing it is a device you have to take off to trust.
+ * Worse, a long press that powers it off silently is indistinguishable from
+ * a crash -- which this project has now had enough of to know the difference
+ * matters.
+ *
+ * Pins are Omi's, because this hardware was built to their layout: SCK on
+ * A3/P0.29, word select on A2/P0.28, data on A1/P0.03. PDM and I2S are
+ * separate peripherals on this part, so the microphone and the amplifier do
+ * not contend.
+ */
+&i2s0 {
+	status = "okay";
+	pinctrl-0 = <&i2s0_default>;
+	pinctrl-names = "default";
+};
+
+&pinctrl {
+	i2s0_default: i2s0_default {
+		group1 {
+			psels = <NRF_PSEL(I2S_SCK_M, 0, 29)>,
+				<NRF_PSEL(I2S_LRCK_M, 0, 28)>,
+				<NRF_PSEL(I2S_SDOUT, 0, 3)>;
+		};
+	};
+};

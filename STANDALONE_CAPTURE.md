@@ -16,6 +16,8 @@ What is built, and what is waiting on a decision or on hardware.
 | Card capture | audio spills to FAT files past a 75% ring mark | **on hardware**: 600 KB written, header read back, 0 errors |
 | USB offload | the card mounts on the host as a drive | **on hardware**: file read and decoded to 126 s of audio |
 | Import | the app finds a docked card and imports it | **on hardware**: clicked in the browser, 0 duplicates |
+| Push button | single press toggles capture, hold powers off | **on hardware**: 1 press, 1 single, 0 bounces |
+| Speaker | rising/falling pairs on arm and disarm | **on hardware**: heard |
 | Transcription | card clips go through the ordinary pipeline | **on hardware**: 476 words, diarized into two speakers |
 | Card capture | audio spills to FAT files past a 75% ring mark | **on hardware**: 600 KB written, header verified, 0 errors |
 | OTA | `CTRL_DFU` sent from the app, gated on the capability bit | 8 tests; not yet triggered on hardware |
@@ -321,35 +323,67 @@ directory is slow, and the answer is always a level or two down.
   helpfulness that is hard to undo.
 
 
-## Waiting on hardware
+## The button, and three pin conflicts
 
-**The push button is written and cannot be pressed.** `src/button.c` reads a
-switch on D7 (P1.12) -- the one header pin free in every build here, since the
-card takes D8/D9/D10 and D0, the speaker wants D1/D2/D3, and D4/D5 are the
-I2C pair. Single press toggles capture; a switch is only ever pressed on
-purpose, so the everyday action is the easy one rather than needing a pair the
-way the accelerometer did. Double is detected and bound to nothing.
+Working, and it took finding three separate pin conflicts to get there --
+each one invisible from the source and obvious in the generated devicetree.
 
-Long press is detected and **deliberately not wired to power-off**. The wake
-path would be a GPIO sense on that same pin, and if it is wrong the device is
-off until somebody finds the reset button -- which is a bad thing to ship
-untested, and it cannot be tested until there is a switch. Once a real press
-proves reliable it becomes `sys_poweroff()` with the pin as the wake source.
+**It is not a switch to ground.** The Omi Triangle layout this hardware was
+built to bridges two header pins: D4 held high as a supply, D5 sensing. A
+press *sources* 3.3 V rather than pulling anything down. Five scans came back
+empty because they configured D4 and D5 both as pulled-up inputs, and a
+switch bridging two pulled-up pins shorts two pins that already agree.
 
-**Measured, and trimmed.** `boswell opus` on the board reports the encoder
-wants **7,180 bytes** against the 20 KB that had been set aside — 2.9 times
-larger than needed. `enc_mem` is now 8 KB, leaving about a kilobyte of
-headroom and handing back twelve. RAM on the combined build went 60.63% to
-55.94%.
+Polarity was measured rather than inherited -- Omi's own read logic reads
+inverted from their wiring, so all three pull settings were tried:
 
-The check at init is what makes tightening it safe: a build configured
-differently — SILK, or stereo — would want far more, and would say so at
-init rather than running off the end of the array.
+| pull | transitions | |
+|---|---|---|
+| none | 13 | works, but floats when open |
+| **pull-down** | **15** | held low when open, driven high on press |
+| pull-up | 0 | swamps the signal it is meant to detect |
 
-**Opus is proven end to end.** Audio has been captured, encoded on the
-board, transmitted, decoded by the host and transcribed correctly. The
-encoder reserve is measured (7,180 bytes of the 8 KB set aside) and so is the
-stack it encodes on (17,944 of 24,576).
+**And the pins were owned.** `uart0` had D7 as its RX, which is why the first
+attempt on D7 saw nothing. `i2c1` -- the header I2C bus, enabled by the board
+with nothing on it -- has exactly P0.04 and P0.05. Disabled. `uart0` is left
+enabled now the button has moved, which keeps D6/D7 free for a hardware UART:
+worth having, because USB CDC cannot deliver a panic banner and that cost a
+day.
+
+The lesson, three times over: a peripheral left `status = "okay"` that
+nothing uses still owns its pins, and the generated devicetree is the only
+place that admits it.
+
+**D4 is a shared rail**, not the button's alone -- Omi drive it high from
+their button code *and* their speaker code. It feeds the switch and wakes the
+amplifier.
+
+## The device can speak now
+
+The status light is on the device and the device is on your chest, so it
+cannot answer the only question that matters while wearing it: did that press
+start or stop a recording. Two rising notes mean recording, two falling mean
+stopped, three descending mean powering off. Pitch *and* length differ,
+because pitch alone is hard to judge in a noisy room and "how many, going
+which way" survives that.
+
+Square waves, not sines: the harmonics are above what this driver reproduces,
+and it avoids pulling in floating-point maths for a beep. I2S on Omi's pins,
+A1/A2/A3 -- PDM and I2S are separate peripherals here, so the microphone and
+the amplifier do not contend.
+
+**Power-off is wired**, and waking is a reset rather than a resume: RAM is
+gone and the firmware starts from the top, which is why the card is flushed
+before the tone plays. The wake is a level-triggered sense on D5; output
+state survives System OFF on this part, so the rail stays up and a press
+still drives the pin. If that sense cannot be armed the firmware **refuses to
+power off** and says so -- a device that stays on is a better failure than
+one that needs the reset button found.
+
+The tap is off. It had been arming the device by accident all evening, and a
+press is unambiguous in a way an impulse never will be. It is a persisted
+setting rather than a code change, so the cardless wearable keeps its only
+control.
 
 ## Building the variants
 

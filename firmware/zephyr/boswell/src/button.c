@@ -10,6 +10,15 @@ LOG_MODULE_REGISTER(boswell_button, LOG_LEVEL_INF);
 
 static const struct gpio_dt_spec sw = GPIO_DT_SPEC_GET(DT_ALIAS(sw0), gpios);
 
+/* The other half of the switch.
+ *
+ * This board does not wire the button to ground; it bridges two header pins,
+ * with D4 held high as the supply and D5 sensing. Nothing is readable until
+ * this pin is driven, which is why a scan of D5 alone found a quiet line no
+ * matter how hard the button was pressed. */
+static const struct gpio_dt_spec supply =
+    GPIO_DT_SPEC_GET(DT_NODELABEL(btn_supply), gpios);
+
 /* Timings are Omi's, which were measured against a real switch on this same
  * part rather than reasoned about. Copying them costs nothing and skips the
  * round of "is 500 ms too long" that inventing them would need.
@@ -141,7 +150,20 @@ int button_init(void (*handler)(enum button_gesture))
         return -ENODEV;
     }
 
-    int err = gpio_pin_configure_dt(&sw, GPIO_INPUT);
+    /* Supply first. Sensing a line nothing is driving reads noise, and the
+     * order matters at boot: configure the input first and the first read
+     * happens against a floating pin. */
+    if (!gpio_is_ready_dt(&supply)) {
+        LOG_ERR("button supply pin not ready");
+        return -ENODEV;
+    }
+    int err = gpio_pin_configure_dt(&supply, GPIO_OUTPUT_ACTIVE);
+    if (err) {
+        LOG_ERR("button supply configure: %d", err);
+        return err;
+    }
+
+    err = gpio_pin_configure_dt(&sw, GPIO_INPUT);
     if (err) {
         LOG_ERR("button pin configure: %d", err);
         return err;
@@ -168,7 +190,8 @@ int button_init(void (*handler)(enum button_gesture))
         LOG_WRN("button reads pressed at boot; check the wiring");
     }
 
-    LOG_INF("button on %s pin %d", sw.port->name, sw.pin);
+    LOG_INF("button: sense %s pin %d, supply %s pin %d",
+            sw.port->name, sw.pin, supply.port->name, supply.pin);
     return 0;
 }
 

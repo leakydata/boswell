@@ -132,38 +132,37 @@
 };
 
 /*
- * The push button.
+ * The push button, wired the way this board actually is.
  *
- * A momentary switch between the pin and ground -- no external resistor,
- * because the internal pull-up holds the line high and a press pulls it low.
+ * Not a switch to ground. The Omi Triangle layout this hardware was built to
+ * bridges two header pins: D4 is driven high as the supply and D5 is the
+ * sense line, so a press sources 3.3 V into D5 rather than pulling anything
+ * down. Measured on the board with `boswell pins omi`: no pull gave 13
+ * transitions, pull-down gave 15, and pull-up gave none at all -- the pull-up
+ * holds the line high and swamps the very signal it is meant to detect.
  *
- * D7 (P1.12) is chosen because it is free in every build this project has.
- * The Audio BFF takes D8/D9/D10 for the card's SPI and D0 for its chip
- * select, and the speaker wants D1/D2/D3 for I2S; D4 and D5 are the header's
- * I2C pair, and D6/D7 its UART pair, which nothing uses here because the
- * console is USB CDC. That leaves D6 and D7, and D7 is the corner pin --
- * easiest of the lot to get a soldering iron onto.
+ * So: pull-down, active high, pressed = 1.
  *
- * Declared unconditionally, including on boards with no switch fitted. An
- * unconnected pin is held high by the pull-up, which reads as "not pressed",
- * so the cost of it being here is one configured input.
+ * This started on D7 as a switch to ground, which is what you choose when you
+ * pick a free pin instead of reading the schematic of the thing somebody
+ * actually soldered. Every scan came back empty because a switch bridging two
+ * pulled-up inputs shorts two pins that already agree.
  *
- * To move it: change the pin below. Nothing else refers to it.
+ * i2c1 has to go. It is the header I2C bus, enabled by the board with nothing
+ * on it, and its pinctrl claims exactly P0.04 and P0.05. The IMU is on i2c0,
+ * on P0.07 and P0.27, and is untouched by this.
+ *
+ * uart0 was disabled for a while, when the button was thought to be on D7 and
+ * uart0 owned that pin as its RX. It is left enabled now the button has moved
+ * to where the board actually wires it, which keeps D6 and D7 available for a
+ * hardware UART -- worth having one day, because USB CDC cannot deliver a
+ * panic banner and that cost this project a day.
+ *
+ * Two conflicts of the same shape in one evening is the lesson worth keeping:
+ * a peripheral left status = "okay" that nothing uses still owns its pins,
+ * and the generated devicetree is the only place that says so.
  */
-/*
- * The board enables uart0 and its pinctrl claims P1.11 and P1.12 -- D6 and
- * D7 -- as TX and RX. Nothing here uses it: the console and the shell are
- * both on USB CDC, declared above. Left enabled it simply owns two header
- * pins, and the button on D7 was configured, interrupt-enabled, and never
- * saw an edge, because the UART peripheral had the pin.
- *
- * Disabled rather than moving the button, because by the time this was found
- * the switch was soldered to D7 and hardware that already exists beats a
- * pin choice that only exists in a file. If a hardware UART is ever wanted
- * -- and it would be worth having, since USB CDC cannot deliver a panic
- * banner -- it can go on D4/D5.
- */
-&uart0 {
+&i2c1 {
 	status = "disabled";
 };
 
@@ -171,8 +170,23 @@
 	buttons {
 		compatible = "gpio-keys";
 		boswell_button: button_0 {
-			gpios = <&gpio1 12 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+			gpios = <&gpio0 5 (GPIO_ACTIVE_HIGH | GPIO_PULL_DOWN)>;
 			label = "Boswell button";
+		};
+	};
+
+	/* D4 is a shared enable rail, not the button's alone.
+	 *
+	 * Omi drive it high from both their button code and their speaker code,
+	 * which looks like a conflict and is not: it is the 3.3 V line the
+	 * switch sources from and the line that wakes the amplifier. Held high
+	 * for as long as the device is on, by whichever of the two asks first.
+	 */
+	boswell_rail: peripheral-rail {
+		compatible = "gpio-leds";
+		btn_supply: btn_supply {
+			gpios = <&gpio0 4 GPIO_ACTIVE_HIGH>;
+			label = "Boswell peripheral rail";
 		};
 	};
 

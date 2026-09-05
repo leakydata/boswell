@@ -22,25 +22,45 @@ def read(p):
         return f.read()
 
 
-def test_the_pin_is_declared_with_a_pull_up():
+def test_the_pin_is_declared_the_way_the_board_is_wired():
     dts = read(OVERLAY)
     assert "compatible = \"gpio-keys\"" in dts
-    # A switch to ground and nothing else: the pull-up has to come from the
-    # SoC, or an unfitted board floats and toggles itself.
-    assert "GPIO_ACTIVE_LOW | GPIO_PULL_UP" in dts
+    # Not a switch to ground. This board bridges two pins -- D4 held high as
+    # the supply, D5 sensing -- so a press sources 3.3 V rather than pulling
+    # anything down. Measured on the board: pull-down gave 15 transitions,
+    # pull-up gave none at all, because it swamps the signal.
+    assert "GPIO_ACTIVE_HIGH | GPIO_PULL_DOWN" in dts
     assert "sw0 = &boswell_button;" in dts
 
 
-def test_the_pin_avoids_every_bus_the_other_builds_use():
+def test_the_supply_pin_exists():
+    # Nothing is readable until D4 is driven. A sense pin alone reads a quiet
+    # line however hard the button is pressed, which is what five empty scans
+    # looked like before the schematic turned up.
     dts = read(OVERLAY)
-    assert "<&gpio1 12 " in dts, "expected D7/P1.12"
+    assert "btn_supply" in dts
+    assert "<&gpio0 4 GPIO_ACTIVE_HIGH>" in dts
+
+
+def test_the_bus_that_owns_the_button_pins_is_disabled():
+    # A peripheral left status = "okay" that nothing uses still owns its
+    # pins, and the generated devicetree is the only place that says so.
+    # i2c1's pinctrl is exactly P0.04 and P0.05 -- the button's two pins.
+    import re
+    dts = read(OVERLAY)
+    m = re.search(r"&i2c1\s*\{(.*?)\};", dts, re.S)
+    assert m, "&i2c1 is not overridden at all"
+    assert 'status = "disabled"' in m.group(1), "&i2c1 still owns D4 and D5"
+
+
+def test_the_pins_do_not_collide_with_the_card():
+    dts = read(OVERLAY)
+    assert "<&gpio0 5 " in dts, "sense on D5/P0.05"
     bff = read(os.path.join(FW, "boards", "audio_bff.overlay"))
-    # The card's SPI is P1.13/14/15 and its chip select P0.02. If the button
-    # ever lands on one of those the combined build breaks in a way that
-    # only shows up on hardware.
-    for taken in ("gpio1 13", "gpio1 14", "gpio1 15"):
-        assert taken in bff or True          # documents intent
-    assert "gpio1 12" not in bff
+    # The card's SPI is P1.13/14/15 with chip select P0.02. The button is on
+    # P0.04 and P0.05, and the speaker on P0.03/28/29 -- no overlap.
+    assert "gpio0 5 " not in bff
+    assert "gpio0 4 " not in bff
 
 
 def test_the_driver_is_always_compiled():
@@ -83,16 +103,16 @@ def test_a_single_press_is_what_toggles_capture():
         "a switch is only ever pressed on purpose; the single is the easy one"
 
 
-def test_the_unused_gestures_do_not_do_anything():
+def test_double_is_still_bound_to_nothing_and_long_powers_off():
     src = read(MAIN_C)
     handler = src[src.index("static void on_button("):]
     handler = handler[:handler.index("\n}\n")]
     rest = handler[handler.index("case BUTTON_DOUBLE:"):]
-    # Power-off is deliberately not wired: the wake path is a GPIO sense on
-    # this same pin and cannot be tested until the switch is in hand. The
-    # header is the unambiguous tell -- the comment there names the call.
-    assert "poweroff.h" not in src
-    assert rest.count("on_double_tap();") == 0
+    # Long press powers the device off, now that there is a real switch to
+    # prove the gesture against. Double is still bound to nothing.
+    dbl = rest[rest.index("case BUTTON_DOUBLE:"):rest.index("case BUTTON_LONG:")]
+    assert dbl.count("on_double_tap();") == 0
+    assert "power_off();" in rest
 
 
 def test_a_stuck_switch_says_so_at_boot():
