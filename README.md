@@ -680,6 +680,25 @@ The page then asks for the token once and remembers it. HTTP and WebSocket
 are both gated; only the page shell and its assets stay public so the prompt
 can render.
 
+### Two boards on the bench
+
+Every board running this firmware advertises the same name, so with more than
+one powered the host connects to whichever wins the scan — and a session can
+spend an evening talking to the spare while the board under test advertises
+into nothing. Name the one you want:
+
+```bash
+export BOSWELL_DEVICE=E1:23:45:67:89:AB    # address, or a name
+uv run web/server.py
+```
+
+Separators and case are ignored, so `e1-23-45-67-89-ab` and `E123456789AB`
+are the same request. Unset, the behaviour is what it always was: the first
+board called `XIAO-MIC` to answer. When the wanted board is not found, the
+error names what *was* advertising instead, which is the part that makes a
+mix-up visible; the connected board's address is in the status as
+`device_address`.
+
 A token is not a substitute for a private network. Prefer **Tailscale or
 WireGuard**, where the device is reachable as if it were at home and nothing
 is published; a tunnel like ngrok puts a microphone control API on the public

@@ -61,8 +61,9 @@ from fastapi.staticfiles import StaticFiles
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "host"))
 from ble_capture import (AUDIO_UUID, CTRL_UUID, INFO_UUID, DEVICE_NAME,
                          HEADER_LEN, decode_block, decode_frame,
-                         payload_is_complete)
-from bleak import BleakClient, BleakScanner
+                         payload_is_complete, describe_missing, find_device,
+                         wanted_device)
+from bleak import BleakClient
 
 import agent_runner
 import index_db
@@ -294,6 +295,9 @@ class Device:
             "backlog_seconds": 0.0, "qspi_mb": 0, "imu": False,
             "peak": 0, "rms": 0.0, "level": 0.0, "error": None,
             "clip_seconds": 0.0, "source": None,
+            # Which board this is, so a two-board bench can tell them apart
+            # without reading the journal. None until something connects.
+            "device_address": None,
             "recovered_seconds": 0.0, "recovered_frames": 0,
             "backlog_mode": 1,
             "steps": 0, "tilt": False, "moving": False, "tap_enabled": True,
@@ -643,13 +647,19 @@ class Device:
     async def _session(self):
         self.state.update(scanning=True, error=None)
         self.publish()
-        dev = await BleakScanner.find_device_by_name(DEVICE_NAME, timeout=20.0)
+        want = wanted_device()
+        dev, seen = await find_device(want, timeout=20.0)
         self.state["scanning"] = False
         if dev is None:
-            self.state["error"] = f"{DEVICE_NAME} not found"
+            # What else was advertising, not just that this was not. With two
+            # boards running the same firmware the interesting failure is
+            # "connected to the wrong one", and a bare not-found says nothing
+            # about which ones were there to choose from.
+            self.state["error"] = describe_missing(want, seen)
             self.publish()
             await asyncio.sleep(2)
             return
+        self.state["device_address"] = dev.address
 
         async with BleakClient(dev, timeout=30.0) as c:
             self.client = c

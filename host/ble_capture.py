@@ -25,6 +25,77 @@ CTRL_UUID    = "4b1a0003-8f2c-4d5e-9a3b-1c7e6f8d0a21"
 INFO_UUID    = "4b1a0004-8f2c-4d5e-9a3b-1c7e6f8d0a21"
 
 DEVICE_NAME = "XIAO-MIC"
+
+
+# ------------------------------------------------------- choosing a board
+#
+# Every board running this firmware advertises the same name, so "find the
+# one called XIAO-MIC" stopped being a question with one answer the moment
+# there were two of them -- the host took whichever won the scan, which is
+# how a session spent an evening talking to the wrong device while the board
+# under test sat there advertising into nothing.
+#
+# BOSWELL_DEVICE names the one to use: a Bluetooth address, or a name if the
+# firmware has been built to advertise something distinctive. Unset, the
+# behaviour is exactly what it was.
+
+
+def wanted_device():
+    """The board asked for, or None for 'any board with the usual name'."""
+    return os.environ.get("BOSWELL_DEVICE", "").strip() or None
+
+
+def _norm_addr(s):
+    return "".join(c for c in s.lower() if c in "0123456789abcdef")
+
+
+def device_matches(want, address, name):
+    """Does this advertisement satisfy `want`?
+
+    An address is compared with separators and case ignored, so the same
+    board matches whether it was written AA:BB:CC:DD:EE:FF, aa-bb-cc-dd-ee-ff
+    or aabbccddeeff -- all three are the same device and all three are
+    things people paste in.
+    """
+    name = name or ""
+    if not want:
+        return name == DEVICE_NAME
+    addr = _norm_addr(want)
+    if len(addr) == 12 and _norm_addr(want) == addr:
+        return _norm_addr(address or "") == addr
+    return name.lower() == want.lower()
+
+
+async def find_device(want=None, timeout=20.0):
+    """Scan for the wanted board, returning as soon as it answers.
+
+    Returns (device, seen) -- and `seen` is filled in only when nothing
+    matched, because the useful thing to say then is not "not found" but
+    "here is what was advertising instead", which is the difference between
+    a two-board mix-up you can see and one you cannot.
+    """
+    found = await BleakScanner.find_device_by_filter(
+        lambda d, ad: device_matches(want, d.address, ad.local_name or d.name),
+        timeout=timeout)
+    if found is not None:
+        return found, []
+    seen = []
+    try:
+        for d in await BleakScanner.discover(timeout=4.0):
+            seen.append((d.address, d.name or "(unnamed)"))
+    except Exception:
+        pass
+    return None, seen
+
+
+def describe_missing(want, seen):
+    """A sentence worth putting in front of somebody at 2 a.m."""
+    asked = want or DEVICE_NAME
+    if not seen:
+        return f"{asked} not found; nothing was advertising"
+    named = ", ".join(f"{n} [{a}]" for a, n in seen[:6])
+    more = f" (+{len(seen) - 6} more)" if len(seen) > 6 else ""
+    return f"{asked} not found; saw {named}{more}"
 HEADER_LEN = 12   # seq,flags,state,nsamples,t_ms
 # The firmware's largest frame is 20 ms at 16 kHz. Anything claiming more is
 # a corrupt header, not a long frame.
