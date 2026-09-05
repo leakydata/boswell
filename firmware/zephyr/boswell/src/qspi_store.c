@@ -535,7 +535,33 @@ static void writer_fn(void *a, void *b, void *cc)
             alive_cb();
         }
 
+        /* The cursor save is the one thing on this thread that can block for
+         * an unbounded time, and it is bracketed for that reason.
+         *
+         * It writes to internal flash, which with Bluetooth running has to be
+         * scheduled around the radio by MPSL. A connection at a short
+         * interval leaves very little room for that, and a write that cannot
+         * get a timeslot waits. If the wait runs past the watchdog window,
+         * WDT_QSPI never checks in again and the board resets -- which is
+         * consistent with a board that reset roughly once a minute while it
+         * held a backlog, since the save only happens when there is one, and
+         * that is the only periodic event at that cadence.
+         *
+         * Checking in either side does not make a long write safe; it removes
+         * the check-in immediately before it from the accounting, so the
+         * window measures the write rather than the write plus a whole idle
+         * pass. The warning is what turns the next occurrence from a bare
+         * reset code into evidence.
+         */
+        int64_t save_t0 = k_uptime_get();
         persist_cursors();
+        int64_t save_ms = k_uptime_get() - save_t0;
+        if (save_ms > 500) {
+            LOG_WRN("cursor save blocked for %lld ms", save_ms);
+        }
+        if (alive_cb) {
+            alive_cb();
+        }
 
         /* Replay to the host before anything else: the backlog is older
          * audio and has to reach the host ahead of what is being captured
