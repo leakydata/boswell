@@ -18,7 +18,7 @@ target_sources(app PRIVATE
 
 # Only built for a board that has a card. See boards/audio_bff.overlay.
 if(CONFIG_DISK_DRIVER_SDMMC)
-  target_sources(app PRIVATE src/sd_probe.c)
+  target_sources(app PRIVATE src/sd_probe.c src/sd_store.c)
 endif()
 # Vendored, not fetched -- see src/lib/opus-1.2.1/README.boswell.md for why
 # a copy and not a module, and what was changed on the way in.

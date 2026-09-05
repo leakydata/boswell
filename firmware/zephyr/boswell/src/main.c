@@ -15,6 +15,9 @@
 #ifdef CONFIG_DISK_DRIVER_SDMMC
 #include "sd_probe.h"
 #endif
+/* Unconditional: the header stubs itself out when there is no card slot, so
+ * the drain path reads the same in both builds. */
+#include "sd_store.h"
 #include "battery.h"
 #include "led.h"
 #include <zephyr/bluetooth/hci.h>
@@ -493,6 +496,9 @@ static int cmd_stream(const struct shell *sh, size_t argc, char **argv)
     if (argv[1][0] == 'o' && argv[1][1] == 'f') {
         g_state.streaming = 0;
     }
+    if (!g_state.streaming) {
+        sd_store_flush();       /* see on_double_tap() */
+    }
     ble_audio_apply_conn_params(g_state.streaming);
     ble_audio_publish_info();
     led_state();
@@ -607,6 +613,25 @@ static void print_fault(const struct shell *sh)
 
 static void report_last_fault(void) { print_fault(NULL); }
 
+static int cmd_cardls(const struct shell *sh, size_t argc, char **argv)
+{
+    ARG_UNUSED(argc); ARG_UNUSED(argv);
+    sd_store_list(sh);
+    return 0;
+}
+
+static int cmd_card(const struct shell *sh, size_t argc, char **argv)
+{
+    ARG_UNUSED(argc); ARG_UNUSED(argv);
+    struct sd_store_stats st;
+    sd_store_get_stats(&st);
+    shell_print(sh, "card ready=%d frames=%u bytes=%u files=%u",
+                sd_store_ready(), st.frames, st.bytes, st.files);
+    shell_print(sh, "  write errors=%u worst write=%u ms last err=%d",
+                st.write_errs, st.worst_ms, st.last_err);
+    return 0;
+}
+
 static int cmd_button(const struct shell *sh, size_t argc, char **argv)
 {
     ARG_UNUSED(argc); ARG_UNUSED(argv);
@@ -647,6 +672,8 @@ SHELL_STATIC_SUBCMD_SET_CREATE(boswell_cmds,
     SHELL_CMD(tap, NULL, "Set double-tap threshold (0-31)", cmd_tap),
     SHELL_CMD(taps, NULL, "Show tap counters", cmd_taps),
     SHELL_CMD(button, NULL, "Show push-button counters", cmd_button),
+    SHELL_CMD(card, NULL, "Show what has been written to the card", cmd_card),
+    SHELL_CMD(cardls, NULL, "List recordings on the card and check them", cmd_cardls),
     SHELL_CMD(steps, NULL, "Show step count, or 'steps reset'", cmd_steps),
     SHELL_CMD(unpair, NULL, "Forget every paired host", cmd_unpair),
     SHELL_CMD(adv, NULL, "Force advertising to restart", cmd_adv),
@@ -754,6 +781,9 @@ static void on_ctrl_locked(uint8_t op, uint8_t arg)
     switch (op) {
     case CTRL_STREAM:
         g_state.streaming = arg != 0;
+        if (!g_state.streaming) {
+            sd_store_flush();   /* see on_double_tap() */
+        }
         ble_audio_apply_conn_params(g_state.streaming);
         break;
     case CTRL_RATE:         g_state.use16k = arg != 0;    break;
@@ -803,6 +833,8 @@ static void on_ctrl_locked(uint8_t op, uint8_t arg)
 
 static void qspi_alive(void) { watchdog_checkin(WDT_QSPI); }
 
+static int drain_to_host(const uint8_t *rec, uint16_t len);
+
 /* Hands one replayed record to the link, from the writer thread.
  *
  * The frame is stamped as coming from flash on the way out. Replayed frames
@@ -810,6 +842,74 @@ static void qspi_alive(void) { watchdog_checkin(WDT_QSPI); }
  * tell them from live audio sees the sequence jump backwards and reports
  * nonsense packet loss. Flags are not part of the ADPCM state, so setting
  * the bit here cannot affect decoding. */
+/* Where a buffered record goes: the radio if it will take it, the card if the
+ * ring is filling up, and otherwise nowhere yet.
+ *
+ * The obvious version -- radio if connected, card if not -- is wrong, and
+ * quietly so. It would put audio on the card the moment you walked into the
+ * next room, and anything on the card needs the device docked to collect it.
+ * Walking away for thirty seconds would turn a gap that used to heal itself
+ * on reconnect into one that waits for a cable.
+ *
+ * So the ring keeps doing what it already did well. It holds 4.4 minutes,
+ * which covers the kitchen, the garden, and most of a phone call, and on
+ * reconnect all of that replays over the radio. The card is what happens when
+ * the absence is longer than the ring can hold: past the spill mark, the
+ * oldest records go to the card to make room, and the newest stay in flash
+ * where they can still come back live.
+ *
+ * The ordering falls out correctly on its own. The ring drains oldest first,
+ * so what spills is always older than what remains, and a day out of range
+ * ends with the morning on the card and the last few minutes still able to
+ * arrive over the air the moment you are back.
+ */
+
+/* Spill at three quarters rather than at the brim. A card write is not
+ * instant -- 16 KB batches, and the card may stall on its own housekeeping
+ * for a hundred milliseconds or more -- so the spill has to start while there
+ * is still room to keep capturing into. */
+#define SPILL_AT_PERCENT 75
+
+static bool ring_needs_spilling(void)
+{
+    uint32_t cap = qspi_store_capacity();
+    if (cap == 0) {
+        return false;
+    }
+    return qspi_store_pending() > (cap / 100) * SPILL_AT_PERCENT;
+}
+
+static int drain_record(const uint8_t *rec, uint16_t len)
+{
+    /* Cheap, and a no-op unless something actually changed. One file
+     * describes one format, so switching rate or codec mid-recording has to
+     * start a new one rather than leave the host decoding the back half of a
+     * file with the front half's header. */
+    sd_store_format(
+#ifdef CONFIG_BOSWELL_OPUS
+        PROTO_CODEC_OPUS,
+#else
+        PROTO_CODEC_ADPCM,
+#endif
+        g_state.use16k ? 16000 : 8000, ble_audio_boot_id());
+
+    if (ble_audio_ready()) {
+        return drain_to_host(rec, len);
+    }
+    if (sd_store_ready() && ring_needs_spilling()) {
+        return sd_store_write(rec, len);
+    }
+    /* Neither -- leave it where it is. Not an error: this is the ordinary
+     * state of a device recording while out of range with room to spare. */
+    return 0;
+}
+
+/* Asked before a record is popped, because popping is irreversible. */
+static bool drain_ready(void)
+{
+    return ble_audio_ready() || (sd_store_ready() && ring_needs_spilling());
+}
+
 static int drain_to_host(const uint8_t *rec, uint16_t len)
 {
     /* Too small or too large to be a frame. Not a transient condition, so
@@ -836,6 +936,13 @@ static int drain_to_host(const uint8_t *rec, uint16_t len)
 static void on_double_tap(void)
 {
     g_state.streaming = !g_state.streaming;
+    if (!g_state.streaming) {
+        /* Stopping is when a batch that is still in RAM has to reach the
+         * card. Up to 16 KB -- about four seconds -- would otherwise sit
+         * there until the next spill, and be lost if the device is put down
+         * and the battery runs out. */
+        sd_store_flush();
+    }
     /* Only here. The host adopts the device's state when this moves, so any
      * other writer would make a lost command look like somebody's decision. */
     g_state.tap_seq++;
@@ -1489,7 +1596,7 @@ int main(void)
     err = ble_audio_init(on_ctrl);
     LOG_INF("ble_audio_init -> %d", err);
 
-    qspi_store_set_drain(drain_to_host, ble_audio_ready);
+    qspi_store_set_drain(drain_record, drain_ready);
     qspi_store_set_alive_cb(qspi_alive);
     err = cfg_store_init();
     LOG_INF("cfg_store_init -> %d", err);
@@ -1519,6 +1626,7 @@ int main(void)
      * it counting free clusters, and every one of those would be a second the
      * microphone was not running. */
     sd_probe_init();
+    sd_store_init();
 #endif
 
     /* After the drivers exist, so applying a restored value reaches hardware

@@ -23,7 +23,7 @@
 #include <string.h>
 
 #define DISK "SD"
-#define MOUNT "/SD:"
+#define MOUNT SD_MOUNT_POINT
 #define PROBE_FILE MOUNT "/boswell_probe.txt"
 
 #include <zephyr/kernel.h>
@@ -78,6 +78,8 @@ static struct k_work_q  sd_wq;
  * reentrant across threads for the same volume, and two walks of the same
  * allocation table would be a corrupt reading at best. */
 K_MUTEX_DEFINE(sd_lock);
+
+bool sd_mounted(void) { return mounted; }
 static struct sd_status cached;
 static int64_t          cached_at;
 static struct k_work    mount_work;

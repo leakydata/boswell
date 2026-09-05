@@ -46,4 +46,7 @@ int  ble_imu_send(const uint8_t *frame, uint16_t len);
 bool ble_imu_ready(void);
 int  ble_audio_advertise_now(void);
 
+/* Identifies this run. Zero until Bluetooth has started. */
+uint16_t ble_audio_boot_id(void);
+
 #endif

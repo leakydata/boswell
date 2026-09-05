@@ -13,6 +13,8 @@ What is built, and what is waiting on a decision or on hardware.
 | Crash log | fatal errors survive the reset, `boswell fault` | **caught the bug it was written for** |
 | Cursor save | moved off the writer thread onto `qspi-save` | **on hardware**: two backlogs drained while connected, 0 resets |
 | Push button | gesture driver on D7, single press toggles capture | builds; 11 tests; **no switch to press yet** |
+| Card capture | audio spills to FAT files past a 75% ring mark | **on hardware**: 600 KB written, header read back, 0 errors |
+| Card capture | audio spills to FAT files past a 75% ring mark | **on hardware**: 600 KB written, header verified, 0 errors |
 | OTA | `CTRL_DFU` sent from the app, gated on the capability bit | 8 tests; not yet triggered on hardware |
 | Device selection | `BOSWELL_DEVICE` picks a board by address or name | 10 tests |
 | De-duplication | `web/dedup.py`, `boot_id` in every times record | 18 tests; not wired to an ingest path |
@@ -114,30 +116,75 @@ Neither was failing, and neither was a margin worth keeping on a device that
 resets in the field with no console attached. They are 2048 and 1536 now, 61%
 and 60% headroom at the same measured peaks, and `boswell stacks` reports both.
 
-## Waiting on a decision
+## The fork is decided: FAT32
 
-**The capture path onto the card cannot be written yet, because writing it
-chooses the storage format — and the format is the fork.**
+Nathan took FAT, and the reason is the workflow he described before the
+question was ever posed -- open a web page, see what is there, listen to it,
+download it. Raw sectors are the better engineering, and they are what Omi
+ships: even wear, nothing to corrupt when the battery goes. They also make
+the card unmountable, which makes that workflow impossible. Omi chose raw
+because they never intended anyone to plug the device into a computer.
 
-The two branches are not just different ways to move audio off the card;
-they are different things on it:
+The power-loss risk is real and mitigated rather than eliminated: writes are
+batched 16 KB, `fs_sync()` commits the FAT and directory entry after every
+batch, and every path that stops capture flushes. A battery pulled mid-batch
+costs the last few seconds of one file, not the volume.
 
-- **FAT32 + USB mass storage.** Audio lands as files. Dock the device and
-  the host reads them at about 1 MB/s — a day in eleven minutes, with almost
-  no host-side work.
-- **Raw sectors + BLE transfer.** No filesystem to corrupt on power loss, no
-  allocation cost, even wear. This is what Omi's production firmware does,
-  and it rules out mounting the card as a disk, so every byte has to come
-  off over the radio.
+## Phase 02 is built and measured
 
-There is no format that keeps both options open: a raw-sector ring is not
-mountable, and a FAT volume gives up the power-loss guarantee that is the
-reason to choose raw. Picking one is Nathan's call, and everything after it —
-retention, offload, ingest — follows from it.
+Audio reaches the card. The design that matters is *when*:
 
-What is *not* blocked, and is already done, is the part common to both: the
-card mounts and reports itself, and `web/dedup.py` answers "do I already
-have this audio" from `(boot_id, device_ms)` regardless of how it arrived.
+- **Radio first.** Anything the host can take live goes over the air,
+  because that becomes a conversation now rather than at the end of the day.
+- **The ring is not bypassed.** The obvious version -- radio if connected,
+  card if not -- would put audio on the card the moment you walked into the
+  next room, turning a gap that used to heal itself on reconnect into one
+  that waits for a cable. The 2 MB ring goes on covering short absences.
+- **The card is the overflow.** Past 75% of the ring, the *oldest* records
+  spill to files to make room. The ordering falls out correctly on its own:
+  the ring drains oldest-first, so a day out of range ends with the morning
+  on the card and the last few minutes still able to arrive live.
+
+Files are `/SD:/boswell/b<bootid>_<nnnn>.bwl`, capped at 1 MB (about four
+minutes of Opus), each opening with
+
+    "BSWL" | ver:u8 | codec:u8 | rate:u16 | boot_id:u32 | reserved:u32
+
+and then repeating `len:u16 | payload[len]`. The payload is a whole proto
+frame, byte for byte as the radio would have carried it, so the host decodes
+a docked file with the same code that decodes a live one. `boot_id` is in
+the header because it is half the de-duplication key `web/dedup.py` already
+uses -- `device_ms` restarts at zero every boot and cannot place a file on
+its own.
+
+**Measured on hardware**, with the spill mark temporarily dropped to 2% so it
+could be reached in three minutes rather than after a day of talking:
+
+| | |
+|---|---|
+| written | 600,335 bytes over ~200 s |
+| write errors | 0 |
+| worst single write | 203 ms -- the card stall the ring exists to absorb |
+| ring while spilling | held flat at the mark, never grew |
+| file read back | `ok, codec=20 rate=16000 boot=e9cd` |
+
+`boswell card` reports what has been written; `boswell cardls` lists the
+files and validates each header, because "the frame counter went up" is not
+the same as "there is a readable recording on the card".
+
+## Still ahead on the card
+
+- **03 timestamps.** Files are named by boot id and sequence. A recording
+  made at 3 a.m. on a walk still only knows it happened N minutes after
+  boot; the host has to send wall-clock on connect and the device store the
+  offset.
+- **04 retention.** Nothing deletes anything yet. 14.9 GB is about 23 days
+  at the Opus rate, and after that the card fills and writes start failing.
+- **05 offload.** USB mass storage, now that the format is FAT. The files
+  exist and there is no way to get them off except the shell listing.
+- **06 ingest.** `web/dedup.py` has 18 tests and still nothing calls it,
+  because there is no path that brings a file in.
+
 
 ## Waiting on hardware
 
@@ -181,7 +228,7 @@ BUILD_DIR=/tmp/boswell-full-build \
 ```
 
 The plain image size is the check that none of the card or codec work leaked
-into the build the wearable runs. The baseline is **571,392 bytes** as of the push button.
+into the build the wearable runs. The baseline is **571,904 bytes** as of the card store.
 
 It has moved five times, deliberately. From 571,392 for the saver thread and
 its stack report, which any build with a backlog benefits from. Before that

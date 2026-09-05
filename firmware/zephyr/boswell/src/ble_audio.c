@@ -84,6 +84,16 @@ static bool advertising;
 static uint32_t idle_arms, idle_fires, idle_drops;
 /* Identifies this boot, so the host can tell the device clock restarted. */
 static uint16_t boot_id;
+
+/* Which boot this is, for anything that has to tell one run from another.
+ *
+ * The host keys de-duplication on (boot_id, device_ms): device_ms restarts at
+ * zero every boot, so on its own it cannot say whether two frames are the
+ * same moment or two different days. Card files carry it in their header for
+ * the same reason -- a file collected at the dock has to be placed against
+ * the audio that already arrived over the radio.
+ */
+uint16_t ble_audio_boot_id(void) { return boot_id; }
 static void idle_link_fn(struct k_work *work);
 static K_WORK_DELAYABLE_DEFINE(idle_link, idle_link_fn);
 static bool notify_enabled;
