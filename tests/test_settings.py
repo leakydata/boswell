@@ -70,3 +70,44 @@ def test_it_loads_on_open_rather_than_polling():
     html = read("web/static/index.html")
     assert 'if (which === "set") loadSettings();' in html
     assert "setInterval(loadSettings" not in html
+
+
+# ------------------------------------------------- how the archive knows
+#
+# A recorder that stamped its own name into a file is not the same kind of
+# fact as somebody concluding afterwards which device it must have been. An
+# archive that cannot tell those apart has quietly lost the ability to say
+# how it knows anything.
+
+def test_an_inferred_attribution_is_marked_as_such():
+    src = read("host/backfill_device.py")
+    assert 'rec["device_id_inferred"] = True' in src
+
+
+def test_the_originals_are_copied_before_they_are_rewritten():
+    # Three thousand small rewrites is exactly the shape of operation that is
+    # fine until it is not, and the times records are the only account of
+    # when this audio happened.
+    src = read("host/backfill_device.py")
+    fn = src[src.index("def main("):]
+    assert "shutil.copytree" in fn
+    assert fn.index("copytree") < fn.index('rec["device_id"] = args.device')
+
+
+def test_the_backfill_does_nothing_unless_asked():
+    src = read("host/backfill_device.py")
+    assert '"--write"' in src
+    assert "dry run" in src
+
+
+def test_a_named_clip_is_never_overwritten():
+    # Only clips with no recorder at all are touched. A device that said who
+    # it was outranks anything concluded later.
+    src = read("host/backfill_device.py")
+    assert 'if rec.get("device_id"):' in src
+
+
+def test_the_count_reaches_the_interface():
+    assert '"inferred"' in read("web/server.py")
+    html = read("web/static/index.html")
+    assert "attributed `" in html and "not recorded at the time" in html

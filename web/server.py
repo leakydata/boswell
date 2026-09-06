@@ -1837,8 +1837,15 @@ async def api_devices():
             key = r.get("device_id") or ""
             d = seen.setdefault(key, {"device_id": key or None, "clips": 0,
                                       "seconds": 0.0, "first": None,
-                                      "last": None, "sources": {}})
+                                      "last": None, "sources": {},
+                                      "inferred": 0})
             d["clips"] += 1
+            # A recorder that stamped its own name into a file is not the
+            # same kind of fact as somebody concluding afterwards which
+            # device it must have been. Counted separately so the archive can
+            # still say how it knows.
+            if r.get("device_id_inferred"):
+                d["inferred"] += 1
             d["seconds"] += float(r.get("seconds") or 0)
             src = r.get("source") or "?"
             d["sources"][src] = d["sources"].get(src, 0) + 1

@@ -6252,6 +6252,19 @@ async function loadSettings(){
       + ` · last ${ago(dev.last)}` + (how ? ` · ${how}` : "");
 
     row.append(title, sub);
+
+    // Said out loud rather than left in the file. These clips predate
+    // recorders being named, so which device made them was concluded from
+    // there having been only one -- true, and a different kind of true from
+    // a device having written its own name down.
+    if (dev.inferred){
+      const note = document.createElement("div");
+      note.className = "note";
+      note.style.opacity = ".75";
+      note.textContent = `${dev.inferred.toLocaleString()} of those attributed `
+        + `afterwards, not recorded at the time`;
+      row.appendChild(note);
+    }
     el.appendChild(row);
   }
   if (!el.children.length) el.innerHTML = "<p class=note>nothing recorded yet</p>";
