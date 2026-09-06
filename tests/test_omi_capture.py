@@ -407,3 +407,42 @@ def test_the_page_cannot_write_to_the_omi_itself():
     # request left in a file rather than a write.
     src = read_file("web/server.py")
     assert "omi_wanted.json" in src
+
+
+def test_a_setting_is_carried_out_once():
+    """The request file is consumed, not left standing.
+
+    Left in place it is reasserted on every reconnection, so a change made
+    once quietly outlives the moment it was made -- and nothing in the
+    interface shows that, because the interface shows only what the device
+    currently holds.
+    """
+    import importlib, json as _json, tempfile
+    sys.path.insert(0, os.path.join(HERE, "..", "host"))
+    import omid
+
+    tmp = tempfile.mkdtemp()
+    omid.WANTED = os.path.join(tmp, "omi_wanted.json")
+    with open(omid.WANTED, "w") as f:
+        _json.dump({"id": 5.0, "mic_gain": 6}, f)
+
+    assert omid.read_wanted()["id"] == 5.0
+    omid.clear_wanted(5.0)
+    assert omid.read_wanted() is None, "the request survived being applied"
+
+
+def test_a_newer_request_is_not_swallowed_by_an_older_one_completing():
+    # A change written between reading the file and finishing the write to
+    # the device must not be dropped by the older one tidying up after
+    # itself.
+    import json as _json, tempfile
+    sys.path.insert(0, os.path.join(HERE, "..", "host"))
+    import omid
+
+    tmp = tempfile.mkdtemp()
+    omid.WANTED = os.path.join(tmp, "omi_wanted.json")
+    with open(omid.WANTED, "w") as f:
+        _json.dump({"id": 9.0, "mic_gain": 8}, f)
+
+    omid.clear_wanted(5.0)          # the older request finishing
+    assert omid.read_wanted()["id"] == 9.0, "the newer request was dropped"

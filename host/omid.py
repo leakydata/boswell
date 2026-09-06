@@ -75,6 +75,29 @@ def read_wanted():
     return d if isinstance(d, dict) and d.get("id") is not None else None
 
 
+def clear_wanted(applied_id):
+    """Consume the request, so it is carried out once and not again.
+
+    Left in place it becomes a standing wish, reasserted on every
+    reconnection. That has an argument for it -- a device that rebooted to
+    its defaults gets your settings back -- but it also means a change made
+    once quietly outlives the moment it was made, and there is no way to see
+    that from the interface, which shows only what the device currently
+    holds.
+
+    Only removed if the file still names the request that was applied: a
+    newer one may have been written between reading and getting here, and
+    deleting that would drop a change nobody carried out.
+    """
+    still = read_wanted()
+    if not still or still.get("id") != applied_id:
+        return
+    try:
+        os.remove(WANTED)
+    except OSError:
+        pass
+
+
 async def one_session(address, quiet=False):
     """Catch up, then stream, until the link goes."""
     device_id = omi_capture.norm_id(address)
@@ -161,12 +184,6 @@ async def one_session(address, quiet=False):
     # the device already has is still an instruction that completes -- the
     # interface is waiting to hear that it took, and "no change needed" looks
     # exactly like "never arrived" to whoever is watching the slider.
-    #
-    # Per session, deliberately. The request file is a standing wish rather
-    # than a one-shot, so the settings are asserted again on every
-    # reconnection -- which is what you want on a device that may have
-    # rebooted back to its defaults in between, and is how the other recorder
-    # already treats its own remembered preferences.
     applied = {"id": None}
 
     async def on_tick(client):
@@ -182,6 +199,7 @@ async def one_session(address, quiet=False):
         stats.update(got)
         stats["applied_id"] = want["id"]
         print(f"applied {got or 'nothing'} (request {want['id']})", flush=True)
+        clear_wanted(want["id"])
 
     beat = {"clips": 0, "frames": 0}
     pulse = asyncio.create_task(heartbeat())
