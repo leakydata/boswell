@@ -20,6 +20,7 @@ import numpy as np
 
 import compute
 import secrets_store
+import asr_openai
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.abspath(os.path.join(HERE, "..", "data"))
@@ -1086,6 +1087,13 @@ class Worker:
         # no reason for the risk.
         if self._asr is not None:
             return
+        if self.transcriber() == "openai" and not getattr(self, "_asr_forced", False):
+            # Nothing local is transcribing, so do not spend a card's worth of
+            # memory and twenty seconds loading a model to sit idle. The point
+            # of the cloud path is the machine that cannot hold this model at
+            # all. Diarization and sound tagging still load below.
+            self._load_helpers()
+            return
         self.notify("log",
                     text="loading transcription models (first run, ~20s)")
         import whisperx
@@ -1137,6 +1145,13 @@ class Worker:
             vad_options={"vad_onset": 0.200, "vad_offset": 0.150})
         self._align = whisperx.load_align_model(language_code="en",
                                                 device=compute.ASR_DEVICE)
+        self._load_helpers()
+
+    def _load_helpers(self):
+        """Diarization and sound tagging: the models that are needed whether
+        or not the words come from this machine."""
+        if self._diar is not None or self._sound is not None:
+            return
         # The environment first, then whatever was entered in Settings, so a
         # key typed into the interface works without editing a dotfile -- and
         # an existing .env keeps working unchanged.
@@ -1282,16 +1297,47 @@ class Worker:
                 break
         return out
 
+    def _words(self, path, audio):
+        """Segments with words, however they were produced.
+
+        The cloud path returns word timings of its own, so the local
+        alignment pass is skipped there -- on a CPU that is the second
+        slowest stage, and paying for it twice would be pointless.
+
+        A failure out here never costs audio. The clip is on disk either way,
+        and falling back to the local model is slower than the network but
+        always available; refusing to transcribe because an API was down
+        would turn a paid convenience into a way to lose a conversation.
+        """
+        import whisperx
+        if self.transcriber() == "openai":
+            try:
+                return asr_openai.transcribe(path)
+            except asr_openai.Unavailable as e:
+                self.notify("log", text=f"OpenAI: {e} — using the local model")
+                # Only now is the local model worth its memory.
+                self._asr_forced = True
+                self._load()
+        res = self._asr.transcribe(audio, batch_size=16)
+        model_a, meta = self._align
+        return whisperx.align(res["segments"], model_a, meta, audio,
+                              compute.ASR_DEVICE)
+
+    def transcriber(self):
+        """Which one to use. Read per clip rather than cached, so changing it
+        in Settings takes effect on the next recording and not on the next
+        restart."""
+        if getattr(self, "_transcriber", "local") != "openai":
+            return "local"
+        return "openai" if asr_openai.available() else "local"
+
     def _process(self, clip):
         import whisperx
         self._load()
         path = os.path.join(DATA, clip)
         audio = normalise(whisperx.load_audio(path))
 
-        res = self._asr.transcribe(audio, batch_size=16)
-        model_a, meta = self._align
-        res = whisperx.align(res["segments"], model_a, meta, audio,
-                             compute.ASR_DEVICE)
+        res = self._words(path, audio)
 
         names, embeddings = {}, {}
         if self._diar is not None:

@@ -69,6 +69,8 @@ import agent_runner
 import index_db
 import recorders
 import secrets_store
+import asr_openai
+import compute
 
 # BlueZ runs one discovery at a time and refuses the second outright
 # ("Operation already in progress"). The reconnect loop below scans every
@@ -141,7 +143,8 @@ NEVER_ENROL_NAMES = ("Someone else", "Not speech")
 PREF_KEYS = ("armed", "vad", "backlog_mode", "gain", "led_level", "led_mode",
         "tap_enabled", "tap_thresh",
              "fast_charge", "mic_power_save", "rate16",
-             "agent_enabled", "agent_model", "agent_idle_seconds")
+             "agent_enabled", "agent_model", "agent_idle_seconds",
+             "transcriber")
 
 
 def load_prefs():
@@ -1403,6 +1406,10 @@ if "agent_idle_seconds" in PREFS:
 worker = pipeline.Worker(
     notify=lambda kind, **kw: device.event(kind, **kw),
     on_transcript=agent.add)
+# Restored, like the other remembered preferences. Without this a choice made
+# in Settings lasted until the next restart and then quietly reverted, which
+# is the failure mode the armed flag already taught this project once.
+worker._transcriber = PREFS.get("transcriber", "local")
 
 
 def clip_info(name):
@@ -1973,6 +1980,41 @@ def _recorder_rows(rows=None):
                 and device.state.get("connected")))
         out.append(r)
     return out
+
+
+@app.get("/api/transcriber")
+async def api_transcriber():
+    """Which transcriber is in use, and what each one would cost you."""
+    want = PREFS.get("transcriber", "local")
+    have_key = asr_openai.available()
+    return {
+        "chosen": want,
+        "in_use": worker.transcriber(),
+        "openai_ready": have_key,
+        # Said plainly, because the whole reason to reach for the cloud is a
+        # machine that cannot keep up, and this only fixes half of that.
+        "note": ("Diarization still runs on this machine either way, and on a "
+                 "CPU it is the slower half: about 0.47x realtime against "
+                 "2.6x for local transcription. Sending the words out makes "
+                 "them keep up; it does not make the speakers keep up."),
+        "device": compute.describe(),
+    }
+
+
+@app.post("/api/transcriber")
+async def api_set_transcriber(body: dict):
+    want = (body.get("transcriber") or "").strip()
+    if want not in ("local", "openai"):
+        raise HTTPException(400, "transcriber must be local or openai")
+    if want == "openai" and not asr_openai.available():
+        raise HTTPException(400, "no OpenAI key — Settings → API keys")
+    PREFS["transcriber"] = want
+    save_prefs(PREFS)
+    # Read per clip by the worker, so this takes effect on the next recording
+    # rather than on the next restart.
+    worker._transcriber = want
+    device.event("log", text=f"transcribing with the {want} model")
+    return {"ok": True, "chosen": want, "in_use": worker.transcriber()}
 
 
 @app.get("/api/secrets")

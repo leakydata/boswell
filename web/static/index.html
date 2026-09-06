@@ -1542,6 +1542,11 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
     </div>
 
     <div class="card">
+      <h2>Transcription</h2>
+      <div id="settrans"><p class="note">loading…</p></div>
+    </div>
+
+    <div class="card">
       <h2>API keys</h2>
       <p class="note">Kept on this machine, in <code>data/secrets.json</code>,
         readable only by you. A key entered here is never sent back to this
@@ -6714,6 +6719,67 @@ function hours(sec){
  * exists, where it came from and its last four characters. A page that can
  * read a key back is a page that can leak one.
  */
+/* Where the words come from. Deliberately says what the cloud option does
+   not fix, because the reason to reach for it is a machine that cannot keep
+   up and it only fixes half of that. */
+async function loadTranscriber(){
+  const el = $("settrans");
+  let t;
+  try{ t = await (await fetch("/api/transcriber")).json(); }
+  catch(e){ el.innerHTML = "<p class=note>could not read this setting</p>"; return; }
+
+  el.innerHTML = "";
+  const choose = (value, label, help, ok) => {
+    const row = document.createElement("div");
+    row.className = "keyrow";
+    const on = t.chosen === value;
+    row.innerHTML =
+      `<div class="top"><b>${esc(label)}</b>${
+         on ? '<span class="lbl all">in use</span>' : ""}${
+         !ok ? '<span class="lbl unk">needs a key</span>' : ""}</div>
+       <p class="note">${esc(help)}</p>`;
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = on ? "Selected" : "Use this";
+    b.disabled = on || !ok;
+    if (!on) b.className = "pri";
+    b.onclick = async () => {
+      b.disabled = true;
+      try{
+        const r = await fetch("/api/transcriber", {method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({transcriber: value})});
+        if (!r.ok) throw new Error((await r.json()).detail || "refused");
+        await loadTranscriber();
+      }catch(e){ log("could not switch: " + e.message); b.disabled = false; }
+    };
+    row.appendChild(b);
+    el.appendChild(row);
+  };
+
+  choose("local", "On this machine",
+         "Whisper, running here. Nothing leaves the machine. " + t.device, true);
+  choose("openai", "OpenAI",
+         "whisper-1, over the network. Audio is sent to OpenAI — the only "
+         + "part of this project where that is true. Chosen because it is "
+         + "the model that returns word timings, without which no voice can "
+         + "be named.", t.openai_ready);
+
+  const note = document.createElement("p");
+  note.className = "note";
+  note.style.marginTop = "12px";
+  note.textContent = t.note;
+  el.appendChild(note);
+
+  if (t.chosen !== t.in_use){
+    const warn = document.createElement("p");
+    warn.className = "note";
+    warn.style.color = "var(--warn)";
+    warn.textContent = `Chosen: ${t.chosen}. Actually in use: ${t.in_use}.`;
+    el.appendChild(warn);
+  }
+}
+
 async function loadKeys(){
   const el = $("setkeys");
   let keys;
@@ -6768,6 +6834,8 @@ async function loadKeys(){
           body: JSON.stringify({name: k.name, value})});
         box.value = "";
         await loadKeys();
+        // A key that has just arrived can unlock the cloud option above.
+        loadTranscriber();
       }catch(e){ log("could not save that key"); save.disabled = false; }
     };
     save.onclick = () => { if (box.value.trim()) send(box.value); };
@@ -6798,6 +6866,7 @@ async function loadSettings(){
   // First, and not behind the fetch below: the archive failing to load is no
   // reason to leave somebody unable to enter the key that would fix it.
   loadKeys();
+  loadTranscriber();
   let d;
   try { d = await (await fetch("/api/devices")).json(); }
   catch(e){ $("setdevices").innerHTML = "<p class=note>could not read the archive</p>"; return; }

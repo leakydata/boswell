@@ -32,6 +32,30 @@ model, pyannote diarization and the AST sound tagger all resident:
 The device is chosen for you: CUDA, else Apple MPS, else the CPU. Override with
 `BOSWELL_TORCH_DEVICE`, `BOSWELL_ASR_MODEL`, `BOSWELL_COMPUTE_TYPE`.
 
+### Transcribing somewhere else
+
+**Settings → Transcription.** Without an NVIDIA card the local model runs at
+0.79× realtime — slower than the microphone produces audio — so the audio can
+be sent to OpenAI instead.
+
+It fixes half the problem, and the interface says which half. **Diarization
+still runs on your machine either way**, and on a CPU it is the slower stage:
+0.47× realtime against 2.6× for local transcription. Sending the words out
+makes the words keep up; it does not make the speakers keep up. A machine with
+no GPU and no Hugging Face token gets transcripts quickly, with nobody named.
+
+The model is `whisper-1` and not the newer gpt-4o transcription models,
+because it is the one that returns **word timings**. Speakers are assigned to
+words, so a transcript without them cannot carry speaker labels at all —
+choosing the newer model would quietly cost every name in the archive. Word
+timings also mean the local alignment pass is skipped, and the local Whisper
+model is never loaded at all, which is the point on a machine that cannot hold
+it.
+
+If OpenAI is unreachable or refuses the key, the clip falls back to the local
+model rather than being lost. Audio is only sent when this is switched on;
+it is the one part of this project where anything leaves the machine.
+
 ### API keys
 
 **Settings → API keys.** Entered in the interface and kept in
