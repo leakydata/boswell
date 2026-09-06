@@ -893,9 +893,14 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
       <h2>Recordings on the device</h2>
       <div class="row" style="align-items:center">
         <span class="val" id="recv" style="flex:1;text-align:left;min-width:0">—</span>
+        <button type="button" id="rechide" hidden style="flex:none">Hide</button>
         <button type="button" id="recbtn" style="flex:none">Look</button>
       </div>
-      <div id="reclist" hidden style="margin-top:10px"></div>
+      <!-- Bounded on purpose: a fortnight of wear is 137 recordings, and an
+           unbounded list pushes everything under it off the screen with rows
+           that mostly say "already have it". -->
+      <div id="reclist" hidden
+           style="margin-top:10px;max-height:38vh;overflow-y:auto"></div>
       <div id="recnote" hidden>
         <p class="note">What the device recorded while it was away from the
           computer. Plugged in, they come off as fast as the cable allows and
@@ -6133,24 +6138,54 @@ let recRoute = null;
 // the complaint this whole section exists to answer.
 let recAskAgain = false;
 
+// Whether the list is on screen. Remembered, because the answer after a full
+// import is "no" -- every row says "already have it" and the useful line is
+// the summary above it.
+let recShown = false;
+try { recShown = localStorage.getItem("boswell_reclist") === "1"; } catch(e){}
+
+let recFiles = null;
+
+function recSetShown(on){
+  recShown = !!on;
+  try { localStorage.setItem("boswell_reclist", recShown ? "1" : "0"); } catch(e){}
+  const have = !!(recFiles && recFiles.length);
+  $("reclist").hidden = !(recShown && have);
+  $("rechide").hidden = !have;
+  $("rechide").textContent = recShown ? "Hide" : "Show";
+}
+
 function recRender(files, route){
+  recFiles = files || [];
   const el = $("reclist");
-  el.hidden = false;
   el.innerHTML = "";
-  if (!files || !files.length){
+
+  if (!recFiles.length){
     el.textContent = "nothing recorded yet";
+    el.hidden = false;
+    $("rechide").hidden = true;
     return;
   }
-  for (const f of files){
+
+  // Anything still to fetch comes first. After a full import every row is
+  // one somebody already has, and burying the two that are not under a
+  // hundred that are is the whole problem with an unsorted list.
+  const order = [...recFiles].sort((a, b) => (a.ingested === b.ingested)
+    ? a.name.localeCompare(b.name)
+    : (a.ingested ? 1 : -1));
+
+  for (const f of order){
     const row = document.createElement("div");
     row.style.cssText = "display:flex;gap:8px;align-items:center;padding:2px 0";
     const nm = document.createElement("span");
-    nm.style.cssText = "font-family:var(--mono);flex:1";
+    nm.style.cssText = "font-family:var(--mono);flex:1;min-width:0;"
+                     + "overflow:hidden;text-overflow:ellipsis";
     nm.textContent = `${f.name}  ${Math.round(f.size / 1024)} kB`;
+    if (f.ingested) nm.style.opacity = ".55";
     const b = document.createElement("button");
     b.className = "sound";
     if (f.ingested){
-      b.textContent = "already have it";
+      b.textContent = "have it";
       b.disabled = true;
     } else {
       b.textContent = "Import";
@@ -6160,7 +6195,10 @@ function recRender(files, route){
     row.appendChild(b);
     el.appendChild(row);
   }
+  recSetShown(recShown);
 }
+
+$("rechide").onclick = () => recSetShown(!recShown);
 
 async function recPoll(ask){
   if (recBusy){
@@ -6196,6 +6234,10 @@ async function recPoll(ask){
         ? `${n} recording${n===1?"":"s"}, ${fresh} new — ${how}`
         : `nothing on the card — ${how}`;
       recRender(r.files, r.route);
+      // Asking explicitly means wanting to see it. A background poll that
+      // happens to find the same files must not reopen a list somebody just
+      // closed.
+      if (ask) recSetShown(true);
       // "Look" once the list is already on screen reads as though nothing
       // happened when it is pressed. The button says what pressing it does.
       const bulk = r.route === "usb" && fresh > 0;

@@ -168,3 +168,34 @@ def test_a_press_during_a_poll_is_not_thrown_away():
     fn = html[html.index("async function recPoll(ask){"):]
     fn = fn[:fn.index("\n}")]
     assert "if (ask) recAskAgain = true;" in fn
+
+
+def test_the_list_can_be_put_away_again():
+    # A fortnight of wear is 137 recordings. Expanding that with no way to
+    # collapse it pushes everything under it off the screen.
+    html = read(INDEX)
+    assert 'id="rechide"' in html
+    assert "function recSetShown(" in html
+    assert '$("rechide").onclick' in html
+
+
+def test_the_list_is_bounded_and_scrolls():
+    html = read(INDEX)
+    block = html[html.index('id="reclist"'):]
+    block = block[:block.index(">")]
+    assert "max-height" in block and "overflow-y" in block
+
+
+def test_what_is_not_yet_held_is_listed_first():
+    # After a full import every row says "have it", and burying the two that
+    # do not under a hundred that do is the whole problem with an unsorted
+    # list.
+    html = read(INDEX)
+    fn = html[html.index("function recRender("):]
+    fn = fn[:fn.index("\n}")]
+    assert "a.ingested === b.ingested" in fn
+
+
+def test_a_background_poll_does_not_reopen_a_closed_list():
+    html = read(INDEX)
+    assert "if (ask) recSetShown(true);" in html
