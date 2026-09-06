@@ -421,6 +421,16 @@ def device_counts():
              "first": r["first"], "last": r["last"]} for r in rows]
 
 
+def last_clip_for(device_id):
+    """When this recorder last filed anything. The single most useful number
+    when somebody asks why a device stopped: "three hours ago" and "four days
+    ago" are different problems."""
+    r = _conn().execute(
+        "SELECT MAX(COALESCE(started, modified)) t FROM clips WHERE device_id = ?",
+        (device_id,)).fetchone()
+    return r["t"] if r else None
+
+
 def unattributed():
     """How many indexed clips name no recorder, and when they ran.
 

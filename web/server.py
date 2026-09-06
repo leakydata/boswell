@@ -1913,15 +1913,30 @@ async def api_envelope(name: str):
     return JSONResponse(out)
 
 
-def _omi_running():
-    """Whether the second recorder's daemon is alive. A daemon that stopped
-    writing is a daemon that is not running, whatever its last line said."""
+# States the daemon reports while it is alive and the device is not there.
+# "lost" and "waiting" are it saying the link went; treating them as connected
+# had a diagnosis panel report a recorder as connected two hours after it
+# stopped recording, which is the exact failure that panel exists to prevent.
+_AWAY = ("not found", "looking", "lost", "waiting", "stopped", "not paired")
+
+
+def _omi_state():
+    """The daemon's own last word, or None if it is not writing at all."""
     try:
         with open(os.path.join(DATA, "omi_status.json")) as f:
             st = json.load(f)
     except (OSError, ValueError):
-        return False
-    return (time.time() - st.get("at", 0)) <= 120 and st.get("state") != "stopped"
+        return None
+    # A daemon that stopped writing is a daemon that is not running, whatever
+    # its last line claimed.
+    if (time.time() - st.get("at", 0)) > 120:
+        return None
+    return st.get("state") or None
+
+
+def _omi_connected():
+    st = _omi_state()
+    return bool(st) and st not in _AWAY
 
 
 def _omi_address():
@@ -1979,7 +1994,7 @@ def _recorder_rows(rows=None):
     for r in (recorders.load(seed=_seed_recorders) if rows is None else rows):
         r = dict(r)
         r["connected"] = bool(
-            (r["kind"] == "omi" and r["id"] == omi_addr and _omi_running())
+            (r["kind"] == "omi" and r["id"] == omi_addr and _omi_connected())
             or (r["kind"] == "boswell" and r["id"] == live
                 and device.state.get("connected")))
         out.append(r)
@@ -2051,6 +2066,92 @@ async def api_set_secret(body: dict):
 async def api_recorders():
     """The recorders this install has, and what each is doing."""
     return {"recorders": _recorder_rows()}
+
+
+@app.post("/api/recorders/diagnose")
+async def api_recorders_diagnose(seconds: float = 8.0):
+    """Why is a recorder not recording? Answered in one press.
+
+    The log said `BleakDeviceNotFoundError` for two hours while a device sat
+    switched off, which is the right fact in the wrong place: it is in a
+    journal, in a library's words, and it does not distinguish "your Bluetooth
+    is off" from "the device is off" from "your phone is holding it". Those
+    have completely different fixes and only one of them is this program's
+    fault.
+    """
+    import shutil
+    import subprocess
+    from bleak import BleakScanner
+
+    checks = []
+
+    # 1. Is there a working radio at all? Everything else is meaningless if
+    #    the adapter is missing or powered down, and that is the one fault a
+    #    person can fix in five seconds.
+    adapter = {"name": "Bluetooth adapter", "ok": None, "detail": ""}
+    if shutil.which("bluetoothctl"):
+        try:
+            out = subprocess.run(["bluetoothctl", "show"], capture_output=True,
+                                 text=True, timeout=8).stdout
+            powered = "Powered: yes" in out
+            name = next((l.split("Controller ")[1].split()[0]
+                         for l in out.splitlines() if "Controller " in l), "")
+            adapter["ok"] = powered
+            adapter["detail"] = (f"{name} is on" if powered
+                                 else "present but switched off — turn "
+                                      "Bluetooth on")
+        except Exception as e:
+            adapter["detail"] = f"could not ask bluetoothctl: {type(e).__name__}"
+    else:
+        adapter["detail"] = "bluetoothctl not installed; skipping this check"
+    checks.append(adapter)
+
+    # 2. Can this program see anything at all? A scan that returns nothing
+    #    when the adapter says it is on means the radio is not really working,
+    #    which is a different fault from a device being away.
+    seen, scan_error = {}, None
+    try:
+        async with SCAN_LOCK:
+            seen = await BleakScanner.discover(
+                timeout=max(2.0, min(20.0, float(seconds))), return_adv=True)
+    except Exception as e:
+        scan_error = f"{type(e).__name__}: {str(e)[:120]}"
+    checks.append({
+        "name": "Scanning", "ok": scan_error is None and bool(seen),
+        "detail": (scan_error if scan_error
+                   else f"{len(seen)} Bluetooth device(s) nearby"
+                        if seen else
+                        "nothing at all was heard, which usually means the "
+                        "radio is not working rather than an empty room"),
+    })
+
+    nearby = {}
+    for dev, adv in (seen or {}).values():
+        nearby[recorders.norm_id(dev.address)] = getattr(adv, "rssi", None)
+
+    # 3. Each recorder this install has, and what is actually wrong with it.
+    out = []
+    for r in _recorder_rows():
+        ident = r["id"]
+        rssi = nearby.get(ident)
+        last = index_db.last_clip_for(ident)
+        if r["connected"]:
+            verdict, fix = "connected", ""
+        elif rssi is not None:
+            verdict = "nearby but not connected"
+            fix = ("It is advertising, so the radio and the device are both "
+                   "fine. The service should pick it up within a minute; if "
+                   "it does not, restart it.")
+        else:
+            verdict = "not advertising"
+            fix = ("Nothing was heard from it. It is switched off, out of "
+                   "range, or already connected to something else — a phone "
+                   "app holds the only connection there is, so disconnect it "
+                   "there first.")
+        out.append({**r, "rssi": rssi, "verdict": verdict, "fix": fix,
+                    "last_clip": last})
+
+    return {"checks": checks, "recorders": out}
 
 
 @app.post("/api/recorders/scan")

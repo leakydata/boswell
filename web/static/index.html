@@ -1145,7 +1145,9 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
       <div id="pairlist"></div>
       <div class="btns" style="margin-top:12px">
         <button type="button" id="bScan">Look for recorders</button>
+        <button type="button" id="bDiag">Why is it not connecting?</button>
       </div>
+      <div id="pairdiag" hidden style="margin-top:12px"></div>
       <div id="pairfound" hidden style="margin-top:12px"></div>
       <p class="note" id="pairnote">Anything paired here gets its own panel
         above. A recorder has to be advertising to be found: an Omi that is
@@ -1946,6 +1948,53 @@ async function loadPaired(){
   // The header names a recorder, so it has to know which ones are ours.
   paintPrimary();
 }
+
+/* Why a recorder is not recording, answered in one press.
+   The journal said BleakDeviceNotFoundError for two hours while a device sat
+   switched off: the right fact, in the wrong place, in a library's words, and
+   not distinguishing "your Bluetooth is off" from "the device is off" from
+   "your phone is holding it". Those have different fixes. */
+on("bDiag", "click", async () => {
+  const b = $("bDiag"), box = $("pairdiag");
+  b.disabled = true; b.textContent = "Checking…";
+  box.hidden = false;
+  box.innerHTML = '<p class="note">Checking the radio and listening for '
+                + 'about eight seconds…</p>';
+  try{
+    const d = await (await fetch("/api/recorders/diagnose?seconds=8",
+                                 {method: "POST"})).json();
+    box.innerHTML = "";
+    for (const c of d.checks || []){
+      const row = document.createElement("div");
+      row.className = "prow";
+      const mark = c.ok === true ? ["all", "ok"]
+                 : c.ok === false ? ["none", "problem"]
+                 : ["unk", "skipped"];
+      row.innerHTML = `<span class="pname"><b>${esc(c.name)}</b>
+        <span class="addr">${esc(c.detail || "")}</span></span>
+        <span class="lbl ${mark[0]}">${mark[1]}</span>`;
+      box.appendChild(row);
+    }
+    for (const r of d.recorders || []){
+      const row = document.createElement("div");
+      row.className = "keyrow";
+      const good = r.verdict === "connected";
+      const ago = r.last_clip
+          ? `last recorded ${ago(r.last_clip)}` : "has never recorded";
+      row.innerHTML =
+        `<div class="top"><b>${esc(r.name || r.id)}</b>
+           <span class="lbl ${good ? "all" : "none"}">${esc(r.verdict)}</span>
+           ${r.rssi != null ? `<span class="addr">${r.rssi} dBm</span>` : ""}
+         </div>
+         <p class="note">${esc(ago)}${r.fix ? " — " + esc(r.fix) : ""}</p>`;
+      box.appendChild(row);
+    }
+  }catch(e){
+    box.innerHTML = '<p class="note">The check could not run. Another scan '
+                  + 'may be going; try again in a few seconds.</p>';
+  }
+  b.disabled = false; b.textContent = "Why is it not connecting?";
+});
 
 on("bScan", "click", async () => {
   const b = $("bScan"), box = $("pairfound");

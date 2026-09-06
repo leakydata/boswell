@@ -173,3 +173,31 @@ def test_a_lost_link_is_not_a_connected_recorder():
     block = html[html.index("connected: !!(s && s.running"):][:400]
     for word in ("lost", "waiting", "not found", "looking", "stopped"):
         assert f'"{word}"' in block, f"{word} still counts as connected"
+
+
+def test_a_live_daemon_is_not_a_connected_device():
+    """The diagnosis panel reported a recorder as connected two hours after
+    it stopped recording, because the check asked whether the daemon was
+    alive. It was -- it was alive and failing to find the device every 25
+    seconds, which keeps the status file fresh."""
+    src = open(os.path.join(os.path.dirname(__file__), "..",
+                            "web", "server.py")).read()
+    assert "_omi_connected" in src
+    block = src[src.index("_AWAY = "):src.index("_AWAY = ") + 200]
+    for word in ("lost", "waiting", "not found", "stopped"):
+        assert f'"{word}"' in block, f"{word} still counts as connected"
+    # And the ambiguous helper is gone rather than left as a footgun.
+    assert "_omi_running" not in src
+
+
+def test_the_diagnosis_separates_the_three_faults():
+    # "your Bluetooth is off", "the device is off" and "your phone is holding
+    # it" have completely different fixes and only one is this program's.
+    src = open(os.path.join(os.path.dirname(__file__), "..",
+                            "web", "server.py")).read()
+    body = src[src.index("async def api_recorders_diagnose"):]
+    body = body[:body.index("@app.post")]
+    assert "bluetoothctl" in body, "no adapter check"
+    assert "nearby but not connected" in body, "advertising is not told apart"
+    assert "not advertising" in body
+    assert "last_clip" in body, "no answer to how long it has been gone"
