@@ -660,6 +660,36 @@ select.speed{min-height:0;padding:5px 26px 5px 9px;font-size:12.5px;
 .labbar .warn{background:color-mix(in srgb,var(--warn) 70%,transparent)}
 .labbar .none{background:color-mix(in srgb,var(--accent) 60%,transparent)}
 
+/* ---- command palette and shortcut dialogs ---- */
+.palettebtn{min-height:0;padding:4px 9px;font-size:12px;flex:none;
+  font-family:var(--mono);color:var(--muted)}
+dialog.centered{border:1px solid var(--rule);border-radius:12px;
+  background:var(--surface);color:var(--ink);padding:14px;
+  width:min(480px, 92vw);max-height:70vh;box-shadow:0 12px 40px #0006}
+dialog.centered::backdrop{background:#0006}
+dialog.centered h3{margin:0 0 8px;font-size:16px}
+#paletteIn{width:100%;font-size:16px;padding:10px 12px;border-radius:8px;
+  border:1px solid var(--rule);background:var(--paper);color:var(--ink)}
+#paletteIn:focus{outline:2px solid var(--accent);outline-offset:-1px}
+#paletteList{margin-top:8px;max-height:46vh;overflow-y:auto}
+.palitem{display:flex;align-items:center;gap:10px;width:100%;text-align:left;
+  min-height:0;padding:9px 11px;border:none;background:none;color:var(--ink);
+  border-radius:7px;font-size:14.5px;justify-content:flex-start}
+.palitem[aria-selected=true]{background:color-mix(in srgb,var(--accent) 16%,transparent)}
+.palitem .pk{margin-left:auto;font-family:var(--mono);font-size:10.5px;
+  color:var(--faint);flex:none}
+.palitem:hover{background:var(--sunk)}
+.palnone{color:var(--muted);font-size:13.5px;padding:10px}
+.palhint{font-family:var(--mono);font-size:11px;color:var(--faint);margin-top:8px}
+.keytable{border-collapse:collapse;width:100%;font-size:13.5px}
+.keytable td{padding:5px 8px;border-bottom:1px solid var(--rule)}
+.keytable td:first-child{white-space:nowrap;font-family:var(--mono);font-size:12px;
+  color:var(--muted)}
+kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
+  border:1px solid var(--rule);border-radius:4px;padding:1px 5px;color:var(--ink)}
+#paletteList .kbd-cursor, .kbd-cursor{outline:2px solid var(--accent);
+  outline-offset:-2px;border-radius:8px}
+
 /* ---- battery sparkline ---- */
 .battspark{margin:10px 0 0}
 .battspark[hidden]{display:none}
@@ -713,6 +743,7 @@ select.speed{min-height:0;padding:5px 26px 5px 9px;font-size:12.5px;
       <span class="pill" id="battState" hidden></span>
       <span class="pill job" id="jobPill" hidden><i></i><b></b></span>
       <span class="ver"><span id="ver">disconnected</span> · build __BUILD__</span>
+      <button type="button" id="paletteBtn" class="palettebtn" title="Command palette (Ctrl+K)">⌘K</button>
       <span class="themesel" role="group" aria-label="Colour theme">
         <button type="button" id="themeLight" data-v="light" aria-pressed="false">Light</button>
         <button type="button" id="themeSys" data-v="system" aria-pressed="true">Auto</button>
@@ -1335,6 +1366,31 @@ select.speed{min-height:0;padding:5px 26px 5px 9px;font-size:12.5px;
 
 <div id="toasts" aria-live="polite"></div>
 
+<dialog id="palette" class="centered" aria-label="Command palette">
+  <input type="text" id="paletteIn" placeholder="Type a command…"
+         autocomplete="off" spellcheck="false" aria-label="Search commands">
+  <div id="paletteList" role="listbox" aria-label="Commands"></div>
+  <div class="palhint"><kbd>↑↓</kbd> choose · <kbd>Enter</kbd> run · <kbd>Esc</kbd> close</div>
+</dialog>
+
+<dialog id="keys" class="centered" aria-label="Keyboard shortcuts">
+  <h3>Keyboard</h3>
+  <table class="keytable">
+    <tr><td><kbd>Ctrl</kbd>/<kbd>⌘</kbd> <kbd>K</kbd></td><td>command palette</td></tr>
+    <tr><td><kbd>/</kbd></td><td>search recordings</td></tr>
+    <tr><td><kbd>g</kbd> then <kbd>d r p n h t</kbd></td><td>go to a section</td></tr>
+    <tr><td><kbd>j</kbd>/<kbd>k</kbd> or <kbd>↓</kbd>/<kbd>↑</kbd></td><td>move through the list in front of you</td></tr>
+    <tr><td><kbd>Enter</kbd></td><td>open the selected row</td></tr>
+    <tr><td><kbd>space</kbd></td><td>play or pause what is open</td></tr>
+    <tr><td><kbd>←</kbd>/<kbd>→</kbd></td><td>scrub the waveform (with <kbd>shift</kbd>: 10 s)</td></tr>
+    <tr><td><kbd>1</kbd> <kbd>2</kbd> <kbd>n</kbd> <kbd>v</kbd> <kbd>i</kbd></td><td>on a voice card: confirm, name, mark media, set aside</td></tr>
+    <tr><td><kbd>Esc</kbd></td><td>stop playback, close dialogs</td></tr>
+  </table>
+  <div class="btns" style="margin-top:12px">
+    <button type="button" class="pri" id="keysClose">Close</button>
+  </div>
+</dialog>
+
 <!-- The editor and the namer are native dialogs: Escape, the backdrop and the
      inert page behind them come from the platform. -->
 <dialog class="sheet" id="editor" aria-labelledby="edT">
@@ -1368,6 +1424,7 @@ select.speed{min-height:0;padding:5px 26px 5px 9px;font-size:12.5px;
 </dialog>
 
 <script>
+
 
 
 
@@ -2725,7 +2782,10 @@ async function loadVoices(){
       voiceCards.push({el: d, card});
       el.appendChild(d);
     }
-    if (voiceCards.length) voiceCards[0].el.classList.add("kbd-target");
+    if (voiceCards.length){
+      voiceCursor = Math.min(voiceCursor, voiceCards.length - 1);
+      voiceCards[voiceCursor].el.classList.add("kbd-target");
+    }
     $("voiceKbdHint").hidden = !voiceCards.length;
     if (!showMedia && !showIgnored) badge("badgePpl", q.length);
   }catch(e){ el.innerHTML = '<div class="empty">could not load voices</div>'; }
@@ -2952,7 +3012,7 @@ addEventListener("keydown", e => {
   const a = document.activeElement;
   if (a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) return;
   if (!voiceCards.length) return;
-  const c = voiceCards[0].card;
+  const c = voiceCards[Math.min(voiceCursor, voiceCards.length - 1)].card;
   if (e.key === " "){
     e.preventDefault();
     c.au.paused ? c.au.play().catch(() => {}) : c.au.pause();
@@ -4013,6 +4073,7 @@ function syncFilterToggle(){
 
 async function loadClips(){
   const el = $("clipList");
+  listCursor = -1;
   syncHash();
   syncFilterToggle();
   try{
@@ -6179,7 +6240,206 @@ for (const m of document.querySelectorAll(".moremenu")){
   });
 }
 
-/* ---- startup: the address bar ----
+/* ---- the command palette ----
+   Every place the interface can take you, and every action it can do,
+   reachable from one input. Built for the moment you know what you want
+   and cannot remember which tab it lives under. */
+const COMMANDS = [
+  {t: "Go to Recordings", k: "archive list", run: () => showTab("rec")},
+  {t: "Go to Device", k: "status live", run: () => showTab("dev")},
+  {t: "Go to People", k: "voices", run: () => showTab("ppl")},
+  {t: "Go to Notes", k: "agent facts tasks", run: () => showTab("notes")},
+  {t: "Go to Heard", k: "sounds", run: () => showTab("heard")},
+  {t: "Go to Clear out", k: "delete junk", run: () => showTab("tidy")},
+  {t: "Search recordings", k: "find", run: () => { showTab("rec"); $("q").focus(); }},
+  {t: "Jump to today", k: "day now", run: () => {
+    dayFilter = dayKey(Date.now() / 1000);
+    dateFilter = "all"; $("fDate").value = "all";
+    resetPages(); showTab("rec"); loadClips(); }},
+  {t: "Theme: light", k: "dark mode", run: () => applyTheme("light")},
+  {t: "Theme: dark", k: "light mode", run: () => applyTheme("dark")},
+  {t: "Theme: follow the system", k: "auto", run: () => applyTheme("system")},
+  {t: "Connect the device", k: "pair", run: () => { showTab("dev"); send({cmd: "connect"}); }},
+  {t: "Disconnect the device", k: "unpair", run: () => { showTab("dev"); send({cmd: "disconnect"}); }},
+  {t: "Start capture", k: "record arm", run: () => { showTab("dev"); send({cmd: "arm", on: true}); }},
+  {t: "Stop capture", k: "pause disarm", run: () => { showTab("dev"); send({cmd: "arm", on: false}); }},
+  {t: "Save a clip now", k: "keep", run: () => { showTab("dev"); send({cmd: "save"}); }},
+  {t: "Refresh recordings", k: "reload", run: () => { showTab("rec"); loadClips(); }},
+  {t: "Transcribe everything waiting", k: "queue all", run: () => { showTab("rec"); $("bAll").click(); }},
+  {t: "Review notes now", k: "agent run", run: () => { showTab("notes"); $("bAgentRun").click(); }},
+  {t: "Scan for new voices", k: "people cluster", run: () => { showTab("ppl"); $("bVoiceScan").click(); }},
+  {t: "Recheck voices against named people", k: "rematch", run: () => { showTab("ppl"); $("bVoiceRecheck").click(); }},
+  {t: "Show or hide the pulse", k: "chart stats", run: () => {
+    showTab("rec"); $("pulseCard").open = !$("pulseCard").open; }},
+];
+
+let palSel = 0, palShown = [];
+
+function palRender(q){
+  const list = $("paletteList");
+  q = q.trim().toLowerCase();
+  palShown = COMMANDS.filter(c => !q
+    || c.t.toLowerCase().includes(q)
+    || (c.k || "").includes(q)).slice(0, 9);
+  palSel = Math.min(palSel, Math.max(0, palShown.length - 1));
+  list.replaceChildren();
+  if (!palShown.length){
+    const d = document.createElement("div");
+    d.className = "palnone";
+    d.textContent = "Nothing matches — try a section name.";
+    list.appendChild(d);
+    return;
+  }
+  palShown.forEach((c, i) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "palitem";
+    b.setAttribute("role", "option");
+    b.setAttribute("aria-selected", String(i === palSel));
+    b.textContent = c.t;
+    b.onclick = () => palRun(c);
+    b.onmousemove = () => { if (palSel !== i){ palSel = i; palPaint(); } };
+    list.appendChild(b);
+  });
+}
+function palPaint(){
+  [...$("paletteList").children].forEach((el, i) =>
+    el.setAttribute("aria-selected", String(i === palSel)));
+  const el = $("paletteList").children[palSel];
+  if (el) el.scrollIntoView({block: "nearest"});
+}
+function palRun(c){
+  $("palette").close();
+  if (c) c.run();
+}
+function palOpen(){
+  $("palette").showModal();
+  $("paletteIn").value = "";
+  palSel = 0;
+  palRender("");
+  setTimeout(() => $("paletteIn").focus(), 30);
+}
+$("paletteIn").addEventListener("input", () => { palSel = 0; palRender($("paletteIn").value); });
+$("paletteIn").addEventListener("keydown", e => {
+  if (e.key === "ArrowDown"){ e.preventDefault(); palSel = Math.min(palSel + 1, palShown.length - 1); palPaint(); }
+  else if (e.key === "ArrowUp"){ e.preventDefault(); palSel = Math.max(palSel - 1, 0); palPaint(); }
+  else if (e.key === "Enter"){ e.preventDefault(); palRun(palShown[palSel]); }
+});
+on("paletteBtn", "click", palOpen);
+on("keysClose", "click", () => $("keys").close());
+
+/* ---- keyboard: one place, context aware ----
+   The interface is daily-driven; reaching for the mouse for the tenth time
+   in an hour is the tax this removes. Guards: never while typing, never
+   while a dialog is up. */
+let gPending = false, gTimer = null;
+let listCursor = -1, voiceCursor = 0;
+
+function typingGuard(){
+  const a = document.activeElement;
+  if (a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) return true;
+  /* The waveform owns its own arrows and space; it is focused on purpose. */
+  if (a === $("wcanvas")) return true;
+  return $("editor").open || $("namer").open || $("palette").open || $("keys").open;
+}
+
+function listRows(){
+  /* The rows in front of you: whatever list the current tab is showing. */
+  if ($("viewRec").hidden) return [];
+  if (!$("detail").hidden || !$("convDetail").hidden) return [];
+  return [...$("clipList").querySelectorAll("button.clip, .conv .ch")];
+}
+
+function paintListCursor(rows){
+  rows.forEach((el, i) => el.classList.toggle("kbd-cursor", i === listCursor));
+  const el = rows[listCursor];
+  if (el) el.scrollIntoView({block: "nearest"});
+}
+
+function paintVoiceCursor(){
+  voiceCards.forEach((v, i) => v.el.classList.toggle("kbd-target", i === voiceCursor));
+  const v = voiceCards[voiceCursor];
+  if (v) v.scrollIntoView({block: "nearest", behavior: "instant"});
+}
+
+addEventListener("keydown", e => {
+  if ((e.ctrlKey || e.metaKey) && (e.key === "k" || e.key === "K")){
+    e.preventDefault();
+    if ($("palette").open) $("palette").close(); else palOpen();
+    return;
+  }
+  if (typingGuard()){
+    if (e.key === "Escape" && document.activeElement === $("q")
+        && $("q").value){
+      $("q").value = ""; $("qClear").hidden = true; query = "";
+      resetPages(); loadClips();
+    }
+    return;
+  }
+  if (e.key === "?"){
+    e.preventDefault();
+    $("keys").showModal();
+    return;
+  }
+  /* g then a letter: go to a section, vi-style. */
+  if (gPending){
+    gPending = false; clearTimeout(gTimer);
+    const go = {d: "dev", r: "rec", p: "ppl", n: "notes", h: "heard", t: "tidy"}[e.key];
+    if (go){ e.preventDefault(); showTab(go); return; }
+  }
+  if (e.key === "g" && !e.ctrlKey && !e.metaKey){
+    gPending = true;
+    clearTimeout(gTimer);
+    gTimer = setTimeout(() => { gPending = false; }, 1600);
+    return;
+  }
+  /* space: play or pause whatever audio is open. */
+  if (e.key === " "){
+    if (!$("detail").hidden){
+      e.preventDefault();
+      const p = $("player");
+      p.paused ? p.play().catch(() => {}) : p.pause();
+      return;
+    }
+    if (!$("convDetail").hidden){
+      e.preventDefault();
+      const p = $("cvPlayer");
+      p.paused ? p.play().catch(() => {}) : p.pause();
+      return;
+    }
+  }
+  /* j/k or arrows walk the list in front of you. */
+  const down = e.key === "j" || e.key === "ArrowDown";
+  const up = e.key === "k" || e.key === "ArrowUp";
+  if (down || up){
+    if (!$("viewPpl").hidden && voiceCards.length){
+      e.preventDefault();
+      voiceCursor = Math.max(0, Math.min(voiceCards.length - 1,
+        voiceCursor + (down ? 1 : -1)));
+      paintVoiceCursor();
+      return;
+    }
+    const rows = listRows();
+    if (rows.length){
+      e.preventDefault();
+      listCursor = Math.max(0, Math.min(rows.length - 1,
+        listCursor + (down ? 1 : -1)));
+      paintListCursor(rows);
+      return;
+    }
+  }
+  if ((e.key === "Enter") && listCursor >= 0){
+    const rows = listRows();
+    const el = rows[listCursor];
+    if (el){
+      e.preventDefault();
+      if (el.classList.contains("ch")) el.click();
+      else el.click();
+    }
+  }
+});
+
+/* ---- keyboard for the voice queue ----
    Runs last, because it mirrors variables declared throughout the script:
    the search, the filters, the picked day. A hash typed by hand, or a
    bookmark opened in place, re-applies without a reload; edits the page
@@ -6200,6 +6460,7 @@ loadBattery();
 $("pulseCard").open = pulseWanted();
 if (pulseWanted()) loadPulse();
 addEventListener("resize", () => { if ($("pulseCard").open) drawPulse(); });
+
 
 
 
