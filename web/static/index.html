@@ -5,6 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#0C1215">
 <title>Boswell</title>
+<link rel="manifest" href="data:application/manifest+json,{"name":"Boswell","short_name":"Boswell","description":"A private wearable conversation archive.","start_url":"/","display":"standalone","background_color":"%230C1215","theme_color":"%230C1215","icons":%5B{"src":"data:image/svg%2Bxml,%253Csvg xmlns%3D'http://www.w3.org/2000/svg' viewBox%3D'0 0 32 32'%253E%253Crect width%3D'32' height%3D'32' rx%3D'9' fill%3D'%252312697A'/%253E%253Ccircle cx%3D'11' cy%3D'21' r%3D'3.2' fill%3D'white'/%253E%253Cpath d%3D'M17 21 A6 6 0 0 0 11 15' stroke%3D'white' stroke-width%3D'2.4' fill%3D'none' stroke-linecap%3D'round'/%253E%253Cpath d%3D'M22 21 A11 11 0 0 0 11 10' stroke%3D'white' stroke-width%3D'2.4' fill%3D'none' stroke-linecap%3D'round'/%253E%253C/svg%253E","sizes":"any","type":"image/svg%2Bxml","purpose":"any"}%5D}">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Boswell">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%2312697A'/%3E%3Ccircle cx='11' cy='21' r='3.2' fill='white'/%3E%3Cpath d='M17 21 A6 6 0 0 0 11 15' stroke='white' stroke-width='2.4' fill='none' stroke-linecap='round'/%3E%3Cpath d='M22 21 A11 11 0 0 0 11 10' stroke='white' stroke-width='2.4' fill='none' stroke-linecap='round'/%3E%3C/svg%3E">
 <style>/* Fonts are served from this machine, not from Google.
  *
@@ -70,6 +74,7 @@ main#main{grid-area:main;min-width:0}
 @media(max-width:900px){
   .wrap{display:block;padding:0 16px 40px}
   header{padding-top:20px}
+  .sidebar{display:contents}
 }
 .brand{display:flex;align-items:center;gap:11px}
 .mark{width:23px;height:23px;flex:none;border-radius:6px}
@@ -604,7 +609,9 @@ details .inner{padding:2px 12px 12px}
 
 /* ---- day strip ---- */
 .daystrip{display:flex;gap:6px;overflow-x:auto;padding:2px 0 10px;
-  scrollbar-width:none;flex-wrap:nowrap}
+  scrollbar-width:none;flex-wrap:nowrap;
+  scroll-snap-type:x proximity}
+.daystrip button{scroll-snap-align:start}
 .daystrip::-webkit-scrollbar{display:none}
 .daystrip button{flex:0 0 auto;min-height:0;padding:5px 12px;font-size:12.5px;
   border-radius:14px;font-family:var(--mono);color:var(--muted);
@@ -619,6 +626,28 @@ details .inner{padding:2px 12px 12px}
 .kcard{border:1px solid var(--rule);border-radius:8px;padding:12px;
   background:var(--surface)}
 .kcard.kbd-target{border-color:var(--accent)}
+
+/* ---- battery sparkline ---- */
+.battspark{margin:10px 0 0}
+.battspark[hidden]{display:none}
+.battspark canvas{width:100%;height:36px;display:block}
+.battspark .val{display:block;margin-top:2px;font-size:10.5px}
+
+/* ---- archive footer under the navigation ---- */
+.sidebar{grid-area:side;align-self:start}
+.archivefoot{font-family:var(--mono);
+  font-size:11px;color:var(--faint);padding:10px 4px 0;line-height:1.6}
+.archivefoot[hidden]{display:none}
+@media(max-width:900px){.archivefoot{display:none}}
+
+/* ---- search jumped here ---- */
+.seg.hitline{background:color-mix(in srgb,var(--accent) 10%,transparent);
+  border-radius:6px;transition:background .6s}
+
+/* ---- open the conversation a clip belongs to ---- */
+.convjump{flex:0 0 auto;min-height:0;padding:4px 10px;font-size:12px;
+  font-family:var(--mono);color:var(--accent);background:none;
+  border:1px solid color-mix(in srgb,var(--accent) 40%,transparent)}
 
 /* ---- clips whose time nobody knows ---- */
 .lbl.unk{background:color-mix(in srgb,var(--warn) 16%,transparent);color:var(--warn)}
@@ -660,6 +689,7 @@ details .inner{padding:2px 12px 12px}
   </header>
 
   <a class="skip" href="#main">Skip to content</a>
+  <div class="sidebar">
   <nav class="tabs" role="tablist" aria-label="Sections"
        aria-orientation="vertical">
     <button id="tabDev" type="button" role="tab" aria-controls="viewDev" aria-selected="true" tabindex="0">Device</button>
@@ -672,6 +702,8 @@ details .inner{padding:2px 12px 12px}
     <button id="tabHeard" type="button" role="tab" aria-controls="viewHeard" aria-selected="false" tabindex="-1">Heard</button>
     <button id="tabTidy" type="button" role="tab" aria-controls="viewTidy" aria-selected="false" tabindex="-1">Clear out</button>
   </nav>
+  <div class="archivefoot" id="archiveFoot" hidden></div>
+  </div>
 
   <main id="main">
 
@@ -696,6 +728,16 @@ details .inner{padding:2px 12px 12px}
         <dt>Storage card</dt><dd id="cardv">—</dd>
         <dt>Unsaved clip</dt><dd id="clip">0.0 s</dd>
       </dl>
+
+      <!-- How the cell actually behaves, from the telemetry the server has
+           been writing all along: green bands are charging, the line is the
+           percentage the firmware reported. A curve that steepens is a cell
+           telling you something. -->
+      <div class="battspark" id="battSparkWrap" hidden>
+        <canvas id="battSpark" height="36" aria-label="Battery percentage over the last two days"
+                role="img"></canvas>
+        <span class="val" id="battSparkNote"></span>
+      </div>
 
       <div class="barlabel"><span>Input level</span><span id="lvlNote"></span></div>
       <div class="meter"><i id="meter"></i></div>
@@ -935,6 +977,11 @@ details .inner{padding:2px 12px 12px}
       <button type="button" id="bSelNone" hidden>Clear</button>
       <button type="button" class="dang" id="bDelSel" hidden>Delete</button>
       <button type="button" id="bExport" hidden>Export</button>
+      <select class="filter" id="exportFmt" aria-label="Export format" hidden>
+        <option value="txt" selected>Text (.txt)</option>
+        <option value="srt">Subtitles (.srt)</option>
+        <option value="json">Data (.json)</option>
+      </select>
       <button type="button" id="bAll">Transcribe all</button>
       <button type="button" id="bRefresh">Refresh</button>
       <span class="val" id="qdepth"></span>
@@ -965,6 +1012,11 @@ details .inner{padding:2px 12px 12px}
         <button type="button" id="cvBack">Back</button>
         <button type="button" class="pri" id="cvPlayAll">Play conversation</button>
         <button type="button" id="cvExport">Export</button>
+        <select class="filter" id="cvFmt" aria-label="Export format">
+        <option value="txt" selected>Text (.txt)</option>
+        <option value="srt">Subtitles (.srt)</option>
+        <option value="json">Data (.json)</option>
+      </select>
         <details class="moremenu" id="convMore">
           <summary>More</summary>
           <div class="menupanel">
@@ -984,6 +1036,7 @@ details .inner{padding:2px 12px 12px}
       <div class="topbar">
         <button type="button" id="bBackTop" aria-label="Back">&larr; Back</button>
         <span class="tbtitle" id="dTitleTop"></span>
+        <button type="button" id="dConv" class="convjump" hidden>Open conversation</button>
       </div>
       <h2 id="dTitle">Transcript</h2>
       <audio id="player" preload="metadata"></audio>
@@ -1005,6 +1058,12 @@ details .inner{padding:2px 12px 12px}
       <div class="btns" style="margin-top:16px">
         <button type="button" id="bBack">Back</button>
         <button type="button" class="pri" id="bTranscribe">Transcribe</button>
+        <button type="button" id="dExport">Export</button>
+        <select class="filter" id="dFmt" aria-label="Export format">
+        <option value="txt" selected>Text (.txt)</option>
+        <option value="srt">Subtitles (.srt)</option>
+        <option value="json">Data (.json)</option>
+      </select>
         <button type="button" id="bSplit">Split by voice</button>
         <button type="button" class="dang" id="bDelete">Delete</button>
       </div>
@@ -1253,6 +1312,7 @@ details .inner{padding:2px 12px 12px}
 </dialog>
 
 <script>
+
 
 
 
@@ -1576,6 +1636,7 @@ async function connect(){
     if (m.type === "state") paint(m);
     else if (m.type === "log") log(m.text);
     else if (m.type === "clip"){ log("clip written: " + m.path);
+      convCache = null;
       if (!$("viewRec").hidden && $("detail").hidden) loadClips(); }
     else if (m.type === "agent"){
       if (m.status === "running"){
@@ -1871,6 +1932,7 @@ function showTab(which){
     $(v).hidden = !on;
   }
   if (which === "rec") loadClips();
+  if (which === "dev") loadBattery();
   if (which === "ppl"){ loadPeople(); loadVocab(); loadVoices(); pollBulk(); }
   if (which === "notes"){ loadAgent(); loadItems(); loadTopics(); loadDuplicates(); }
   if (which === "heard") loadHeard();
@@ -2186,6 +2248,7 @@ async function loadPeople(){
   const el = $("pplList");
   try{
     const people = await (await fetch("/api/speakers")).json();
+    loadArchiveFoot();
     if (!people.length){
       el.innerHTML = '<div class="empty">Nobody enrolled yet. Name a speaker on a recording.</div>';
       return;
@@ -2643,6 +2706,17 @@ on("bVoiceConfirmAll", "click", async () => {
 
 on("bVoiceRefresh", "click", loadVoices);
 
+/* ---- "/" finds, from anywhere on the Recordings tab ---- */
+addEventListener("keydown", e => {
+  if (e.key !== "/" || e.ctrlKey || e.metaKey || e.altKey) return;
+  if ($("viewRec").hidden) return;
+  if ($("editor").open || $("namer").open) return;
+  const a = document.activeElement;
+  if (a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) return;
+  e.preventDefault();
+  $("q").focus();
+});
+
 /* ---- keyboard for the voice queue ----
    Naming voices is the one task here that recurs daily, and it was
    mouse-only: play, find the field, type. The keys act on the top card,
@@ -3046,6 +3120,85 @@ function fmtDur(sec){
   return m >= 1 ? `${m} min` : `${Math.round(sec)}s`;
 }
 
+/* ---- battery history ----
+   The server has been writing battery samples to telemetry.jsonl since the
+   start and nothing ever drew them. For an always-on wearable the discharge
+   curve is a vital sign: a day that steepens is a cell ageing, a cliff is a
+   firmware change, and the green bands tell charging apart from coasting.
+   Drawn over the last two days. */
+let battLast = 0;
+async function loadBattery(force){
+  const now = Date.now();
+  if (!force && now - battLast < 300000) return;
+  battLast = now;
+  let d;
+  try{ d = await (await fetch("/api/telemetry?limit=3000")).json(); }
+  catch(e){ return; }
+  const s = d.samples || [];
+  const wrap = $("battSparkWrap");
+  if (s.length < 5){ wrap.hidden = true; return; }
+  wrap.hidden = false;
+  const cv = $("battSpark");
+  const dpr = window.devicePixelRatio || 1;
+  const w = cv.clientWidth || 260, h = cv.clientHeight || 36;
+  cv.width = w * dpr; cv.height = h * dpr;
+  const g = cv.getContext("2d");
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, w, h);
+  const t1 = s[s.length - 1].t;
+  const t0 = Math.max(s[0].t, t1 - 48 * 3600);
+  const span = Math.max(1, t1 - t0);
+  const X = t => (t - t0) / span * w;
+  const Y = p => h - (Math.min(100, Math.max(0, p)) / 100) * (h - 6) - 3;
+  /* Charging stretches, as bands under the line. */
+  g.globalAlpha = 0.16;
+  g.fillStyle = cssVar("--ok");
+  let run = null;
+  for (const r of s){
+    if (r.charging && run === null) run = r.t;
+    if (!r.charging && run !== null){
+      g.fillRect(X(run), 0, Math.max(1, X(r.t) - X(run)), h);
+      run = null;
+    }
+  }
+  if (run !== null) g.fillRect(X(run), 0, w - X(run), h);
+  g.globalAlpha = 1;
+  g.strokeStyle = cssVar("--accent");
+  g.lineWidth = 1.5;
+  g.beginPath();
+  let started = false;
+  for (const r of s){
+    if (r.t < t0 || r.pct == null) continue;
+    const x = X(r.t), y = Y(r.pct);
+    started ? g.lineTo(x, y) : (g.moveTo(x, y), started = true);
+  }
+  g.stroke();
+  const hrs = Math.min(48, Math.round((t1 - s[0].t) / 360) / 10);
+  $("battSparkNote").textContent = `battery, last ${hrs} hr`;
+}
+
+/* ---- archive at a glance ----
+   Three numbers under the navigation: what the archive is now, not what it
+   was when the page was designed. */
+async function loadArchiveFoot(){
+  try{
+    const [ix, sp] = await Promise.all([
+      (await fetch("/api/index")).json(),
+      (await fetch("/api/speakers")).json()]);
+    const el = $("archiveFoot");
+    if (!ix.clips){ el.hidden = true; return; }
+    el.textContent = `${ix.clips.toLocaleString()} recordings · `
+      + `${fmtDur(ix.seconds || 0)} of audio · `
+      + `${sp.length} named voice${sp.length === 1 ? "" : "s"}`;
+    el.hidden = false;
+  }catch(e){}
+}
+
+/* Opening a recording from a search remembers where the match was, so the
+   clip opens at the words you searched for rather than at its start. */
+let searchHits = new Map();     // clip name -> {t: seconds into the clip}
+let hitAt = null;
+
 /* What time a clip is really about.
    mtime is when the file reached the archive; a clip pulled off the card can
    land hours after the conversation it holds. started is the device's own
@@ -3129,6 +3282,7 @@ function renderDayStrip(items){
 
 async function loadConversations(el){
   const fetched = (await (await fetch("/api/conversations")).json());
+  convCache = fetched;
   renderDayStrip(fetched.map(c => ({t: c.start, seconds: c.seconds})));
   const all = fetched.filter(c => inDateRange(c.end));
   /* The same filter as the clip list. A conversation's speaker list is the
@@ -3485,7 +3639,10 @@ async function loadSearch(el){
       if (selectMode){
         selected.has(c.name) ? selected.delete(c.name) : selected.add(c.name);
         syncSelectUI(); loadClips();
-      } else openClip(c.name);
+      } else {
+        if (c.hits && c.hits.length) searchHits.set(c.name, {t: c.hits[0].start});
+        openClip(c.name);
+      }
     };
     el.appendChild(b);
   }
@@ -3564,7 +3721,7 @@ function inDateRange(modified){
 }
 
 function syncSelectUI(){
-  for (const id of ["bSelAll","bSelNone","bDelSel","bExport"]) $(id).hidden = !selectMode;
+  for (const id of ["bSelAll","bSelNone","bDelSel","bExport","exportFmt"]) $(id).hidden = !selectMode;
   $("bExport").disabled = selected.size === 0;
   $("bExport").textContent = selected.size ? `Export ${selected.size}` : "Export";
   $("bSelect").textContent = selectMode ? "Done" : "Select";
@@ -3584,7 +3741,7 @@ $("bExport").onclick = async () => {
   if (!selected.size) return;
   const r = await fetch("/api/export", {method:"POST",
     headers:{"Content-Type":"application/json"},
-    body: JSON.stringify({names:[...selected], format:"txt"})});
+    body: JSON.stringify({names:[...selected], format: $("exportFmt").value})});
   showText(await r.text(), `${selected.size} recordings`);
 };
 
@@ -3786,6 +3943,16 @@ async function loadClips(){
   }catch(e){ el.innerHTML = '<div class="empty">could not load recordings</div>'; }
 }
 
+/* Which conversation a clip belongs to, asked rarely and cached: the clip
+   detail can then offer the way back into the exchange it came from. */
+let convCache = null;
+async function convOf(name){
+  try{
+    if (!convCache) convCache = await (await fetch("/api/conversations")).json();
+    return convCache.find(c => c.clips.includes(name)) || null;
+  }catch(e){ return null; }
+}
+
 async function openClip(name){
   current = name;
   miniDismissed = false;
@@ -3796,12 +3963,20 @@ async function openClip(name){
   const pl = $("player");
   pl.pause();
   pl.src = "/api/audio/" + encodeURIComponent(name);
-  pl.currentTime = 0;
+  const hit = searchHits.get(name);
+  hitAt = hit ? hit.t : null;
+  pl.currentTime = hitAt || 0;
   loadWave(name);
   syncTransport();
   $("dSegs").innerHTML = '<div class="empty">loading…</div>';
   $("dSpeakers").innerHTML = "";
   msg(""); armDelete = false; $("bDelete").textContent = "Delete";
+  const dconv = $("dConv");
+  const conv = await convOf(name);
+  if (conv){
+    dconv.hidden = false;
+    dconv.onclick = () => { rememberScroll(); openConversation(conv); };
+  } else dconv.hidden = true;
   await renderTranscript(name);
 }
 
@@ -3839,7 +4014,10 @@ async function loadSemanticSearch(el){
         <div class="cp">${esc(h.text)}</div>
       </div>
       <span class="cd">${(h.score*100).toFixed(0)}%</span>`;
-    b.onclick = () => openClip(h.clip);
+    b.onclick = () => {
+      searchHits.set(h.clip, {t: h.start});
+      openClip(h.clip);
+    };
     el.appendChild(b);
   }
 }
@@ -4308,7 +4486,7 @@ $("cvExport").onclick = async () => {
   if (!cvCurrent) return;
   const r = await fetch("/api/export", {method:"POST",
     headers:{"Content-Type":"application/json"},
-    body: JSON.stringify({names: cvCurrent.clips, format:"txt"})});
+    body: JSON.stringify({names: cvCurrent.clips, format: $("cvFmt").value})});
   showText(await r.text(), `${fmtDay(cvCurrent.end)} ${fmtClock(cvCurrent.start)}`);
 };
 /* Point the agent at a conversation you can see, instead of waiting for the
@@ -4813,7 +4991,10 @@ async function renderTranscript(name){
     d.innerHTML = `<button class="t" data-at="${s.start}" ` +
                   `aria-label="Play from ${s.start.toFixed(0)} seconds">${s.start.toFixed(0)}s</button>` +
                   `<div>${who}<button class="txt" aria-label="Edit this line"></button></div>`;
-    d.querySelector(".txt").textContent = s.text;
+    /* Words from an active search are marked in the transcript itself, so
+       the line you came for announces itself. */
+    if (searchHits.has(name)) d.querySelector(".txt").innerHTML = highlight(s.text);
+    else d.querySelector(".txt").textContent = s.text;
     d.querySelector(".t").onclick = () => { const p = $("player"); p.currentTime = s.start; p.play(); };
     d.querySelector(".txt").onclick = () => editLine(name, i, s, ids, named);
     /* Clicking the name names the VOICE -- every line the diarizer gave that
@@ -4850,6 +5031,21 @@ async function renderTranscript(name){
     }
     $("dSegs").appendChild(d);
   });
+  if (hitAt != null){
+    /* Land on the line the match lives in: the last one that had begun by
+       the moment the hit starts. */
+    let landed = null;
+    for (const el of $("dSegs").children){
+      const t = el.querySelector(".t");
+      if (t && parseFloat(t.dataset.at) <= hitAt) landed = el;
+    }
+    if (landed){
+      landed.classList.add("hitline");
+      landed.scrollIntoView({block: "center", behavior: "instant"});
+      msg(`Jumped to ${fmtClockShort(hitAt)} — the matching words are marked.`);
+    }
+    hitAt = null;
+  }
 }
 
 /* prompt() is blocked or silently ignored by most mobile browsers, so the
@@ -5299,6 +5495,19 @@ $("bDelete").onclick = async () => {
   }
 };
 
+/* A single clip's export: SRT for subtitles, JSON for tools, txt to read.
+   The bulk routes had this; the clip you are looking at did not. */
+$("dExport").onclick = async () => {
+  if (!current) return;
+  try{
+    const r = await fetch("/api/export", {method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({names:[current], format: $("dFmt").value})});
+    if (!r.ok){ msg((await r.json().catch(() => ({}))).detail || "could not export", true); return; }
+    showText(await r.text(), current);
+  }catch(e){ msg("could not reach the server", true); }
+};
+
 $("bSplit").onclick = async () => {
   if (!current) return;
   msg("splitting…");
@@ -5707,6 +5916,9 @@ addEventListener("hashchange", () => {
 });
 applyHashState();
 syncFilterToggle();
+loadArchiveFoot();
+loadBattery();
+
 
 
 
