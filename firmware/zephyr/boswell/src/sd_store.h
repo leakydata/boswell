@@ -22,6 +22,7 @@
  * File layout:
  *
  *     "BSWL" | ver:u8 | codec:u8 | rate:u16 | boot_id:u32 | boot_epoch:u32
+ *          | device_id:6 | reserved:u16
  *     then repeating:  len:u16 | crc8 | payload[len]
  *
  * The length chain catches a file that was truncated -- the lengths have to
@@ -35,6 +36,15 @@
  * carried it, so the host decodes a docked file with the same code that
  * decodes a live one.
  *
+ * device_id is the six bytes of this recorder's Bluetooth identity, and it is
+ * here because a card carried to a reader cannot otherwise say which device
+ * wrote it. The host knows it for free over the radio -- it is the address it
+ * connected to -- and not at all for a docked card. Two recorders feeding one
+ * archive collide on a sixteen-bit boot id sooner than feels possible, and
+ * what they merge is audio from two different rooms. All zeroes means the
+ * device did not know its own identity yet, which is honest and is treated as
+ * "unattributed" rather than as a name.
+ *
  * boot_epoch is the wall-clock second that corresponded to uptime zero, or 0
  * if no host had told the device the time before this file was opened. It is
  * stored rather than a per-file timestamp because it is constant for the
@@ -44,8 +54,8 @@
  */
 
 #define SD_FILE_MAGIC   "BSWL"
-#define SD_FILE_VERSION 2
-#define SD_HEADER_LEN   16
+#define SD_FILE_VERSION 3
+#define SD_HEADER_LEN   24
 
 struct sd_store_stats {
     uint32_t frames;        /* frames written */

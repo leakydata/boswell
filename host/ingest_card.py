@@ -149,12 +149,16 @@ def write_clip(audio, rate, when, source):
 
 
 def write_times(path, boot_id, first_ms, last_ms, seconds, started, ended,
-                placed):
+                placed, device_id=None):
     os.makedirs(TIMES, exist_ok=True)
     rec = {"name": os.path.basename(path),
            "started": round(started, 3), "ended": round(ended, 3),
            "seconds": round(seconds, 3), "source": "card",
            "device_ms": [first_ms, last_ms], "boot_id": boot_id,
+           # Which recorder. Absent on everything written before this
+           # existed, and dedup reads absent as "could be any", so the
+           # archive as it stands keeps behaving exactly as it did.
+           "device_id": device_id,
            # False when the file could not say when this happened, so the
            # times above are a placement of last resort rather than a fact.
            "time_known": placed}
@@ -195,6 +199,7 @@ def ingest_file(path, held, ledger, write=False):
         return f"{os.path.basename(path)}: no decodable audio{note}"
 
     boot_id = hdr["boot_id"] or None
+    device_id = hdr.get("device_id")
     epoch = hdr["boot_epoch"]
 
     kept = skipped = 0
@@ -206,7 +211,8 @@ def ingest_file(path, held, ledger, write=False):
         # cannot be compared with anything the archive holds, so it is kept
         # rather than matched. Erring toward keeping audio is the right way
         # round -- a duplicate can be merged later, a discard cannot.
-        if boot_id is not None and dedup.is_duplicate(boot_id, span, held):
+        if boot_id is not None and dedup.is_duplicate(boot_id, span, held,
+                                                      device_id=device_id):
             skipped += 1
             continue
 
@@ -229,7 +235,7 @@ def ingest_file(path, held, ledger, write=False):
 
         out = write_clip(pcm, hdr["rate"], ended, "card")
         rec = write_times(out, boot_id, first_ms, last_ms, seconds,
-                          started, ended, placed)
+                          started, ended, placed, device_id=device_id)
         try:
             os.utime(out, (ended, ended))
         except OSError:
@@ -239,7 +245,7 @@ def ingest_file(path, held, ledger, write=False):
 
     if write:
         ledger[key] = {"at": int(time.time()), "clips": kept,
-                       "boot_id": boot_id}
+                       "boot_id": boot_id, "device_id": device_id}
 
     when = "" if not epoch else time.strftime(
         " %Y-%m-%d %H:%M", time.localtime(epoch + (hdr["first_ms"] or 0) / 1000))

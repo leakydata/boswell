@@ -101,6 +101,30 @@ static uint16_t boot_id;
  * the audio that already arrived over the radio.
  */
 uint16_t ble_audio_boot_id(void) { return boot_id; }
+
+/* Which recorder this is, as the six bytes of its Bluetooth identity.
+ *
+ * The host knows this already for anything that arrives over the radio -- it
+ * is the address it connected to. It does not know it for a card carried to
+ * a reader, and that is the whole reason the device has to write it down: a
+ * .bwl file has to say which recorder made it, or two of them feeding one
+ * archive cannot be told apart after the fact.
+ *
+ * Returns false before Bluetooth has started, which is the case while the
+ * very first file of a boot may be opening. A file that honestly says it
+ * does not know is worth more than one that guesses. */
+bool ble_audio_device_id(uint8_t out[6])
+{
+    bt_addr_le_t addrs[CONFIG_BT_ID_MAX];
+    size_t count = ARRAY_SIZE(addrs);
+
+    bt_id_get(addrs, &count);
+    if (count == 0) {
+        return false;
+    }
+    memcpy(out, addrs[0].a.val, 6);
+    return true;
+}
 static void idle_link_fn(struct k_work *work);
 static K_WORK_DELAYABLE_DEFINE(idle_link, idle_link_fn);
 static bool notify_enabled;

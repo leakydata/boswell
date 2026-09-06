@@ -327,6 +327,16 @@ def reconcile_capture(device_streaming, armed):
     return None
 
 
+def _norm_device_id(addr):
+    """A Bluetooth address as the archive stores it: lower-case hex, no
+    separators. The same shape the firmware writes into a card file, so a
+    recording collected either way carries the same name for its recorder."""
+    if not addr:
+        return None
+    out = "".join(c for c in str(addr).lower() if c in "0123456789abcdef")
+    return out or None
+
+
 class Device:
     """Owns the BLE connection and publishes state to any listening clients."""
 
@@ -664,7 +674,11 @@ class Device:
         rec = {"name": os.path.basename(path), "started": round(started, 3),
                "ended": round(ended, 3), "seconds": round(seconds, 3),
                "source": source, "device_ms": [first_ms, last_ms],
-               "boot_id": self.state.get("boot_id")}
+               "boot_id": self.state.get("boot_id"),
+               # Which recorder this came from. Free on the live path -- it is
+               # the address we connected to -- and the reason the card file
+               # carries it too, since a docked card cannot say.
+               "device_id": _norm_device_id(self.state.get("device_address"))}
         try:
             atomicio.write_json(os.path.join(TIMES, os.path.basename(path) + ".json"), rec)
         except Exception:

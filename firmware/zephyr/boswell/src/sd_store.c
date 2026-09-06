@@ -3,6 +3,7 @@
 #include "proto.h"
 #include "rec_crc.h"
 #include "clock.h"
+#include "ble_audio.h"
 
 #include <zephyr/kernel.h>
 #include <zephyr/fs/fs.h>
@@ -111,6 +112,11 @@ static int open_next(void)
      * than one that honestly says it never knew. Zero means unknown, and the
      * host places those by sequence instead of by a time nobody set. */
     put32(&hdr[12], clock_boot_epoch());
+
+    /* Zeroes if Bluetooth has not started. The first file of a boot can open
+     * before it has, and a file that admits it does not know which device
+     * made it is worth more than one that invents an answer. */
+    (void)ble_audio_device_id(&hdr[16]);
 
     ssize_t w = fs_write(&file, hdr, sizeof(hdr));
     if (w != (ssize_t)sizeof(hdr)) {

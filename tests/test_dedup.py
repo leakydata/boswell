@@ -136,3 +136,59 @@ def test_a_record_missing_its_span_is_ignored_not_fatal():
             rec(7, 0, 30000)]
     assert dedup.is_duplicate(7, (0, 30000), held)
     assert dedup.new_spans(7, (0, 60000), held) == [(30000, 60000)]
+
+
+# ------------------------------------------------------- two recorders
+#
+# A boot id is sixteen random bits. Two devices in one house collide on one
+# sooner than feels possible, and what they merge is audio from two different
+# rooms -- a failure with no symptom: no error, no duplicate, just a
+# conversation that never happened.
+
+def held(boot, span, device=None):
+    return {"boot_id": boot, "device_ms": list(span), "device_id": device}
+
+
+def test_the_same_span_from_two_devices_is_not_a_duplicate():
+    a = held(1234, (10000, 40000), "aabbccddeeff")
+    assert not dedup.is_duplicate(1234, (10000, 40000), [a],
+                                  device_id="112233445566")
+
+
+def test_the_same_span_from_the_same_device_still_is():
+    a = held(1234, (10000, 40000), "aabbccddeeff")
+    assert dedup.is_duplicate(1234, (10000, 40000), [a],
+                              device_id="aabbccddeeff")
+
+
+def test_a_held_record_with_no_device_matches_anything():
+    # Every clip in the archive before this existed carries no device id, and
+    # they are all from the one recorder that has ever fed it. Treating
+    # unknown as "not a match" would make the next import of an already-held
+    # recording a duplicate of every one of them.
+    legacy = held(1234, (10000, 40000), None)
+    assert dedup.is_duplicate(1234, (10000, 40000), [legacy],
+                              device_id="aabbccddeeff")
+
+
+def test_an_incoming_clip_with_no_device_matches_a_named_one():
+    a = held(1234, (10000, 40000), "aabbccddeeff")
+    assert dedup.is_duplicate(1234, (10000, 40000), [a], device_id=None)
+
+
+def test_the_asymmetry_with_boot_id_is_deliberate():
+    # A missing boot id makes a span unplaceable, so keeping the audio is the
+    # safe answer. A missing device id only makes it unattributed, and the
+    # span still says everything needed.
+    assert not dedup.is_duplicate(None, (10000, 40000),
+                                  [held(1234, (10000, 40000))])
+    assert dedup.same_device(None, "aabb")
+
+
+def test_new_spans_also_respects_the_device():
+    a = held(1234, (10000, 40000), "aabbccddeeff")
+    # Another device's identical span is entirely new audio.
+    gaps = dedup.new_spans(1234, (10000, 40000), [a], device_id="112233445566")
+    assert gaps == [(10000, 40000)]
+    assert dedup.new_spans(1234, (10000, 40000), [a],
+                           device_id="aabbccddeeff") == []

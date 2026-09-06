@@ -57,4 +57,9 @@ uint16_t ble_audio_boot_id(void);
  * there is nobody to notify. */
 int ble_audio_send_files(const uint8_t *data, uint16_t len);
 
+/* The six bytes of this device's Bluetooth identity, which is the only name
+ * it has that a second recorder cannot also claim. False before Bluetooth
+ * has started. */
+bool ble_audio_device_id(uint8_t out[6]);
+
 #endif

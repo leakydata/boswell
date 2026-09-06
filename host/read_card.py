@@ -25,8 +25,12 @@ from ble_capture import (decode_frame, payload_is_complete, FLAG_PRE_BOOT,
                          HEADER_LEN as FRAME_HEADER_LEN)
 
 MAGIC = b"BSWL"
+# Version 3 grew the header to carry which recorder wrote the file. Earlier
+# files are still read at their own length -- refusing them to gain a field
+# they were never written with would strand real recordings.
 HEADER_LEN = 16
-SUPPORTED_VERSIONS = (1, 2)   # 2 added a per-record checksum
+HEADER_LEN_V3 = 24
+SUPPORTED_VERSIONS = (1, 2, 3)   # 2 added a checksum, 3 the device id
 
 CODEC_NAMES = {1: "ADPCM", 20: "Opus"}
 
@@ -45,8 +49,33 @@ def read_header(f):
     if version not in SUPPORTED_VERSIONS:
         raise BadFile(f"version {version}, understand {SUPPORTED_VERSIONS}")
     codec, rate, boot_id, boot_epoch = raw[5], *struct.unpack("<HII", raw[6:16])
+
+    device_id = None
+    if version >= 3:
+        tail = f.read(HEADER_LEN_V3 - HEADER_LEN)
+        if len(tail) < HEADER_LEN_V3 - HEADER_LEN:
+            raise BadFile("header claims version 3 and stops short")
+        addr = tail[:6]
+        # All zeroes means the device did not know its own identity when the
+        # file was opened -- Bluetooth had not started yet. Unattributed, not
+        # a name, and dedup treats the two very differently.
+        #
+        # Reversed, because a Bluetooth address is little-endian on the wire
+        # and big-endian when anybody writes it down. The firmware stores the
+        # six bytes as the stack hands them over; a host that connected to the
+        # same device calls it D9:66:CF:BB:58:A4. Without this the card path
+        # and the radio path give one recorder two different names, and
+        # de-duplication fails in exactly the case it exists for -- which is
+        # what the first real v3 file showed: a458bbcf66d9 on the card against
+        # d966cfbb58a4 over the air.
+        if any(addr):
+            device_id = addr[::-1].hex()
+
     return {"version": version, "codec": codec, "rate": rate,
             "boot_id": boot_id,
+            # Lower-case hex without separators, which is what _norm_addr in
+            # ble_capture produces from whatever a host calls the address.
+            "device_id": device_id,
             # The wall-clock second that was uptime zero, or 0 if no host had
             # told the device the time before this file opened. Any frame can
             # be placed from this plus its own device_ms.
@@ -129,7 +158,7 @@ def read_file(path, want_audio=True):
         corrupt = 0
         frame_ms = []
         size = os.path.getsize(path)
-        consumed = HEADER_LEN
+        consumed = HEADER_LEN_V3 if hdr["version"] >= 3 else HEADER_LEN
 
         for payload, ok in read_frames(f, hdr["version"]):
             frames += 1
@@ -188,6 +217,8 @@ def describe(path, hdr):
             f"boot={hdr['boot_id']:04x}" if hdr["boot_id"]
             else "boot=unknown (pre-boot audio)",
             f"{hdr['frames']} frames", f"{secs:.1f}s"]
+    if hdr.get("device_id"):
+        bits.append("dev " + hdr["device_id"][-4:])
     if hdr.get("boot_epoch"):
         import datetime
         when = datetime.datetime.fromtimestamp(

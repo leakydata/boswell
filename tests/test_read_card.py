@@ -151,3 +151,37 @@ def test_a_frame_too_short_to_have_a_header_is_counted_not_crashed_on(tmp_path):
     h = rc.read_file(path, want_audio=False)
     assert h["short"] == 1
     assert h["frames"] == 2
+
+
+# ------------------------------------------------------- which recorder
+def header_v3(addr=b"\xa4\x58\xbb\xcf\x66\xd9", **kw):
+    kw.setdefault("ver", 3)
+    return header(**kw) + addr + b"\0\0"
+
+
+def test_the_device_id_is_read_big_endian():
+    # A Bluetooth address is little-endian on the wire and big-endian when
+    # anybody writes it down. The firmware stores what the stack hands over;
+    # a host that connected to the same device calls it D9:66:CF:BB:58:A4.
+    # Without the reversal one recorder has two names and de-duplication
+    # fails in exactly the case it exists for.
+    h = rc.read_header(io.BytesIO(header_v3()))
+    assert h["device_id"] == "d966cfbb58a4"
+
+
+def test_an_unknown_device_is_none_not_zeroes():
+    # Bluetooth had not started when the file opened. Unattributed, not a
+    # name -- dedup treats the two very differently.
+    h = rc.read_header(io.BytesIO(header_v3(addr=b"\0" * 6)))
+    assert h["device_id"] is None
+
+
+def test_older_files_have_no_device_and_still_read():
+    for ver in (1, 2):
+        h = rc.read_header(io.BytesIO(header(ver=ver)))
+        assert h["device_id"] is None
+
+
+def test_a_truncated_v3_header_is_refused():
+    with pytest.raises(rc.BadFile):
+        rc.read_header(io.BytesIO(header(ver=3) + b"\x01\x02"))

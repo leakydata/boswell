@@ -6,7 +6,7 @@ again in the catch-up transfer afterwards. Ingesting both produces a
 conversation that occurred twice, which reads as a real event rather than as
 an error -- so this has to be right before the second path exists, not after.
 
-The key is (boot_id, device_ms), not wall-clock time.
+The key is (device_id, boot_id, device_ms), not wall-clock time.
 
 Device milliseconds are an uptime counter: monotonic within a boot, and
 unrelated to anything outside it. That is precisely why they are the right
@@ -19,6 +19,12 @@ same counter on the same device at the moment of capture.
 What the boot id adds is the part that makes uptime usable at all: 41,900 ms
 happens once per boot, and without knowing which boot, two unrelated clips
 from different sessions look like the same audio.
+
+And what the device id adds is the same argument one level up. A boot id is
+sixteen random bits, so two recorders in one house collide on one sooner than
+feels possible -- and when they do, the audio quietly merged is from two
+different rooms. Which is a failure with no symptom: no error, no duplicate,
+just a conversation that never happened.
 """
 
 # Clips are written on a frame boundary, and the two paths need not agree
@@ -67,12 +73,32 @@ def _merged(spans):
     return out
 
 
-def is_duplicate(boot_id, span, records, threshold=0.9):
+def same_device(a, b):
+    """Could these two records have come from the same recorder?
+
+    Unknown matches anything, deliberately. Every clip in the archive before
+    this existed carries no device id, and they are all from the one device
+    that has ever fed it -- so treating "unknown" as "not a match" would make
+    the next import of an already-held recording a duplicate of every one of
+    them. Once two recorders are actually in use, both sides carry an id and
+    are told apart properly.
+
+    This is the opposite of how a missing boot id is treated, and the
+    asymmetry is the point. A missing boot id makes a span unplaceable, so
+    keeping the audio is the safe answer. A missing device id only makes it
+    unattributed, and the span still says everything needed.
+    """
+    return a is None or b is None or a == b
+
+
+def is_duplicate(boot_id, span, records, threshold=0.9, device_id=None):
     """Is this span already in the archive?
 
     `records` are times records as written beside each clip. Only those from
-    the same boot are considered: a different boot is a different counter,
-    and comparing across them is how unrelated audio gets discarded.
+    the same boot on the same device are considered: a different boot is a
+    different counter, and a different device is a different counter again --
+    two recorders in one house will collide on a sixteen-bit boot id sooner
+    than feels possible, and the audio they merge is from two different rooms.
 
     A record with no boot id cannot be placed. Those are clips written before
     the id was recorded, and they are treated as *not* matching -- ingesting
@@ -83,7 +109,8 @@ def is_duplicate(boot_id, span, records, threshold=0.9):
         return False
     held = [r["device_ms"] for r in records
             if r.get("boot_id") == boot_id and r.get("device_ms")
-            and None not in r["device_ms"]]
+            and None not in r["device_ms"]
+            and same_device(device_id, r.get("device_id"))]
     if not held:
         return False
     start, end = span
@@ -91,7 +118,7 @@ def is_duplicate(boot_id, span, records, threshold=0.9):
                             held) >= threshold
 
 
-def new_spans(boot_id, span, records):
+def new_spans(boot_id, span, records, device_id=None):
     """The parts of `span` the archive does not already hold.
 
     For a transfer that overlaps the live stream only at one end, which is
@@ -105,7 +132,8 @@ def new_spans(boot_id, span, records):
         return []
     held = _merged([r["device_ms"] for r in records
                     if boot_id is not None and r.get("boot_id") == boot_id
-                    and r.get("device_ms") and None not in r["device_ms"]])
+                    and r.get("device_ms") and None not in r["device_ms"]
+                    and same_device(device_id, r.get("device_id"))])
     gaps, cursor = [], start
     for lo, hi in held:
         if hi <= cursor or lo >= end:
