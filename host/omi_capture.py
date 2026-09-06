@@ -162,7 +162,7 @@ async def find_omi(timeout=15.0):
     return sorted(out, key=lambda t: -t[2])
 
 
-async def capture(address, seconds=None, quiet=False):
+async def capture(address, seconds=None, quiet=False, on_progress=None):
     """Stream from one Omi until interrupted, filing clips as it goes."""
     device_id = norm_id(address)
     clipper = Clipper(device_id)
@@ -212,6 +212,11 @@ async def capture(address, seconds=None, quiet=False):
                 await asyncio.sleep(1.0)
                 if seconds and time.time() - started >= seconds:
                     break
+                if on_progress:
+                    # So whoever started this can say it is still alive
+                    # rather than only that it once began.
+                    on_progress({"clips": clipper.clips,
+                                 "frames": clipper.frames})
                 if not quiet and clipper.frames and clipper.frames % 500 == 0:
                     print(f"  {clipper.frames} frames, {clipper.clips} clip(s)")
         finally:

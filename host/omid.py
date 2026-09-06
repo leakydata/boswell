@@ -86,8 +86,33 @@ async def one_session(address, quiet=False):
         # now will not.
         print(f"sync: {type(e).__name__}: {e}", flush=True)
 
-    publish(state="recording", address=address)
-    clipper = await omi_capture.capture(address, quiet=quiet)
+    # A heartbeat for as long as it records, not one line when it starts.
+    #
+    # publish() was called once here and never again, so after two minutes of
+    # perfectly healthy recording the status file was stale and the interface
+    # said "not running" -- which is exactly the failure this project keeps
+    # finding, a thing that works looking identical to a thing that stopped.
+    # The reader cannot tell a silent daemon from a dead one, so the daemon
+    # has to keep speaking.
+    stop = asyncio.Event()
+
+    async def heartbeat():
+        while not stop.is_set():
+            publish(state="recording", address=address,
+                    clips=beat["clips"], frames=beat["frames"])
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=20)
+            except asyncio.TimeoutError:
+                pass
+
+    beat = {"clips": 0, "frames": 0}
+    pulse = asyncio.create_task(heartbeat())
+    try:
+        clipper = await omi_capture.capture(address, quiet=quiet,
+                                            on_progress=beat.update)
+    finally:
+        stop.set()
+        await pulse
     return clipper
 
 

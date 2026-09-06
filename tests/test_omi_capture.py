@@ -170,3 +170,36 @@ def test_a_failed_sync_does_not_skip_the_live_stream():
     fn = fn[:fn.index("\nasync def run(")]
     sync_block = fn[fn.index("omi_sync.sync"):fn.index("omi_capture.capture")]
     assert "except Exception" in sync_block
+
+
+def test_the_daemon_keeps_saying_it_is_recording():
+    # publish() was called once when recording started and never again, so
+    # after two minutes of perfectly healthy recording the status went stale
+    # and the interface said "not running". A thing that works must not look
+    # identical to a thing that stopped.
+    src = read_file("host/omid.py")
+    fn = src[src.index("async def one_session("):]
+    fn = fn[:fn.index("\nasync def run(")]
+    assert "async def heartbeat()" in fn
+    assert "asyncio.create_task(heartbeat())" in fn
+
+
+def test_the_heartbeat_stops_when_the_session_does():
+    src = read_file("host/omid.py")
+    fn = src[src.index("async def one_session("):]
+    fn = fn[:fn.index("\nasync def run(")]
+    assert "finally:" in fn and "stop.set()" in fn
+
+
+def test_capture_reports_progress_to_whoever_started_it():
+    src = read_file("host/omi_capture.py")
+    assert "on_progress=None" in src
+    assert 'on_progress({"clips"' in src
+
+
+def test_the_interface_says_what_it_has_heard():
+    # "recording" alone for an hour is indistinguishable from "stuck saying
+    # recording".
+    html = read_file("web/static/index.html")
+    assert "clip` \n" not in html
+    assert "this session" in html

@@ -6332,6 +6332,16 @@ async function omiPoll(){
     $("omibar").hidden = false;
     $("omibarfill").style.width = pct + "%";
   } else {
+    // What it has heard, not only that it is listening. "recording" alone
+    // for an hour is indistinguishable from "stuck saying recording".
+    if (s.state === "recording" && (s.clips || s.frames)){
+      const mins = Math.round((s.frames || 0) * 20 / 1000 / 60);
+      $("omistate").textContent = `recording — ${s.clips || 0} clip`
+        + `${s.clips === 1 ? "" : "s"} this session`
+        + (mins ? `, ${mins} min of audio` : "");
+      $("omibar").hidden = true;
+      return;
+    }
     const words = {recording:"recording", looking:"looking for the device",
                    waiting:"waiting to reconnect", lost:"lost the link",
                    "not found":"not in range", "catching up":"catching up"};
