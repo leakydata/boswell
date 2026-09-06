@@ -6,8 +6,7 @@
 <meta name="theme-color" content="#0C1215">
 <title>Boswell</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2312697A'/%3E%3Crect x='14' y='7' width='4' height='11' rx='2' fill='white'/%3E%3Cpath d='M10 15v2a6 6 0 0 0 12 0v-2' stroke='white' stroke-width='2' fill='none' stroke-linecap='round'/%3E%3Crect x='15' y='23' width='2' height='3' fill='white'/%3E%3C/svg%3E">
-<style>
-/* Fonts are served from this machine, not from Google.
+<style>/* Fonts are served from this machine, not from Google.
  *
  * The page used to link Google's font CDN, which tells a third party the
  * IP address and browser of anyone who opens the interface, every time they
@@ -21,8 +20,7 @@
 @font-face{font-family:"IBM Plex Sans";font-style:normal;font-weight:600;font-display:swap;src:url("/static/fonts/IBMPlexSans-SemiBold.woff2") format("woff2")}
 @font-face{font-family:"IBM Plex Mono";font-style:normal;font-weight:400;font-display:swap;src:url("/static/fonts/IBMPlexMono-Regular.woff2") format("woff2")}
 @font-face{font-family:"IBM Plex Mono";font-style:normal;font-weight:500;font-display:swap;src:url("/static/fonts/IBMPlexMono-Medium.woff2") format("woff2")}
-@font-face{font-family:"IBM Plex Mono";font-style:normal;font-weight:600;font-display:swap;src:url("/static/fonts/IBMPlexMono-SemiBold.woff2") format("woff2")}
-</style>
+@font-face{font-family:"IBM Plex Mono";font-style:normal;font-weight:600;font-display:swap;src:url("/static/fonts/IBMPlexMono-SemiBold.woff2") format("woff2")}</style>
 <style>
 :root{
   --paper:#F1F4F5; --surface:#FFF; --sunk:#E7ECEE;
@@ -131,8 +129,11 @@ label.row{display:flex;align-items:center;justify-content:space-between;gap:12px
   margin-top:14px;font-size:14px}
 input[type=range]{flex:1;accent-color:var(--accent);height:34px}
 .val{font-family:var(--mono);font-size:13px;color:var(--muted);min-width:58px;text-align:right}
-.switch{width:50px;height:29px;border-radius:15px;background:var(--sunk);
-  border:1px solid var(--rule);position:relative;cursor:pointer;flex:none}
+.switch{/* a real <button> now, so keyboard comes for free -- the base
+  button chrome is cancelled out rather than fought */
+  width:50px;height:29px;min-height:29px;padding:0;flex:none;
+  border-radius:15px;background:var(--sunk);
+  border:1px solid var(--rule);position:relative;cursor:pointer}
 .switch::after{content:"";position:absolute;top:2px;left:2px;width:23px;height:23px;
   border-radius:50%;background:var(--faint);transition:transform .16s,background .16s}
 .switch[aria-checked=true]{background:color-mix(in srgb,var(--accent) 25%,transparent);
@@ -156,8 +157,13 @@ nav.tabs button{min-height:42px;padding:9px 12px;border:none;background:transpar
   border-radius:6px;font-weight:600;font-size:14.5px;color:var(--muted);
   text-align:left;width:100%}
 @media(max-width:900px){
-  nav.tabs{flex-direction:row;position:static;margin-bottom:18px}
-  nav.tabs button{flex:1;text-align:center;padding:9px}
+  nav.tabs{flex-direction:row;position:static;margin-bottom:18px;
+    /* Six sections do not fit a phone's width, and wrapping put "Clear out"
+       outside the control that held it. They scroll instead. */
+    overflow-x:auto;scrollbar-width:none;flex-wrap:nowrap}
+  nav.tabs::-webkit-scrollbar{display:none}
+  nav.tabs button{flex:0 0 auto;width:auto;text-align:center;padding:9px 12px;
+    white-space:nowrap}
 }
 nav.tabs button[aria-selected=true]{background:var(--surface);color:var(--ink);
   box-shadow:0 1px 3px #0002}
@@ -218,7 +224,11 @@ select.filter:focus{outline:2px solid var(--accent);outline-offset:-1px}
   display:grid;place-items:center;font-size:13px;color:var(--surface)}
 .daygroup{font-family:var(--mono);font-size:11px;letter-spacing:.12em;
   text-transform:uppercase;color:var(--accent);margin:18px 0 8px;
-  display:flex;align-items:baseline;gap:10px}
+  display:flex;align-items:baseline;gap:10px;
+  /* Day headers hold still while their rows scroll under them: a 2,400-clip
+     archive is read by walking days, and a header that scrolls away takes
+     the place with it. */
+  position:sticky;top:66px;z-index:3;background:var(--paper);padding:6px 0}
 .daygroup:first-child{margin-top:0}
 .daygroup span{color:var(--faint);letter-spacing:0;text-transform:none;font-size:11px}
 .conv{border:1px solid var(--rule);border-radius:8px;padding:13px;margin-bottom:9px;
@@ -272,6 +282,9 @@ select.filter:focus{outline:2px solid var(--accent);outline-offset:-1px}
    confident and hiding it left thousands of lines reading SPEAKER_00; marked,
    because the slot behind it is untidy. */
 .cvline .cvwho.shaky{border-bottom-style:dashed;opacity:.85}
+/* The same mark on a plain speaker chip: named, but the matcher itself said
+   the margin was too thin to call it a fact. */
+.who.shaky{border-style:dashed;opacity:.92}
 .cvline .cvtext{font-size:14.5px;color:var(--ink);line-height:1.5}
 .cvline.playing{background:color-mix(in srgb,var(--accent) 10%,transparent)}
 .cvclip{display:flex;align-items:center;gap:9px;margin:15px 0 6px}
@@ -396,6 +409,12 @@ span.sound{font-family:var(--mono);font-size:11.5px;padding:3px 9px;
   min-height:0;width:auto;display:inline}
 .seg .txt:hover{border-bottom-color:var(--rule)}
 .seg.wasedited .txt{border-bottom:1px solid color-mix(in srgb,var(--warn) 55%,transparent)}
+#vocabBox{width:100%;font-family:var(--mono);font-size:14px;padding:11px;
+  border-radius:8px;border:1px solid var(--rule);background:var(--paper);
+  color:var(--ink);resize:vertical}
+#edNewName{width:100%;font-size:16px;padding:11px;border-radius:8px;
+  border:1px solid var(--rule);background:var(--paper);color:var(--ink);
+  margin-bottom:10px}
 #editArea{width:100%;min-height:96px;font-family:var(--sans);font-size:17px;padding:12px;
   border-radius:8px;border:1px solid var(--rule);background:var(--paper);color:var(--ink);
   margin-bottom:10px;resize:vertical}
@@ -411,6 +430,9 @@ button.who{font-size:11px}
 /* The clip view's line label is a control now, as in the conversation reader. */
 button.who.wholine{cursor:pointer;font-family:var(--mono)}
 .spk{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px}
+/* A chip is as wide as its name, not as wide as the row: the base button
+   rule stretches flex children, which turned one speaker into a banner. */
+.spk .who{flex:0 0 auto}
 .empty{color:var(--muted);font-size:14.5px;padding:22px 0;text-align:center}
 .item{border:1px solid var(--rule);border-radius:8px;padding:13px;margin-bottom:9px}
 .item .k{font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;
@@ -437,38 +459,90 @@ button.who.wholine{cursor:pointer;font-family:var(--mono)}
   white-space:nowrap}
 .samp button{flex:none;min-height:34px;padding:5px 10px;font-size:12px}
 
-/* naming sheet -- replaces prompt(), which mobile browsers block */
+/* naming sheet -- replaces prompt(), which mobile browsers block.
+   Native <dialog>: the backdrop, Escape and the inert page behind it are the
+   platform's job now, not hand-rolled transforms that left closed sheets in
+   the tab order. */
 .skip{position:absolute;left:-9999px;top:0;z-index:100;background:var(--surface);
   color:var(--ink);padding:10px 14px;border:1px solid var(--rule);border-radius:0 0 8px 0}
 .skip:focus{left:0}
 /* Sticky navigation would otherwise sit over whatever was just focused. */
 html{scroll-padding-top:120px}
-#editor{position:fixed;left:0;right:0;bottom:0;z-index:50;background:var(--surface);visibility:hidden;
-  border-top:1px solid var(--rule);border-radius:14px 14px 0 0;
+dialog.sheet{border:1px solid var(--rule);border-bottom:none;
+  border-radius:14px 14px 0 0;position:fixed;left:0;right:0;bottom:0;top:auto;
+  width:100%;max-width:none;max-height:85vh;margin:0;
   padding:18px 16px calc(18px + env(safe-area-inset-bottom));
-  box-shadow:0 -8px 32px #0003;transform:translateY(110%);transition:transform .2s ease}
-#editor.open{transform:none;visibility:visible}
-#editor,#namer{overscroll-behavior:contain}
-#editor h3{margin:0 0 4px;font-size:17px;font-weight:600}
-#editor .hint{font-family:var(--mono);font-size:12px;color:var(--muted);margin-bottom:12px}
-#edErr{color:var(--bad);font-family:var(--mono);font-size:12px;min-height:16px}
-#namer{position:fixed;left:0;right:0;bottom:0;z-index:50;background:var(--surface);visibility:hidden;
-  border-top:1px solid var(--rule);border-radius:14px 14px 0 0;
-  padding:18px 16px calc(18px + env(safe-area-inset-bottom));
-  box-shadow:0 -8px 32px #0003;transform:translateY(110%);transition:transform .2s ease}
-#namer.open{transform:none;visibility:visible}
-#namer h3{margin:0 0 4px;font-size:17px;font-weight:600}
-#namer .hint{font-family:var(--mono);font-size:12px;color:var(--muted);margin-bottom:14px}
+  background:var(--surface);color:var(--ink);
+  box-shadow:0 -8px 32px #0003;overscroll-behavior:contain}
+dialog.sheet::backdrop{background:#0006}
+dialog.sheet h3{margin:0 0 4px;font-size:17px;font-weight:600}
+dialog.sheet .hint{font-family:var(--mono);font-size:12px;color:var(--muted);
+  margin-bottom:12px}
 #namer input[type=text]{width:100%;font-family:var(--sans);font-size:17px;padding:13px;
   border-radius:8px;border:1px solid var(--rule);background:var(--paper);color:var(--ink);
   margin-bottom:10px}
 #namer input:focus{outline:2px solid var(--accent);outline-offset:-1px;border-color:var(--accent)}
+#edErr,#namerErr{color:var(--bad);font-family:var(--mono);font-size:12px;min-height:16px}
 .quick{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:12px}
 .quick button{flex:0 0 auto;min-height:38px;padding:7px 14px;font-size:14px;border-radius:18px}
-#scrim{position:fixed;inset:0;background:#0006;z-index:49;opacity:0;pointer-events:none;
-  transition:opacity .2s}
-#scrim.open{opacity:1;pointer-events:auto}
-#namerErr{color:var(--bad);font-family:var(--mono);font-size:12px;min-height:16px}
+
+/* ---- device tab hierarchy ----
+   Status is looked at daily; tap firmness is set once a year. A closed
+   summary row is the difference between those two living in one list. */
+.hero .stxt{font-size:21px}
+.hero .status{margin:2px 0 10px}
+.hero .btns{margin-top:14px}
+.hero .btns button{min-height:48px;font-size:15.5px}
+dl.herostats{margin:6px 0 2px;display:flex;gap:28px;flex-wrap:wrap}
+dl.herostats dt{font-size:11px;font-family:var(--mono);letter-spacing:.08em;
+  text-transform:uppercase;color:var(--faint)}
+dl.herostats dd{font-size:14.5px}
+.note{font-size:12.5px;color:var(--muted);margin:6px 0 0;line-height:1.55}
+details{border:1px solid var(--rule);border-radius:8px;margin-top:10px;
+  background:var(--sunk)}
+details[open]{background:var(--surface)}
+summary{cursor:pointer;padding:11px 12px;font-weight:600;font-size:14px;
+  list-style:none;display:flex;align-items:center;gap:8px;border-radius:8px;
+  user-select:none}
+summary::-webkit-details-marker{display:none}
+summary::after{content:"+";margin-left:auto;font-family:var(--mono);
+  color:var(--faint);font-size:15px}
+details[open] summary::after{content:"–"}
+summary:hover{color:var(--accent)}
+summary:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+details .inner{padding:2px 12px 12px}
+
+/* ---- toasts ----
+   Slow operations used to report only into the activity log, which lives on
+   the Device tab. A delete that finished on another tab said nothing at all. */
+#toasts{position:fixed;left:14px;bottom:14px;z-index:70;display:flex;
+  flex-direction:column;gap:8px;max-width:min(420px,90vw)}
+.toast{background:var(--surface);border:1px solid var(--rule);border-left:3px
+  solid var(--accent);border-radius:8px;padding:10px 14px;font-size:14px;
+  box-shadow:0 4px 18px #0004;opacity:0;transform:translateY(8px);
+  transition:opacity .2s,transform .2s}
+.toast.in{opacity:1;transform:none}
+.toast.ok{border-left-color:var(--ok)}
+.toast.bad{border-left-color:var(--bad)}
+.toast.warn{border-left-color:var(--warn)}
+
+/* ---- background job pill ---- */
+.pill.job i{background:var(--accent);animation:pulse 1.2s ease-in-out infinite}
+@keyframes pulse{50%{opacity:.3}}
+
+/* ---- theme picker ---- */
+.themesel{display:inline-flex;border:1px solid var(--rule);border-radius:7px;
+  overflow:hidden;flex:none}
+.themesel button{min-height:0;padding:5px 10px;font-size:12px;flex:none;
+  border:none;border-radius:0;background:transparent;color:var(--muted)}
+.themesel button:hover{border:none}
+.themesel button[aria-pressed=true]{background:var(--sunk);color:var(--ink)}
+
+/* ---- clips whose time nobody knows ---- */
+.lbl.unk{background:color-mix(in srgb,var(--warn) 16%,transparent);color:var(--warn)}
+/* The phone header is several rows tall; a day header pinned under it would
+   sit behind the header's background and vanish. */
+@media(max-width:900px){.daygroup{position:static}}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
 </style>
 </head>
@@ -476,32 +550,41 @@ html{scroll-padding-top:120px}
 <div class="wrap">
   <header>
     <h1>Bos<span>well</span></h1>
-    <!-- The top bar had a title and a build number and two feet of empty
-         space. What belongs there is the answer to "is it recording?", which
-         until now was only on the Device tab -- so reading a transcript meant
-         leaving it to find out whether anything was still being captured. -->
+    <!-- The top bar answers the standing question from anywhere in the page:
+         is it recording, is anything running, and how much battery is left. -->
     <span class="topstate">
       <span class="pill" id="capState" hidden><i></i><b></b></span>
       <span class="pill" id="battState" hidden></span>
+      <span class="pill job" id="jobPill" hidden><i></i><b></b></span>
       <span class="ver"><span id="ver">disconnected</span> · build __BUILD__</span>
+      <span class="themesel" role="group" aria-label="Colour theme">
+        <button type="button" id="themeLight" data-v="light" aria-pressed="false">Light</button>
+        <button type="button" id="themeSys" data-v="system" aria-pressed="true">Auto</button>
+        <button type="button" id="themeDark" data-v="dark" aria-pressed="false">Dark</button>
+      </span>
     </span>
   </header>
 
   <a class="skip" href="#main">Skip to content</a>
   <nav class="tabs" role="tablist" aria-label="Sections"
        aria-orientation="vertical">
-    <button id="tabDev" role="tab" aria-controls="viewDev" aria-selected="true" tabindex="0">Device</button>
-    <button id="tabRec" role="tab" aria-controls="viewRec" aria-selected="false" tabindex="-1">Recordings</button>
-    <button id="tabPpl" role="tab" aria-controls="viewPpl" aria-selected="false" tabindex="-1">People</button>
-    <button id="tabNotes" role="tab" aria-controls="viewNotes" aria-selected="false" tabindex="-1">Notes</button>
-    <button id="tabHeard" role="tab" aria-controls="viewHeard" aria-selected="false" tabindex="-1">Heard</button>
-    <button id="tabTidy" role="tab" aria-controls="viewTidy" aria-selected="false" tabindex="-1">Clear out</button>
+    <button id="tabDev" type="button" role="tab" aria-controls="viewDev" aria-selected="true" tabindex="0">Device</button>
+    <button id="tabRec" type="button" role="tab" aria-controls="viewRec" aria-selected="false" tabindex="-1">Recordings</button>
+    <button id="tabPpl" type="button" role="tab" aria-controls="viewPpl" aria-selected="false" tabindex="-1">People</button>
+    <button id="tabNotes" type="button" role="tab" aria-controls="viewNotes" aria-selected="false" tabindex="-1">Notes</button>
+    <button id="tabHeard" type="button" role="tab" aria-controls="viewHeard" aria-selected="false" tabindex="-1">Heard</button>
+    <button id="tabTidy" type="button" role="tab" aria-controls="viewTidy" aria-selected="false" tabindex="-1">Clear out</button>
   </nav>
 
   <main id="main">
+
+  <!-- ============ DEVICE ============
+       Ordered by how often the question is asked. The top card answers
+       "is it working right now"; everything below is set once and forgotten,
+       and lives behind a summary row so it stops competing with the answer. -->
   <div class="view" id="viewDev" role="tabpanel" aria-labelledby="tabDev" tabindex="0">
   <div class="grid">
-    <div class="card">
+    <div class="card span2 hero">
       <h2>Device</h2>
       <div class="status">
         <span class="dot off" id="dot"></span>
@@ -510,157 +593,198 @@ html{scroll-padding-top:120px}
           <div class="ssub" id="ssub">press Connect to begin</div>
         </div>
       </div>
+
+      <dl class="herostats">
+        <dt>Battery</dt><dd id="batt">—</dd>
+        <dt>Storage card</dt><dd id="cardv">—</dd>
+        <dt>Unsaved clip</dt><dd id="clip">0.0 s</dd>
+      </dl>
+
       <div class="barlabel"><span>Input level</span><span id="lvlNote"></span></div>
       <div class="meter"><i id="meter"></i></div>
+
+      <div class="err" id="err"></div>
 
       <div id="drainWrap" hidden>
         <div class="barlabel"><span>Buffered on device</span><span id="drainNote"></span></div>
         <div class="meter drain"><i id="drainBar"></i></div>
         <div class="btns" style="margin-top:10px">
-          <button id="bDiscard" class="dang">Discard buffer</button>
+          <button type="button" id="bDiscard" class="dang">Discard buffer</button>
         </div>
+      </div>
+
+      <div class="btns">
+        <button type="button" class="pri" id="bConn">Connect</button>
+        <button type="button" id="bArm" disabled>Stop capture</button>
+        <button type="button" id="bSave" disabled>Save clip</button>
+        <button type="button" class="dang" id="bDis" disabled>Disconnect</button>
       </div>
     </div>
 
     <div class="card">
-      <h2>Signal</h2>
-      <dl>
-        <dt>Frames received</dt><dd id="frames">0</dd>
-        <dt>Frames lost</dt><dd id="lost">0</dd>
-        <dt>Sample rate</dt><dd id="rate">—</dd>
-        <dt>Buffered on device</dt><dd id="backlog">0.0 s</dd>
-        <dt>Unsaved clip</dt><dd id="clip">0.0 s</dd>
-        <dt>Flash · IMU</dt><dd id="hw">—</dd>
-        <dt>Battery</dt><dd id="batt">—</dd>
-        <dt>Microphone</dt><dd id="micstate">—</dd>
-        <dt>Steps · motion</dt><dd id="motion">—</dd>
-      </dl>
-    </div>
-
-    <div class="card span2">
-      <h2>Controls</h2>
-      <div class="btns">
-        <button class="pri" id="bConn">Connect</button>
-        <button id="bArm" disabled>Stop capture</button>
-        <button id="bSave" disabled>Save clip</button>
-        <button class="dang" id="bDis" disabled>Disconnect</button>
-      </div>
+      <h2>Capture</h2>
       <label class="row">Microphone gain
         <input type="range" id="gain" min="20" max="70" value="50" step="1" disabled>
         <span class="val" id="gainv">50 · +5 dB</span>
       </label>
       <label class="row">Voice activity gating
-        <span class="switch" id="vad" role="switch" aria-checked="false" tabindex="0"></span>
+        <button type="button" class="switch" id="vad" role="switch" aria-checked="false"></button>
       </label>
-      <label class="row">Storage card
-        <span class="val" id="cardv">—</span>
-      </label>
-      <label class="row">Double tap to start and stop
-        <span class="switch" id="tapon" role="switch" aria-checked="false" tabindex="0"></span>
-      </label>
-      <label class="row">Tap firmness
-        <input type="range" id="tapths" min="1" max="31" value="12" step="1" disabled>
-        <span class="val" id="tapthsv">12 · 750 mg</span>
-      </label>
-      <div style="font-size:12.5px;color:var(--muted);margin-top:-4px">
-        How hard a tap has to be before the device counts it. Lower is more
-        sensitive: the shipped default of 4 is 250&nbsp;mg, which is light
-        enough that setting the device down registers as a double tap. Kept on
-        the board itself, so a replacement starts at 4 again.
-      </div>
-      <label class="row">Fast charge (100 mA)
-        <span class="switch" id="fastchg" role="switch" aria-checked="false" tabindex="0"></span>
-      </label>
-      <div style="font-size:12.5px;color:var(--muted);margin-top:-4px">
-        The charger defaults to 50 mA, so a 500 mAh cell takes about ten hours.
-        100 mA halves that. Only raise it on a cell rated for the current.
-      </div>
-      <label class="row" id="recrow" hidden>Recordings on the device
-        <span class="val" id="recv">—</span>
-        <button id="recbtn">Look</button>
-      </label>
-      <div id="reclist" hidden style="font-size:12.5px;margin-top:-4px"></div>
-      <div id="recnote" hidden style="font-size:12.5px;color:var(--muted);margin-top:2px">
-        What the device recorded while it was away from the computer. Plugged
-        in, they come off as fast as the cable allows and can all be imported
-        at once. Over Bluetooth it is about twenty times slower — a four-minute
-        recording takes roughly four minutes — so they come one at a time, for
-        when you want a particular conversation now.
-        <br><br>
-        Nothing is deleted from the device either way. It holds about three
-        weeks and ages out the oldest on its own, so if an import goes wrong
-        the recording is still there to read again.
-      </div>
-      <label class="row" id="dfurow" hidden>Update the firmware
-        <button id="dfubtn" class="dang" disabled>Reboot to bootloader</button>
-      </label>
-      <div id="dfunote" hidden style="font-size:12.5px;color:var(--muted);margin-top:-4px">
-        Puts the device into its bootloader over Bluetooth, so a firmware
-        update does not need the USB cable or a blind double-tap on the reset
-        button. The device disconnects when it does this and will not come
-        back on its own — it stays a bootloader until something flashes it.
-      </div>
-      <label class="row">Status light
-        <input type="range" id="led" min="0" max="255" value="255" step="15" disabled>
-        <span class="val" id="ledv">full</span>
-      </label>
-      <label class="row">Keep the light on
-        <span class="switch" id="ledsteady" role="switch" aria-checked="false" tabindex="0"></span>
-      </label>
-      <div style="font-size:12.5px;color:var(--muted);margin-top:-4px">
-        The light blinks briefly by default — under 1% of the power a steady one
-        uses, and still enough to show what the device is doing. Turn this on to
-        keep it lit, and use the slider to dim it: dimming is real PWM, so
-        current falls with brightness, though below a few percent the PWM
-        hardware costs more than the light does. Off costs nothing.
-      </div>
-      <!-- Grouped by the question you actually ask across a room: am I
-           recording? Every warm-bright colour means yes. -->
-      <div class="ledkey" aria-label="What the status light means">
-        <div class="ledgrp">Recording</div>
-        <div><i style="background:#5ad07a"></i><b>green</b> everything is
-          reaching the computer</div>
-        <div><i style="background:#4ad0d0"></i><b>cyan</b> live, and sending
-          buffered audio alongside it</div>
-        <div><i style="background:#c060d0"></i><b>magenta</b> no computer —
-          saving to flash to send later</div>
-        <div class="ledgrp">Not recording</div>
-        <div><i style="background:#e05a5a"></i><b>red</b> connected, paused</div>
-        <div><i style="background:#4a90e0"></i><b>blue</b> waiting to be
-          found</div>
-        <div class="ledgrp">Something is wrong</div>
-        <div><i style="background:#e0c04a"></i><b>yellow</b> recording, but the
-          flash chip is not available — anything the radio cannot carry is lost
-          rather than buffered</div>
-        <div><i style="background:#e8e8e8"></i><b>white</b> armed, but the
-          microphone is producing nothing — it tried to restart it and could
-          not</div>
-      </div>
       <label class="row">Play catch-up live
-        <span class="switch" id="blmode" role="switch" aria-checked="false" tabindex="0"></span>
+        <button type="button" class="switch" id="blmode" role="switch" aria-checked="false"></button>
       </label>
-      <div style="font-size:12.5px;color:var(--muted);margin-top:-4px">
-        Off: finish the buffered audio first, so the conversation stays in order.
-        On: hear live audio immediately and recover the buffer alongside it —
-        recovered audio is saved as its own clip.
-      </div>
-      <div class="err" id="err"></div>
+      <p class="note">Off: finish the buffered audio first, so the conversation
+        stays in order. On: hear live audio immediately and recover the buffer
+        alongside it — recovered audio is saved as its own clip.</p>
     </div>
 
-  <div class="card span2">
+    <!-- One control for getting recordings off the device, whichever way it
+         arrived: docked over USB, or over the radio. Two importing-shaped
+         buttons a few rows apart, one of them usually invisible, was how "I
+         clicked Import and I'm not sure anything happened" happened. -->
+    <div class="card" id="recrow" hidden>
+      <h2>Recordings on the device</h2>
+      <div class="row" style="align-items:center">
+        <span class="val" id="recv" style="flex:1;text-align:left;min-width:0">—</span>
+        <button type="button" id="recbtn" style="flex:none">Look</button>
+      </div>
+      <div id="reclist" hidden style="margin-top:10px"></div>
+      <div id="recnote" hidden>
+        <p class="note">What the device recorded while it was away from the
+          computer. Plugged in, they come off as fast as the cable allows and
+          can all be imported at once. Over Bluetooth it is about twenty times
+          slower — a four-minute recording takes roughly four minutes — so
+          they come one at a time, for when you want a particular conversation
+          now.</p>
+        <p class="note">Nothing is deleted from the device either way. It holds
+          about three weeks and ages out the oldest on its own, so if an
+          import goes wrong the recording is still there to read again.</p>
+      </div>
+    </div>
+
+    <div class="card span2">
+      <h2>Device settings</h2>
+
+      <details>
+        <summary>Double tap to start and stop</summary>
+        <div class="inner">
+          <label class="row" style="margin-top:0">Enabled
+            <button type="button" class="switch" id="tapon" role="switch" aria-checked="false"></button>
+          </label>
+          <label class="row">Tap firmness
+            <input type="range" id="tapths" min="1" max="31" value="12" step="1" disabled>
+            <span class="val" id="tapthsv">12 · 750 mg</span>
+          </label>
+          <p class="note">How hard a tap has to be before the device counts it.
+            Lower is more sensitive: the shipped default of 4 is 250&nbsp;mg,
+            which is light enough that setting the device down registers as a
+            double tap. Kept on the board itself, so a replacement starts at 4
+            again.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary>Status light</summary>
+        <div class="inner">
+          <label class="row" style="margin-top:0">Brightness
+            <input type="range" id="led" min="0" max="255" value="255" step="15" disabled>
+            <span class="val" id="ledv">full</span>
+          </label>
+          <label class="row">Keep the light on
+            <button type="button" class="switch" id="ledsteady" role="switch" aria-checked="false"></button>
+          </label>
+          <p class="note">The light blinks briefly by default — under 1% of the
+            power a steady one uses, and still enough to show what the device
+            is doing. Turn this on to keep it lit, and use the slider to dim
+            it: dimming is real PWM, so current falls with brightness, though
+            below a few percent the PWM hardware costs more than the light
+            does. Off costs nothing.</p>
+          <!-- Grouped by the question you actually ask across a room: am I
+               recording? Every warm-bright colour means yes. -->
+          <div class="ledkey" aria-label="What the status light means">
+            <div class="ledgrp">Recording</div>
+            <div><i style="background:#5ad07a"></i><b>green</b> everything is
+              reaching the computer</div>
+            <div><i style="background:#4ad0d0"></i><b>cyan</b> live, and sending
+              buffered audio alongside it</div>
+            <div><i style="background:#c060d0"></i><b>magenta</b> no computer —
+              saving to flash to send later</div>
+            <div class="ledgrp">Not recording</div>
+            <div><i style="background:#e05a5a"></i><b>red</b> connected, paused</div>
+            <div><i style="background:#4a90e0"></i><b>blue</b> waiting to be
+              found</div>
+            <div class="ledgrp">Something is wrong</div>
+            <div><i style="background:#e0c04a"></i><b>yellow</b> recording, but
+              the flash chip is not available — anything the radio cannot carry
+              is lost rather than buffered</div>
+            <div><i style="background:#e8e8e8"></i><b>white</b> armed, but the
+              microphone is producing nothing — it tried to restart it and
+              could not</div>
+          </div>
+        </div>
+      </details>
+
+      <details>
+        <summary>Charging</summary>
+        <div class="inner">
+          <label class="row" style="margin-top:0">Fast charge (100 mA)
+            <button type="button" class="switch" id="fastchg" role="switch" aria-checked="false"></button>
+          </label>
+          <p class="note">The charger defaults to 50 mA, so a 500 mAh cell
+            takes about ten hours. 100 mA halves that. Only raise it on a cell
+            rated for the current.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary>Firmware update</summary>
+        <div class="inner">
+          <label class="row" id="dfurow" hidden style="margin-top:0">Over the air
+            <button type="button" id="dfubtn" class="dang" disabled>Reboot to bootloader</button>
+          </label>
+          <div id="dfunote" hidden>
+            <p class="note">Puts the device into its bootloader over Bluetooth,
+              so a firmware update does not need the USB cable or a blind
+              double-tap on the reset button. The device disconnects when it
+              does this and will not come back on its own — it stays a
+              bootloader until something flashes it.</p>
+          </div>
+          <p class="note" id="dfuabsent" hidden>This firmware cannot reboot
+            into its bootloader over Bluetooth; flashing needs the cable.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary>Diagnostics</summary>
+        <div class="inner">
+          <dl>
+            <dt>Frames received</dt><dd id="frames">0</dd>
+            <dt>Frames lost</dt><dd id="lost">0</dd>
+            <dt>Sample rate</dt><dd id="rate">—</dd>
+            <dt>Buffered on device</dt><dd id="backlog">0.0 s</dd>
+            <dt>Flash · IMU</dt><dd id="hw">—</dd>
+            <dt>Microphone</dt><dd id="micstate">—</dd>
+            <dt>Steps · motion</dt><dd id="motion">—</dd>
+          </dl>
+        </div>
+      </details>
+    </div>
+
+    <div class="card span2">
       <h2>Activity</h2>
       <ul id="log" aria-live="polite" aria-relevant="additions"><li>waiting for connection…</li></ul>
     </div>
   </div>
   </div>
 
+  <!-- ============ RECORDINGS ============ -->
   <div class="view" id="viewRec" role="tabpanel" aria-labelledby="tabRec" tabindex="0" hidden>
     <div class="toolbar">
       <span class="search">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15.5 14h-.79l-.28-.27A6.47 6.47 0 0016 9.5 6.5 6.5 0 109.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
         <input type="search" id="q" placeholder="Search transcripts…"
                autocomplete="off" spellcheck="false" aria-label="Search transcripts">
-        <button class="clr" id="qClear" hidden aria-label="Clear search">×</button>
+        <button type="button" class="clr" id="qClear" hidden aria-label="Clear search">×</button>
       </span>
       <select class="filter" id="fContent" aria-label="Filter by content">
         <option value="all">All recordings</option>
@@ -705,13 +829,13 @@ html{scroll-padding-top:120px}
     <div class="toolbar2">
       <span class="count" id="clipCount"></span>
       <span class="count" id="selCount"></span>
-      <button id="bSelect">Select</button>
-      <button id="bSelAll" hidden>Select all shown</button>
-      <button id="bSelNone" hidden>Clear</button>
-      <button class="dang" id="bDelSel" hidden>Delete</button>
-      <button id="bExport" hidden>Export</button>
-      <button id="bAll">Transcribe all</button>
-      <button id="bRefresh">Refresh</button>
+      <button type="button" id="bSelect">Select</button>
+      <button type="button" id="bSelAll" hidden>Select all shown</button>
+      <button type="button" id="bSelNone" hidden>Clear</button>
+      <button type="button" class="dang" id="bDelSel" hidden>Delete</button>
+      <button type="button" id="bExport" hidden>Export</button>
+      <button type="button" id="bAll">Transcribe all</button>
+      <button type="button" id="bRefresh">Refresh</button>
       <span class="val" id="qdepth"></span>
     </div>
     <div class="card" id="clipList" style="border:none;background:transparent;padding:0">
@@ -720,7 +844,7 @@ html{scroll-padding-top:120px}
 
     <div class="card" id="convDetail" hidden>
       <div class="topbar">
-        <button id="cvBackTop" aria-label="Back to recordings">&larr; Back</button>
+        <button type="button" id="cvBackTop" aria-label="Back to recordings">&larr; Back</button>
         <span class="tbtitle" id="cvTitleTop"></span>
       </div>
       <h2 id="cvTitle">Conversation</h2>
@@ -728,27 +852,27 @@ html{scroll-padding-top:120px}
       <div class="spk" id="cvSpeakers"></div>
       <audio id="cvPlayer" preload="none"></audio>
       <div class="cvnow" id="cvNow" hidden>
-        <button id="cvPlay" aria-label="Play or pause">▶</button>
-        <button id="cvStop" aria-label="Stop playback">■</button>
+        <button type="button" id="cvPlay" aria-label="Play or pause">▶</button>
+        <button type="button" id="cvStop" aria-label="Stop playback">■</button>
         <span id="cvNowLabel"></span>
       </div>
-      <div id="cvSegs"></div>
+      <div id="cvSegs" aria-live="polite"></div>
       <div class="btns" style="margin-top:16px">
-        <button id="cvBack">Back</button>
-        <button class="pri" id="cvExport">Export</button>
-        <button id="cvTranscribe">Transcribe missing</button>
-        <button id="cvReview">Review with agent</button>
-        <button id="cvConsolidate">Re-detect speakers</button>
-        <button id="cvRetranscribe">Fix sentence breaks</button>
-        <button class="dang" id="cvDelete">Delete conversation</button>
+        <button type="button" id="cvBack">Back</button>
+        <button type="button" class="pri" id="cvExport">Export</button>
+        <button type="button" id="cvTranscribe">Transcribe missing</button>
+        <button type="button" id="cvReview">Review with agent</button>
+        <button type="button" id="cvConsolidate">Re-detect speakers</button>
+        <button type="button" id="cvRetranscribe">Fix sentence breaks</button>
+        <button type="button" class="dang" id="cvDelete">Delete conversation</button>
       </div>
-      <div id="cvMsg" style="font-family:var(--mono);font-size:12px;color:var(--muted);
+      <div id="cvMsg" role="status" style="font-family:var(--mono);font-size:12px;color:var(--muted);
            min-height:16px;margin-top:10px"></div>
     </div>
 
     <div class="card" id="detail" hidden>
       <div class="topbar">
-        <button id="bBackTop" aria-label="Back">&larr; Back</button>
+        <button type="button" id="bBackTop" aria-label="Back">&larr; Back</button>
         <span class="tbtitle" id="dTitleTop"></span>
       </div>
       <h2 id="dTitle">Transcript</h2>
@@ -757,7 +881,7 @@ html{scroll-padding-top:120px}
         <canvas id="wcanvas" tabindex="0" role="slider" aria-label="Seek within recording"
                 aria-valuemin="0" aria-valuenow="0"></canvas>
         <div class="transport">
-          <button id="play" aria-label="Play"><svg id="playIcon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M8 5v14l11-7z"/></svg></button>
+          <button type="button" id="play" aria-label="Play"><svg id="playIcon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M8 5v14l11-7z"/></svg></button>
           <div class="time"><b id="tNow">0:00</b><span id="tDur"> / 0:00</span></div>
           <div class="legend">
             <span><i style="background:var(--accent)"></i><span id="legVoice">speech</span></span>
@@ -769,16 +893,17 @@ html{scroll-padding-top:120px}
       <div class="spk" id="dSpeakers"></div>
       <div id="dSegs"></div>
       <div class="btns" style="margin-top:16px">
-        <button id="bBack">Back</button>
-        <button class="pri" id="bTranscribe">Transcribe</button>
-        <button id="bSplit">Split by voice</button>
-        <button class="dang" id="bDelete">Delete</button>
+        <button type="button" id="bBack">Back</button>
+        <button type="button" class="pri" id="bTranscribe">Transcribe</button>
+        <button type="button" id="bSplit">Split by voice</button>
+        <button type="button" class="dang" id="bDelete">Delete</button>
       </div>
-      <div id="dMsg" style="font-family:var(--mono);font-size:12px;color:var(--muted);
+      <div id="dMsg" role="status" style="font-family:var(--mono);font-size:12px;color:var(--muted);
            min-height:16px;margin-top:10px"></div>
     </div>
   </div>
 
+  <!-- ============ PEOPLE ============ -->
   <div class="view" id="viewPpl" role="tabpanel" aria-labelledby="tabPpl" tabindex="0" hidden>
     <div class="card">
       <h2>Enrolled voices</h2>
@@ -799,14 +924,14 @@ html{scroll-padding-top:120px}
         condition it could not recognise before.</p>
       <div class="toolbar2" style="margin-bottom:12px">
         <span class="count" id="voiceCount"></span>
-        <button id="bVoiceRecent">Since yesterday</button>
-        <button id="bVoiceScan">Scan for new voices</button>
-        <button id="bConsolidateAll">Re-detect speakers everywhere</button>
-        <button id="bVoiceRecheck">Recheck against named people</button>
-        <button id="bCompact">Compact voiceprints</button>
-        <button id="bVoiceMedia">Show tagged media</button>
-        <button id="bVoiceIgnored">Show set aside</button>
-        <button id="bVoiceRefresh">Refresh</button>
+        <button type="button" id="bVoiceRecent">Since yesterday</button>
+        <button type="button" id="bVoiceScan">Scan for new voices</button>
+        <button type="button" id="bConsolidateAll">Re-detect speakers everywhere</button>
+        <button type="button" id="bVoiceRecheck">Recheck against named people</button>
+        <button type="button" id="bCompact">Compact voiceprints</button>
+        <button type="button" id="bVoiceMedia">Show tagged media</button>
+        <button type="button" id="bVoiceIgnored">Show set aside</button>
+        <button type="button" id="bVoiceRefresh">Refresh</button>
       </div>
       <!-- Most of the queue is one-clip voices, and after enrolling a channel
            a great many of them are the same channel again below the automatic
@@ -816,7 +941,7 @@ html{scroll-padding-top:120px}
           <option value="">Closest to anyone</option>
         </select>
         <span class="count" id="voiceNearCount"></span>
-        <button id="bVoiceConfirmAll" hidden></button>
+        <button type="button" id="bVoiceConfirmAll" hidden></button>
       </div>
       <div id="voiceQueue"><div class="empty">loading…</div></div>
     </div>
@@ -830,18 +955,16 @@ html{scroll-padding-top:120px}
         included automatically. One per line.</p>
       <textarea id="vocabBox" rows="7" aria-label="Custom words, one per line"
         placeholder="Metformin&#10;Vinod&#10;nRF52840"
-        spellcheck="false" autocapitalize="off"
-        style="width:100%;font-family:var(--mono);font-size:14px;padding:11px;
-               border-radius:8px;border:1px solid var(--rule);background:var(--paper);
-               color:var(--ink);resize:vertical"></textarea>
+        spellcheck="false" autocapitalize="off" style="width:100%"></textarea>
       <div class="btns" style="margin-top:10px">
-        <button class="pri" id="bVocabSave">Save Word List</button>
+        <button type="button" class="pri" id="bVocabSave">Save Word List</button>
       </div>
-      <div id="vocabMsg" style="font-family:var(--mono);font-size:12px;
+      <div id="vocabMsg" role="status" style="font-family:var(--mono);font-size:12px;
            color:var(--muted);min-height:16px;margin-top:8px"></div>
     </div>
   </div>
 
+  <!-- ============ NOTES ============ -->
   <div class="view" id="viewNotes" role="tabpanel" aria-labelledby="tabNotes" tabindex="0" hidden>
     <div class="card">
       <h2>From your conversations</h2>
@@ -851,11 +974,11 @@ html{scroll-padding-top:120px}
         rather than half a sentence.</p>
       <div class="toolbar2" style="margin-bottom:12px">
         <span class="count" id="agentState"></span>
-        <button id="bAgentRun">Review now</button>
-        <button id="bAgentRefresh">Refresh</button>
+        <button type="button" id="bAgentRun">Review now</button>
+        <button type="button" id="bAgentRefresh">Refresh</button>
       </div>
       <label class="row" style="margin-top:0">Review conversations automatically
-        <span class="switch" id="agentOn" role="switch" aria-checked="true" tabindex="0"></span>
+        <button type="button" class="switch" id="agentOn" role="switch" aria-checked="true"></button>
       </label>
       <label class="row">Model
         <select class="filter" id="agentModel" aria-label="Agent model"></select>
@@ -883,7 +1006,7 @@ html{scroll-padding-top:120px}
           <option value="0.92">Similar</option>
           <option value="0.88">Loosely similar</option>
         </select>
-        <button id="bDupRefresh">Check again</button>
+        <button type="button" id="bDupRefresh">Check again</button>
       </div>
       <div id="dupList"></div>
     </div>
@@ -898,12 +1021,13 @@ html{scroll-padding-top:120px}
           <option value="facts">Facts</option>
           <option value="topics">Topics</option>
         </select>
-        <button class="dang" id="bClearItems" style="min-height:40px;flex:0 0 auto">Clear all</button>
+        <button type="button" class="dang" id="bClearItems" style="min-height:40px;flex:0 0 auto">Clear all</button>
       </div>
       <div id="itemList"><div class="empty">loading…</div></div>
     </div>
   </div>
 
+  <!-- ============ CLEAR OUT ============ -->
   <div class="view" id="viewTidy" role="tabpanel" aria-labelledby="tabTidy" tabindex="0" hidden>
     <div class="card">
       <h2>Clear out recordings that hold nothing</h2>
@@ -919,17 +1043,18 @@ html{scroll-padding-top:120px}
         when it was recorded, and what was heard in it.
       </div>
       <div class="toolbar2" style="margin-top:12px">
-        <button id="bTidyRefresh">Refresh</button>
+        <button type="button" id="bTidyRefresh">Refresh</button>
         <span class="count" id="tidyTotal"></span>
       </div>
       <div id="tidyList"><div class="empty">loading…</div></div>
       <div class="toolbar2" style="margin-top:14px">
         <span class="count" id="tidyChosen">nothing selected</span>
-        <button class="dang" id="bTidyDelete" disabled>Delete these</button>
+        <button type="button" class="dang" id="bTidyDelete" disabled>Delete these</button>
       </div>
     </div>
   </div>
 
+  <!-- ============ HEARD ============ -->
   <div class="view" id="viewHeard" role="tabpanel" aria-labelledby="tabHeard" tabindex="0" hidden>
     <div class="card">
       <h2>Everything that was not speech</h2>
@@ -946,7 +1071,7 @@ html{scroll-padding-top:120px}
         moment in it.
       </div>
       <div class="toolbar2" style="margin-top:12px">
-        <button id="bHeardRefresh">Refresh</button>
+        <button type="button" id="bHeardRefresh">Refresh</button>
         <span class="count" id="heardTotal"></span>
       </div>
       <div id="heardList"><div class="empty">loading…</div></div>
@@ -954,31 +1079,29 @@ html{scroll-padding-top:120px}
   </div>
 
   </main>
-
-
 </div>
 
-<div id="scrim"></div>
-<div id="editor" role="dialog" aria-modal="true" aria-labelledby="edT">
+<div id="toasts" aria-live="polite"></div>
+
+<!-- The editor and the namer are native dialogs: Escape, the backdrop and the
+     inert page behind them come from the platform. -->
+<dialog class="sheet" id="editor" aria-labelledby="edT">
   <h3 id="edT">Correct this line</h3>
   <div class="hint" id="edSub"></div>
   <textarea id="editArea" enterkeyhint="done"
             aria-label="Corrected text for this line"></textarea>
   <div class="quick" id="edSpk"></div>
   <input type="text" id="edNewName" placeholder="Name for this line only" hidden
-         autocomplete="off" autocapitalize="words"
-         style="width:100%;font-size:16px;padding:11px;border-radius:8px;
-                border:1px solid var(--rule);background:var(--paper);
-                color:var(--ink);margin-bottom:10px">
+         autocomplete="off" autocapitalize="words" style="width:100%">
   <div class="quick" id="edNameQuick"></div>
   <div id="edErr"></div>
   <div class="btns" style="margin-top:10px">
-    <button id="edCancel">Cancel</button>
-    <button class="pri" id="edSave">Save</button>
+    <button type="button" id="edCancel">Cancel</button>
+    <button type="button" class="pri" id="edSave">Save</button>
   </div>
-</div>
+</dialog>
 
-<div id="namer" role="dialog" aria-modal="true" aria-labelledby="namerT">
+<dialog class="sheet" id="namer" aria-labelledby="namerT">
   <h3 id="namerT">Who is this?</h3>
   <div class="hint" id="namerSub"></div>
   <div class="quick" id="namerQuick"></div>
@@ -987,12 +1110,13 @@ html{scroll-padding-top:120px}
          autocapitalize="words" enterkeyhint="done">
   <div id="namerErr"></div>
   <div class="btns" style="margin-top:10px">
-    <button id="namerCancel">Cancel</button>
-    <button class="pri" id="namerSave">Save name</button>
+    <button type="button" id="namerCancel">Cancel</button>
+    <button type="button" class="pri" id="namerSave">Save name</button>
   </div>
-</div>
+</dialog>
 
 <script>
+
 const $ = id => document.getElementById(id);
 let ws, armed = false, connected = false, drainPeak = 0;
 
@@ -1006,6 +1130,73 @@ function log(t){
 }
 
 function send(o){ if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); }
+
+/* ---- theme ----
+   Light and dark are painted from the same tokens; the only question is which
+   set is stamped on the root. "system" is the absence of a stamp, so the
+   browser's own preference decides and follows live changes. */
+const THEME_KEY = "boswell_theme";
+function applyTheme(v){
+  try{ localStorage.setItem(THEME_KEY, v); }catch(e){}
+  if (v === "system") delete document.documentElement.dataset.theme;
+  else document.documentElement.dataset.theme = v;
+  for (const b of document.querySelectorAll(".themesel button")){
+    b.setAttribute("aria-pressed", String(b.dataset.v === v));
+  }
+}
+on("themeLight", "click", () => applyTheme("light"));
+on("themeDark",  "click", () => applyTheme("dark"));
+on("themeSys",   "click", () => applyTheme("system"));
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change",
+  () => {
+    let t = "system";
+    try{ t = localStorage.getItem(THEME_KEY) || "system"; }catch(e){}
+    if (t === "system") applyTheme("system");
+  });
+applyTheme((()=>{ try{ return localStorage.getItem(THEME_KEY) || "system"; }
+                  catch(e){ return "system"; } })());
+
+/* ---- toasts: one place to say what just happened ----
+   Slow operations used to report only into the activity log, which lives on
+   the Device tab. A delete finished on the Recordings tab said nothing
+   anywhere on screen. These are for user-initiated actions that finish
+   without the user still looking at the control that started them. */
+function toast(text, kind){
+  const host = $("toasts");
+  if (!host) return;
+  const el = document.createElement("div");
+  el.className = "toast " + (kind || "info");
+  el.textContent = text;
+  host.appendChild(el);
+  requestAnimationFrame(() => el.classList.add("in"));
+  setTimeout(() => {
+    el.classList.remove("in");
+    setTimeout(() => el.remove(), 300);
+  }, 6000);
+}
+
+/* ---- background jobs ----
+   Transcription, agent review, speaker re-detection and imports all run
+   behind the page. One pill in the top bar says that any of them is on,
+   because a page that looks idle while it is working invites the press that
+   does nothing. */
+const jobs = new Map();
+function jobStart(key, label){
+  jobs.set(key, label);
+  const pill = $("jobPill");
+  if (pill){
+    pill.hidden = false;
+    pill.querySelector("b").textContent = [...jobs.values()][0];
+  }
+}
+function jobEnd(key){
+  jobs.delete(key);
+  const pill = $("jobPill");
+  if (pill){
+    pill.hidden = jobs.size === 0;
+    if (jobs.size) pill.querySelector("b").textContent = [...jobs.values()][0];
+  }
+}
 
 /* ---- access token (only used when the server sets BOSWELL_TOKEN) ---- */
 const TK = {
@@ -1188,6 +1379,9 @@ function paint(s){
 
   $("dfurow").hidden = !s.has_ota;
   $("dfunote").hidden = !s.has_ota;
+  /* A control for what this firmware cannot do must not be shown -- but the
+     empty space should not read as the setting being lost either. */
+  $("dfuabsent").hidden = !!s.has_ota;
   $("dfubtn").disabled = !s.has_ota || !s.connected;
   if (!s.connected) resetDfu();
 
@@ -1233,12 +1427,20 @@ async function connect(){
     else if (m.type === "clip"){ log("clip written: " + m.path);
       if (!$("viewRec").hidden && $("detail").hidden) loadClips(); }
     else if (m.type === "agent"){
-      if (m.status === "running") log(`reviewing ${m.clips} clip(s)…`);
-      else log(`review done — ${m.actions} item(s)` + (m.said ? `: ${m.said}` : ""));
+      if (m.status === "running"){
+        log(`reviewing ${m.clips} clip(s)…`);
+        jobStart("agent", `reviewing ${m.clips}…`);
+      } else {
+        jobEnd("agent");
+        log(`review done — ${m.actions} item(s)` + (m.said ? `: ${m.said}` : ""));
+        if (m.actions) toast(`Review done — ${m.actions} item(s) recorded`, "ok");
+      }
       if (!$("viewNotes").hidden){ loadAgent(); loadItems(); }
     }
     else if (m.type === "job"){
       log(`transcription ${m.status}: ${m.clip}` + (m.error ? " — " + m.error : ""));
+      if (m.status === "error")
+        toast(`Transcription failed: ${m.clip}` + (m.error ? ` — ${m.error}` : ""), "bad");
       if (m.status === "done"){
         if (current === m.clip) renderTranscript(m.clip);
         if (!$("viewRec").hidden && $("detail").hidden) loadClips();
@@ -1478,12 +1680,15 @@ on("bTidyDelete", "click", async () => {
       method: "POST", headers: {"Content-Type": "application/json"},
       body: JSON.stringify({sets})});
     const b = await r.json().catch(() => ({}));
-    if (!r.ok){ log(b.detail || "could not delete"); }
+    if (!r.ok){ log(b.detail || "could not delete");
+                toast(b.detail || "could not delete", "bad"); }
     else {
       log(`removed ${b.removed} recording(s), ${(b.bytes/1e6).toFixed(0)} MB `
           + `— listed in data/deleted/${b.manifest}`);
+      toast(`Removed ${b.removed} recording(s)`, "ok");
     }
-  }catch(e){ log("could not reach the server"); }
+  }catch(e){ log("could not reach the server");
+             toast("Could not reach the server", "bad"); }
   loadTidy();
 });
 
@@ -1507,10 +1712,22 @@ function showTab(which){
   if (which === "notes"){ loadAgent(); loadItems(); loadTopics(); loadDuplicates(); }
   if (which === "heard") loadHeard();
   if (which === "tidy") loadTidy();
+  /* The tab survives a refresh and is bookmarkable: the archive is where
+     "what did it catch" gets answered, and landing back on Device every time
+     cost a click forever. */
+  try{
+    history.replaceState(null, "", which === "dev" ? location.pathname
+                                                   : "#" + which);
+  }catch(e){}
 }
 const TABS = [["tabDev","dev"],["tabRec","rec"],["tabPpl","ppl"],
               ["tabNotes","notes"],["tabHeard","heard"],["tabTidy","tidy"]];
 for (const [id, key] of TABS) $(id).onclick = () => showTab(key);
+/* Open on the tab the URL names, so a bookmark lands where it was made. */
+{
+  const want = (location.hash + "").slice(1);
+  if (["rec","ppl","notes","heard","tidy"].includes(want)) showTab(want);
+}
 for (const [id] of TABS){
   $(id).addEventListener("keydown", e => {
     const i = TABS.findIndex(([t]) => t === id);
@@ -2225,7 +2442,9 @@ async function pollBulk(){
     if (b.running){
       btn.disabled = true;
       btn.textContent = `re-detecting ${b.done}/${b.total}…`;
+      jobStart("bulk", `re-detecting speakers ${b.done}/${b.total}…`);
     } else {
+      jobEnd("bulk");
       btn.disabled = false;
       btn.textContent = "Re-detect speakers everywhere";
       if (bulkPoll){
@@ -2550,6 +2769,17 @@ function fmtDay(t){
 function fmtDur(sec){
   const m = Math.floor(sec/60);
   return m >= 1 ? `${m} min` : `${Math.round(sec)}s`;
+}
+
+/* What time a clip is really about.
+   mtime is when the file reached the archive; a clip pulled off the card can
+   land hours after the conversation it holds. started is the device's own
+   account of when the audio happened, and the list sorts and groups on that.
+   Clips recorded before the host ever set the device's clock carry
+   time_known: false -- shown, and never dressed up as a timestamp. */
+function capTime(c){
+  if (c.time_known === false) return null;
+  return c.started || c.modified;
 }
 
 async function loadConversations(el){
@@ -2971,6 +3201,10 @@ function matchesQuery(c){
 }
 
 function inDateRange(modified){
+  /* A clip with no trustworthy time belongs to no day. Excluding it from
+     every filter would hide it, which is worse than including it everywhere
+     -- the row itself says its time is unknown. */
+  if (modified == null) return true;
   if (dateFilter === "all") return true;
   const t = modified * 1000;
   const start = new Date(); start.setHours(0,0,0,0);
@@ -3057,9 +3291,12 @@ async function loadClips(){
         : clipFilter === "missed" ? (c.has_speech === false &&
                                      (c.voice_tag || 0) >= MISSED_VOICE_FLOOR)
         : c.has_speech === false)
-      .filter(c => inDateRange(c.modified))
+      .filter(c => inDateRange(capTime(c)))
       .filter(c => matchesLabelFilter(c.speakers))
       .filter(c => !soundFilter || (c.sounds || []).includes(soundFilter));
+    /* Arrival order is not capture order: a docked dump lands this evening
+       carrying this morning. The list reads in the order things happened. */
+    clips.sort((a, b) => (capTime(b) ?? 0) - (capTime(a) ?? 0));
     if (clipFilter === "missed"){
       clips.sort((a, b) => (b.voice_tag || 0) - (a.voice_tag || 0));
     }
@@ -3123,7 +3360,8 @@ async function loadClips(){
          timestamps with no breaks in it is a wall, and the reader is almost
          always looking for a day rather than a clip. */
       if (groupMode === "day" || groupMode === "flat"){
-        const day = fmtDay(c.modified);
+        const t0 = capTime(c);
+        const day = t0 == null ? "Time unknown" : fmtDay(t0);
         if (day !== lastDay){
           lastDay = day;
           const h = document.createElement("div");
@@ -3134,10 +3372,13 @@ async function loadClips(){
       }
       const b = document.createElement("button");
       b.className = "clip" + (selected.has(c.name) ? " sel" : "");
+      const capT = capTime(c);
       b.innerHTML = (selectMode
           ? `<span class="box">${selected.has(c.name) ? "✓" : ""}</span>` : "") +
         `<div class="ci">
-          <div class="cn">${new Date(c.modified*1000).toLocaleString()}</div>
+          <div class="cn">${capT == null ? "time unknown — reached the archive "
+            + new Date(c.modified*1000).toLocaleString()
+            : new Date(capT*1000).toLocaleString()}</div>
           <div class="cp">${highlight(c.preview) || (
             // A clip with no words but a voice tag is not the same as an
             // empty one, and saying so is the whole point of this view.
@@ -3148,7 +3389,11 @@ async function loadClips(){
         ${c.has_speech === false && (c.voice_tag || 0) >= MISSED_VOICE_FLOOR
           ? `<span class="cd" title="how sure the sound tagger was that somebody was audible">voice ${c.voice_tag.toFixed(2)}</span>`
           : ""}
-        ${labelBadge(c.speakers)}
+        ${labelBadge(c.speakers)}${c.time_known === false
+          ? `<span class="lbl unk" title="Recorded before the device knew `
+            + `what time it was. Placed by when it reached the computer, not `
+            + `when it happened.">time unknown</span>`
+          : ""}
         <span class="cd">${c.seconds.toFixed(0)}s</span>
         <span class="tag ${c.status}">${c.status === "none" ? "new"
           : (c.has_speech === false ? "silent" : c.status)}</span>`;
@@ -3894,6 +4139,10 @@ $("wcanvas").addEventListener("keydown", e => {
 ["timeupdate","seeked","play","pause","ended","loadedmetadata"].forEach(
   ev => $("player").addEventListener(ev, syncTransport));
 addEventListener("resize", drawWave);
+/* A viewport change that is not a window resize -- rotation with the page
+   already open, a devtools split -- used to leave the canvas at the old
+   size, drawing the waveform into a box that no longer matched. */
+new ResizeObserver(() => drawWave()).observe($("wcanvas"));
 
 async function renderTranscript(name){
   const r = await fetch("/api/transcript/" + encodeURIComponent(name));
@@ -4041,8 +4290,14 @@ async function renderTranscript(name){
     const chip = document.createElement("button");
     const known = named[id] && named[id].name;
     const score = named[id] ? named[id].score : 0;
+    /* A match is a guess until the margin says otherwise. "uncertain" means
+       the next best candidate was close enough that acting on the name could
+       put words on the wrong person -- the failure that matters here. The
+       name is still the best guess, so it stays; the mark and the hover say
+       it is provisional. */
+    const shaky = known && named[id].decision === "uncertain";
     const col = colorOf(spkColors[id]);
-    chip.className = "who" + (known ? " named" : "");
+    chip.className = "who" + (known ? " named" : "") + (shaky ? " shaky" : "");
     chip.style.borderColor = col;
     chip.style.color = col;
     chip.style.background = "transparent";
@@ -4050,8 +4305,13 @@ async function renderTranscript(name){
                            .reduce((a, x) => a + (x.end - x.start), 0);
     chip.innerHTML = `<i style="display:inline-block;width:9px;height:9px;border-radius:2px;
       background:${col};margin-right:6px;vertical-align:-1px"></i>` +
-      (known ? `${esc(named[id].name)} · ${secs.toFixed(0)}s · ${score.toFixed(2)}`
+      (known ? `${esc(named[id].name)}${shaky ? "?" : ""} · ${secs.toFixed(0)}s · ${score.toFixed(2)}`
              : `${esc(id)} · ${secs.toFixed(0)}s · tap to name`);
+    if (known) chip.title = shaky
+      ? `Provisional: matched at ${score.toFixed(2)}, with the next best `
+        + `candidate only ${(named[id].margin || 0).toFixed(2)} behind. `
+        + `Click to correct.`
+      : `Matched at ${score.toFixed(2)}. Click to rename.`;
     chip.onclick = () => nameSpeaker(name, id, known || "");
     $("dSpeakers").appendChild(chip);
   }
@@ -4356,11 +4616,14 @@ function msgAfterNaming(name, reason){
 let sheetReturn = null;
 let edConfirmedNew = false;
 
+/* The sheets are native <dialog>s now. showModal() provides the backdrop,
+   the Escape handling and the inert page behind them; what it does not do is
+   put focus back where the sheet began, so that stays ours. */
 function openSheet(id, focusId){
   sheetReturn = document.activeElement;
-  $("scrim").classList.add("open");
-  $(id).classList.add("open");
-  if (focusId) setTimeout(() => { const el = $(focusId); if (el) el.focus(); }, 220);
+  const d = $(id);
+  if (!d.open) d.showModal();
+  if (focusId) setTimeout(() => { const el = $(focusId); if (el) el.focus(); }, 30);
 }
 
 function restoreSheetFocus(){
@@ -4379,25 +4642,15 @@ function restoreSheetFocus(){
 }
 
 function closeNamer(){
-  const wasOpen = $("namer").classList.contains("open");
-  $("scrim").classList.remove("open");
-  $("namer").classList.remove("open");
+  const wasOpen = $("namer").open;
+  if (wasOpen) $("namer").close();
   namerCtx = null;
-  if (wasOpen) restoreSheetFocus();
 }
 
-/* Closes the editor/export sheet.
-   This was called from the scrim click and the Escape handler but never
-   defined, so both threw and the sheet had no way out at all: the Cancel
-   button had no handler either, and the scrim sits over the page with
-   pointer-events on. Opening an export was a dead end that needed a reload. */
+/* Closes the editor/export sheet. Focus returns through the dialog's own
+   close event, which fires for Escape as well as for Cancel. */
 function closeEditor(){
-  const wasOpen = $("editor").classList.contains("open");
-  $("editor").classList.remove("open");
-  if (!$("namer").classList.contains("open")){
-    $("scrim").classList.remove("open");
-  }
-  if (wasOpen) restoreSheetFocus();
+  if ($("editor").open) $("editor").close();
 }
 
 async function saveName(){
@@ -4504,7 +4757,8 @@ $("namerInput").addEventListener("input", () => {
 $("namerSave").onclick = saveName;
 $("namerCancel").onclick = closeNamer;
 $("edCancel").onclick = closeEditor;
-$("scrim").onclick = () => { closeNamer(); closeEditor(); };
+$("namer").addEventListener("close", restoreSheetFocus);
+$("editor").addEventListener("close", restoreSheetFocus);
 addEventListener("keydown", e => {
   if (e.key === "Escape"){
     /* Escape stops the audio too, from anywhere in the reader, without having
@@ -4521,6 +4775,8 @@ $("namerInput").addEventListener("keydown", e => {
 $("bAll").onclick = async () => {
   const r = await (await fetch("/api/transcribe_all", {method:"POST"})).json();
   log(`queued ${r.queued} clip(s)`);
+  toast(r.queued ? `Queued ${r.queued} recording(s) for transcription`
+                 : "Nothing was waiting to be transcribed", r.queued ? "ok" : "info");
   pollQueue();
 };
 $("bRefresh").onclick = () => loadClips();
@@ -4528,8 +4784,11 @@ $("bRefresh").onclick = () => loadClips();
 async function pollQueue(){
   try{
     const q = await (await fetch("/api/queue")).json();
-    $("qdepth").textContent = q.busy ? `${q.pending + 1} left…` : (q.pending ? `${q.pending} left…` : "");
-    if (q.busy || q.pending) setTimeout(pollQueue, 2500);
+    const n = q.busy ? q.pending + 1 : q.pending;
+    $("qdepth").textContent = n ? `${n} left…` : "";
+    if (n) jobStart("queue", `transcribing ${n}…`);
+    else jobEnd("queue");
+    if (n) setTimeout(pollQueue, 2500);
     else loadClips();
   }catch(e){}
 }
@@ -4555,6 +4814,7 @@ $("bDelete").onclick = async () => {
   const r = await fetch("/api/clip/" + encodeURIComponent(current), {method:"DELETE"});
   if (r.ok){
     log(`deleted ${current}`);
+    toast("Recording deleted", "ok");
     $("player").pause();
     $("detail").hidden = true; $("clipList").hidden = false;
     current = null; armDelete = false; $("bDelete").textContent = "Delete";
@@ -4842,6 +5102,10 @@ async function recImport(f, btn){
   btn.disabled = true;
   const was = btn.textContent;
   btn.textContent = all ? "Importing…" : "Fetching…";
+  /* A Bluetooth fetch takes about as long as the recording itself. The
+     button changing text is not enough when the tab is not the one being
+     looked at. */
+  jobStart("import", all ? "importing recordings…" : "fetching a recording…");
   try {
     const body = all ? {} : {index: f.index, name: f.name, size: f.size};
     const r = await (await fetch("/api/recordings/import", {
@@ -4852,12 +5116,16 @@ async function recImport(f, btn){
     if (r.ok){
       for (const line of (r.lines || [])) log(line);
       if (r.queued) log(`queued ${r.queued} clip(s) for transcription`);
+      toast("Imported — the new recordings are in Recordings", "ok");
     } else {
       log(`import failed: ${r.error || "unknown"}`);
+      toast(`Import failed: ${r.error || "unknown"}`, "bad");
     }
   } catch(e){
     log(`import failed: ${e}`);
+    toast("Import failed — see the activity log on the Device tab", "bad");
   }
+  jobEnd("import");
   btn.textContent = was;
   btn.disabled = false;
   recPoll(recRoute === "ble" ? 1 : 0);
@@ -4936,6 +5204,7 @@ function toggleBl(){
 blmode.onclick = toggleBl;
 blmode.onkeydown = e => { if (e.key === " " || e.key === "Enter"){ e.preventDefault(); toggleBl(); } };
 vad.onkeydown = e => { if (e.key === " " || e.key === "Enter") { e.preventDefault(); toggleVad(); } };
+
 </script>
 </body>
 </html>

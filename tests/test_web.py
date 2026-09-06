@@ -2111,3 +2111,76 @@ class TestMediaDoesNotBecomeYourFacts:
         assert "[MEDIA]" in prompt
         assert "Never record a task, fact or event from them" in prompt
         assert "never attribute anything to a [MEDIA] speaker" in prompt
+
+
+class TestTheTimeAClipReallyHappened:
+    """Which moment a recording is about, and whether anyone can vouch for it.
+
+    mtime is when the file reached the archive. A clip pulled off the card in
+    the evening can hold a conversation from the morning, and a list ordered
+    by arrival told its reader the day ran backwards. The index now carries
+    the device's own account of when the audio happened, and whether that
+    account is trustworthy at all -- clips recorded before the host ever set
+    the device's clock say time_known: false, and the interface shows them
+    without dressing the guess up as a timestamp.
+    """
+
+    def _page(self):
+        import os
+        here = os.path.dirname(__file__)
+        with open(os.path.join(here, "..", "web", "static", "index.html"),
+                  encoding="utf-8") as f:
+            return f.read()
+
+    def _indexed(self, tmp_path, monkeypatch, sidecar):
+        import json, os, sys
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "web"))
+        import index_db
+        import soundfile as sf, numpy as np
+        monkeypatch.setattr(index_db, "DB_PATH", str(tmp_path / "index.db"))
+        monkeypatch.setattr(index_db, "_local", type(index_db._local)())
+        data = tmp_path / "data"
+        (data / "times").mkdir(parents=True)
+        monkeypatch.setattr(index_db, "DATA", str(data))
+        wav = data / "c.wav"
+        sf.write(str(wav), np.zeros(16000, dtype="float32"), 16000)
+        if sidecar is not None:
+            (data / "times" / "c.wav.json").write_text(json.dumps(sidecar))
+        index_db.upsert_clip("c.wav", wav_path=str(wav))
+        row = index_db.list_clips(10)[0]
+        return row["started"], row["time_known"]
+
+    def test_a_trusted_sidecar_becomes_the_capture_time(self, tmp_path, monkeypatch):
+        started, known = self._indexed(tmp_path, monkeypatch,
+                                       {"started": 1000.0, "ended": 1030.0,
+                                        "seconds": 30.0, "source": "live"})
+        assert started == 1000.0
+        assert known is True
+
+    def test_a_clip_the_clock_never_knew_is_marked_not_guessed(self, tmp_path, monkeypatch):
+        """The sidecar still carries a number -- the drain time -- and writing
+        it into the list would show a fabricated timestamp as a fact."""
+        started, known = self._indexed(tmp_path, monkeypatch,
+                                       {"started": 1000.0, "ended": 1030.0,
+                                        "seconds": 30.0, "source": "card",
+                                        "time_known": False})
+        assert started is None
+        assert known is False
+
+    def test_no_sidecar_means_no_claim(self, tmp_path, monkeypatch):
+        started, known = self._indexed(tmp_path, monkeypatch, None)
+        assert started is None
+        assert known is None
+
+    def test_the_list_reads_by_capture_time_and_says_what_it_does_not_know(self):
+        page = self._page()
+        # The list sorts and groups on the capture time, falling back to
+        # arrival for clips with none.
+        assert "function capTime" in page
+        assert "c.started || c.modified" in page
+        # Unknown-time clips are shown, in a group of their own, and the row
+        # says why -- never silently folded into a day they did not happen in.
+        assert '"Time unknown"' in page
+        assert "time unknown" in page
+        # The date filter cannot hide what it cannot place.
+        assert "if (modified == null) return true;" in page
