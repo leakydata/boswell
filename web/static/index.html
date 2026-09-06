@@ -156,7 +156,7 @@ nav.tabs{grid-area:side;display:flex;flex-direction:column;gap:4px;
   position:sticky;top:74px;align-self:start;margin-bottom:18px}
 nav.tabs button{min-height:42px;padding:9px 12px;border:none;background:transparent;
   border-radius:6px;font-weight:600;font-size:14.5px;color:var(--muted);
-  text-align:left;width:100%}
+  text-align:left;width:100%;display:flex;align-items:center;gap:8px}
 @media(max-width:900px){
   nav.tabs{flex-direction:row;position:static;margin-bottom:18px;
     /* Six sections do not fit a phone's width, and wrapping put "Clear out"
@@ -169,6 +169,51 @@ nav.tabs button{min-height:42px;padding:9px 12px;border:none;background:transpar
 nav.tabs button[aria-selected=true]{background:var(--surface);color:var(--ink);
   box-shadow:0 1px 3px #0002}
 .view[hidden]{display:none}
+
+/* attention badge in a tab: how much work is waiting there */
+.tbadge{margin-left:auto;font-family:var(--mono);font-size:10.5px;
+  padding:1px 7px;border-radius:9px;font-weight:600;flex:none;
+  background:color-mix(in srgb,var(--accent) 18%,transparent);color:var(--accent)}
+.tbadge[hidden]{display:none}
+
+/* more menu: the rare controls, reachable without being in the way */
+.moremenu{position:relative;flex:0 0 auto}
+.moremenu summary{list-style:none;cursor:pointer;user-select:none;
+  font-size:14px;font-weight:500;padding:8px 14px;min-height:38px;
+  border:1px solid var(--rule);border-radius:6px;background:var(--sunk);
+  color:var(--ink);display:inline-flex;align-items:center;gap:6px}
+.moremenu summary::-webkit-details-marker{display:none}
+.moremenu summary:hover{border-color:var(--accent)}
+.moremenu summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.menupanel{position:absolute;right:0;top:calc(100% + 4px);z-index:30;
+  background:var(--surface);border:1px solid var(--rule);border-radius:8px;
+  box-shadow:0 8px 24px #0005;display:grid;gap:2px;padding:6px;min-width:230px}
+.menupanel button{flex:0 0 auto;min-height:0;padding:8px 11px;font-size:13.5px;
+  border:none;background:none;border-radius:6px;text-align:left;justify-content:flex-start}
+.menupanel button:hover{background:var(--sunk);border:none}
+.menupanel button.dang{color:var(--bad);background:none}
+
+/* filter panel: one row on a desk, a disclosure on a phone.
+   The mobile overrides live HERE, after the base rules, or the base
+   declarations win the cascade at every width. */
+#filterPanel{display:contents}
+.filterToggle{display:none}
+@media(max-width:900px){
+  /* The seven filters do not fit a phone and must not push the archive
+     below the fold. They fold away behind the toggle, which says how many
+     are active. */
+  #filterPanel{display:none;flex-wrap:wrap;gap:8px;flex-basis:100%}
+  #filterPanel.open{display:flex}
+  .filterToggle{display:inline-flex;min-height:40px;flex:0 0 auto;
+    padding:8px 14px;font-size:14px;border-radius:7px}
+}
+
+/* notes: items are the content, the model controls are its rail */
+.notescols .col{display:grid;gap:14px;align-content:start}
+@media(min-width:1000px){
+  .notescols{display:grid;grid-template-columns:400px minmax(0,1fr);
+    gap:14px;align-items:start}
+}
 
 /* toolbar: compact controls, not a stack of full-width buttons */
 .toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:10px}
@@ -582,6 +627,13 @@ details .inner{padding:2px 12px 12px}
 @media(max-width:900px){.daygroup{position:static}}
 /* On a phone the mini player owns the bottom edge; toasts stack above it. */
 @media(max-width:700px){#toasts{bottom:78px}}
+@media(max-width:700px){
+  header{padding:10px 0 8px;margin-bottom:14px}
+  h1{font-size:21px}
+  .mark{width:20px;height:20px}
+  /* The build string is for the day something breaks, not for every glance. */
+  .ver{display:none}
+}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
 </style>
 </head>
@@ -611,9 +663,12 @@ details .inner{padding:2px 12px 12px}
   <nav class="tabs" role="tablist" aria-label="Sections"
        aria-orientation="vertical">
     <button id="tabDev" type="button" role="tab" aria-controls="viewDev" aria-selected="true" tabindex="0">Device</button>
-    <button id="tabRec" type="button" role="tab" aria-controls="viewRec" aria-selected="false" tabindex="-1">Recordings</button>
-    <button id="tabPpl" type="button" role="tab" aria-controls="viewPpl" aria-selected="false" tabindex="-1">People</button>
-    <button id="tabNotes" type="button" role="tab" aria-controls="viewNotes" aria-selected="false" tabindex="-1">Notes</button>
+    <button id="tabRec" type="button" role="tab" aria-controls="viewRec" aria-selected="false" tabindex="-1">Recordings
+      <span class="tbadge" id="badgeRec" hidden></span></button>
+    <button id="tabPpl" type="button" role="tab" aria-controls="viewPpl" aria-selected="false" tabindex="-1">People
+      <span class="tbadge" id="badgePpl" hidden></span></button>
+    <button id="tabNotes" type="button" role="tab" aria-controls="viewNotes" aria-selected="false" tabindex="-1">Notes
+      <span class="tbadge" id="badgeNotes" hidden></span></button>
     <button id="tabHeard" type="button" role="tab" aria-controls="viewHeard" aria-selected="false" tabindex="-1">Heard</button>
     <button id="tabTidy" type="button" role="tab" aria-controls="viewTidy" aria-selected="false" tabindex="-1">Clear out</button>
   </nav>
@@ -828,6 +883,9 @@ details .inner{padding:2px 12px 12px}
                autocomplete="off" spellcheck="false" aria-label="Search transcripts">
         <button type="button" class="clr" id="qClear" hidden aria-label="Clear search">×</button>
       </span>
+      <button type="button" id="bFilters" class="filterToggle" aria-expanded="false"
+              aria-controls="filterPanel">Filters</button>
+      <span id="filterPanel">
       <select class="filter" id="fContent" aria-label="Filter by content">
         <option value="all">All recordings</option>
         <option value="voice">With voice</option>
@@ -867,6 +925,7 @@ details .inner{padding:2px 12px 12px}
         <option value="200">200 per page</option>
         <option value="0">Show all</option>
       </select>
+      </span>
     </div>
     <div class="toolbar2">
       <span class="count" id="clipCount"></span>
@@ -906,10 +965,15 @@ details .inner{padding:2px 12px 12px}
         <button type="button" id="cvBack">Back</button>
         <button type="button" class="pri" id="cvPlayAll">Play conversation</button>
         <button type="button" id="cvExport">Export</button>
-        <button type="button" id="cvTranscribe">Transcribe missing</button>
-        <button type="button" id="cvReview">Review with agent</button>
-        <button type="button" id="cvConsolidate">Re-detect speakers</button>
-        <button type="button" id="cvRetranscribe">Fix sentence breaks</button>
+        <details class="moremenu" id="convMore">
+          <summary>More</summary>
+          <div class="menupanel">
+            <button type="button" id="cvTranscribe">Transcribe missing</button>
+            <button type="button" id="cvReview">Review with agent</button>
+            <button type="button" id="cvConsolidate">Re-detect speakers</button>
+            <button type="button" id="cvRetranscribe">Fix sentence breaks</button>
+          </div>
+        </details>
         <button type="button" class="dang" id="cvDelete">Delete conversation</button>
       </div>
       <div id="cvMsg" role="status" style="font-family:var(--mono);font-size:12px;color:var(--muted);
@@ -952,16 +1016,6 @@ details .inner{padding:2px 12px 12px}
   <!-- ============ PEOPLE ============ -->
   <div class="view" id="viewPpl" role="tabpanel" aria-labelledby="tabPpl" tabindex="0" hidden>
     <div class="card">
-      <h2>Enrolled voices</h2>
-      <p class="intro" style="font-size:14px;color:var(--muted);margin:0 0 14px">
-        Every label is kept as its own voiceprint — never averaged. A voice sounds
-        different in a quiet room, outdoors, or over a bad connection, and matching
-        takes the closest single voiceprint, so each one you add covers a condition
-        the others do not. Remove one if it was the wrong person.</p>
-      <div id="pplList"><div class="empty">loading…</div></div>
-    </div>
-
-    <div class="card">
       <h2>Unidentified voices</h2>
       <p class="intro" style="font-size:14px;color:var(--muted);margin:0 0 12px">
         Voices that recur but nobody has named, grouped so one name settles all of
@@ -971,13 +1025,18 @@ details .inner{padding:2px 12px 12px}
       <div class="toolbar2" style="margin-bottom:12px">
         <span class="count" id="voiceCount"></span>
         <button type="button" id="bVoiceRecent">Since yesterday</button>
-        <button type="button" id="bVoiceScan">Scan for new voices</button>
-        <button type="button" id="bConsolidateAll">Re-detect speakers everywhere</button>
-        <button type="button" id="bVoiceRecheck">Recheck against named people</button>
-        <button type="button" id="bCompact">Compact voiceprints</button>
-        <button type="button" id="bVoiceMedia">Show tagged media</button>
-        <button type="button" id="bVoiceIgnored">Show set aside</button>
         <button type="button" id="bVoiceRefresh">Refresh</button>
+        <details class="moremenu" id="voiceMore">
+          <summary>More</summary>
+          <div class="menupanel">
+            <button type="button" id="bVoiceScan">Scan for new voices</button>
+            <button type="button" id="bConsolidateAll">Re-detect speakers everywhere</button>
+            <button type="button" id="bVoiceRecheck">Recheck against named people</button>
+            <button type="button" id="bCompact">Compact voiceprints</button>
+            <button type="button" id="bVoiceMedia">Show tagged media</button>
+            <button type="button" id="bVoiceIgnored">Show set aside</button>
+          </div>
+        </details>
       </div>
       <!-- Most of the queue is one-clip voices, and after enrolling a channel
            a great many of them are the same channel again below the automatic
@@ -994,6 +1053,16 @@ details .inner{padding:2px 12px 12px}
         the closest names, <b>n</b> types a name, <b>v</b> marks it as media,
         <b>i</b> sets it aside.</p>
       <div id="voiceQueue"><div class="empty">loading…</div></div>
+    </div>
+
+    <div class="card">
+      <h2>Enrolled voices</h2>
+      <p class="intro" style="font-size:14px;color:var(--muted);margin:0 0 14px">
+        Every label is kept as its own voiceprint — never averaged. A voice sounds
+        different in a quiet room, outdoors, or over a bad connection, and matching
+        takes the closest single voiceprint, so each one you add covers a condition
+        the others do not. Remove one if it was the wrong person.</p>
+      <div id="pplList"><div class="empty">loading…</div></div>
     </div>
 
     <div class="card">
@@ -1016,6 +1085,10 @@ details .inner{padding:2px 12px 12px}
 
   <!-- ============ NOTES ============ -->
   <div class="view" id="viewNotes" role="tabpanel" aria-labelledby="tabNotes" tabindex="0" hidden>
+    <!-- The extracted items are the content of this tab; the model controls,
+         topics and duplicate review are its settings rail. -->
+    <div class="notescols">
+    <div class="col">
     <div class="card">
       <h2>From your conversations</h2>
       <p class="intro" style="font-size:14px;color:var(--muted);margin:0 0 12px">
@@ -1060,7 +1133,8 @@ details .inner{padding:2px 12px 12px}
       </div>
       <div id="dupList"></div>
     </div>
-
+    </div>
+    <div class="col">
     <div class="card">
       <div class="toolbar" style="margin-bottom:12px">
         <select class="filter" id="itemKind" aria-label="Filter by type">
@@ -1074,6 +1148,8 @@ details .inner{padding:2px 12px 12px}
         <button type="button" class="dang" id="bClearItems" style="min-height:40px;flex:0 0 auto">Clear all</button>
       </div>
       <div id="itemList"><div class="empty">loading…</div></div>
+    </div>
+    </div>
     </div>
   </div>
 
@@ -1181,6 +1257,7 @@ details .inner{padding:2px 12px 12px}
 
 
 
+
 const $ = id => document.getElementById(id);
 let ws, armed = false, connected = false, drainPeak = 0;
 
@@ -1237,6 +1314,16 @@ function toast(text, kind){
     el.classList.remove("in");
     setTimeout(() => el.remove(), 300);
   }, 6000);
+}
+
+/* ---- attention badges ----
+   The navigation should say where work is waiting, not only where things
+   are: a queue you cannot see is a queue you do not work. */
+function badge(id, n){
+  const b = $(id);
+  if (!b) return;
+  b.hidden = !n;
+  if (n) b.textContent = n > 99 ? "99+" : String(n);
 }
 
 /* ---- background jobs ----
@@ -1972,6 +2059,7 @@ function paintAgentState(a){
     : "nothing waiting";
   $("agentState").textContent = a.busy ? `reviewing ${a.busy}…` : waiting;
   $("bAgentRun").disabled = !a.pending_clips || !!a.busy;
+  badge("badgeNotes", a.pending_clips);
 }
 
 async function loadAgent(){
@@ -2514,6 +2602,7 @@ async function loadVoices(){
     }
     if (voiceCards.length) voiceCards[0].el.classList.add("kbd-target");
     $("voiceKbdHint").hidden = !voiceCards.length;
+    if (!showMedia && !showIgnored) badge("badgePpl", q.length);
   }catch(e){ el.innerHTML = '<div class="empty">could not load voices</div>'; }
 }
 
@@ -3519,9 +3608,32 @@ $("bDelSel").onclick = async () => {
   selected.clear(); syncSelectUI(); loadClips();
 };
 
+/* The filter panel is one row on a desk and a disclosure on a phone. The
+   toggle counts what is active, because "Filters" with four filters applied
+   and no sign of them is how a list silently stops making sense. */
+on("bFilters", "click", () => {
+  const open = $("filterPanel").classList.toggle("open");
+  $("bFilters").setAttribute("aria-expanded", String(open));
+});
+
+function activeFilterCount(){
+  let n = dayFilter ? 1 : 0;
+  for (const id of HASH_SELECTS){
+    if ($(id).value !== selectDefault(id)) n++;
+  }
+  return n;
+}
+function syncFilterToggle(){
+  const b = $("bFilters");
+  if (!b) return;
+  const n = activeFilterCount();
+  b.textContent = n ? `Filters · ${n}` : "Filters";
+}
+
 async function loadClips(){
   const el = $("clipList");
   syncHash();
+  syncFilterToggle();
   try{
     // With a query, the server searches every segment. Matching against the
     // 180-character preview here only ever found the opening sentence.
@@ -3571,6 +3683,9 @@ async function loadClips(){
       clips.length === all.length
         ? `${all.length} recording${all.length===1?"":"s"}`
         : `${clips.length} of ${all.length}`;
+    /* How much labelling work is actually open, for the tab badge. */
+    badge("badgeRec", all.filter(c =>
+      ["none", "some"].includes(labelState(c.speakers))).length);
     if (!clips.length){
       const n = all.filter(c => c.has_speech === null).length;
       el.innerHTML = `<div class="empty">` +
@@ -5565,6 +5680,17 @@ blmode.onclick = toggleBl;
 blmode.onkeydown = e => { if (e.key === " " || e.key === "Enter"){ e.preventDefault(); toggleBl(); } };
 vad.onkeydown = e => { if (e.key === " " || e.key === "Enter") { e.preventDefault(); toggleVad(); } };
 
+/* The More menus: a click on anything inside is an action, and an action
+   closes the menu; a click anywhere else just closes it. */
+for (const m of document.querySelectorAll(".moremenu")){
+  m.addEventListener("click", e => {
+    if (e.target.closest("button")) m.open = false;
+  });
+  document.addEventListener("click", e => {
+    if (!m.contains(e.target)) m.open = false;
+  });
+}
+
 /* ---- startup: the address bar ----
    Runs last, because it mirrors variables declared throughout the script:
    the search, the filters, the picked day. A hash typed by hand, or a
@@ -5580,6 +5706,8 @@ addEventListener("hashchange", () => {
   if (currentTab === "rec") loadClips();
 });
 applyHashState();
+syncFilterToggle();
+
 
 
 
