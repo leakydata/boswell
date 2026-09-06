@@ -555,6 +555,13 @@ dialog.sheet .hint{font-family:var(--mono);font-size:12px;color:var(--muted);
 /* Both recorder panels carry their device's address, so which physical thing
    a panel is about is never a guess. */
 .addr{font-weight:normal;font-family:var(--mono);font-size:11px;color:var(--faint)}
+/* Which recorder a section of controls acts on. With one device "the device"
+   was unambiguous; with two it is a question, and a setting applied to the
+   wrong recorder is not a mistake the interface would show you afterwards. */
+.owner{font-weight:normal;font-family:var(--mono);font-size:10px;
+  letter-spacing:.08em;text-transform:uppercase;color:var(--muted);
+  background:var(--sunk);border:1px solid var(--rule);border-radius:4px;
+  padding:2px 6px;vertical-align:2px;margin-left:8px;white-space:nowrap}
 dl.herostats{margin:6px 0 2px;display:flex;gap:28px;flex-wrap:wrap}
 dl.herostats dt{font-size:11px;font-family:var(--mono);letter-spacing:.08em;
   text-transform:uppercase;color:var(--faint)}
@@ -910,7 +917,7 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
          rather than as well as, and conflating the two would mean neither
          status could be trusted. -->
     <div class="card">
-      <h2>Capture</h2>
+      <h2>Capture <span class="owner" data-owner>Boswell</span></h2>
       <label class="row">Microphone gain
         <input type="range" id="gain" min="20" max="70" value="50" step="1" disabled>
         <span class="val" id="gainv">50 · +5 dB</span>
@@ -927,7 +934,7 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
     </div>
 
     <div class="card" id="recrow" hidden>
-      <h2>Recordings on the device</h2>
+      <h2>Recordings on the device <span class="owner" data-owner>Boswell</span></h2>
       <div class="row" style="align-items:center">
         <span class="val" id="recv" style="flex:1;text-align:left;min-width:0">—</span>
         <button type="button" id="rechide" hidden style="flex:none">Hide</button>
@@ -952,7 +959,7 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
     </div>
 
     <div class="card span2">
-      <h2>Device settings</h2>
+      <h2>Device settings <span class="owner" data-owner>Boswell</span></h2>
 
       <details>
         <summary>Double tap to start and stop</summary>
@@ -1816,6 +1823,13 @@ function paint(s){
   // recorder below it: two panels, both saying which box they are about.
   $("devname").textContent = s.device_name || "Device";
   $("devaddr").textContent = s.device_address || "";
+  /* Every section of controls that acts on this recorder says so, using the
+     name the device gives, so the badge and the panel heading cannot drift
+     apart. The Omi's own panel is titled for itself; nothing unlabelled here
+     acts on it. */
+  for (const el of document.querySelectorAll("[data-owner]")){
+    el.textContent = s.device_name || "this recorder";
+  }
   recorders.boswell = {
     name: s.device_name || s.device_address || "connected",
     connected: !!s.connected, capturing: !!(s.connected && s.armed),
