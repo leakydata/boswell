@@ -155,6 +155,14 @@ async def one_session(address, quiet=False):
             sink = omi_sync.drain_spool(device_id, quiet=True)
             n = sink.clips if sink else 0
             print(f"synced {took} packet(s) -> {n} clip(s)", flush=True)
+            # How much audio a stored packet is worth, measured rather than
+            # assumed. Packets are a fixed 444 bytes but hold a variable
+            # number of 20 ms frames -- a partly filled one is padded -- so
+            # the only honest way to turn "packets waiting" into "minutes
+            # waiting" is to divide what this device actually sent.
+            if sink and sink.frames:
+                stats["seconds_per_packet"] = round(
+                    sink.frames * 0.02 / took, 4)
     except Exception as e:
         # A sync that fails is not a reason to skip the live stream. The
         # backlog will still be there next time; the conversation happening
@@ -186,7 +194,48 @@ async def one_session(address, quiet=False):
     # exactly like "never arrived" to whoever is watching the slider.
     applied = {"id": None}
 
+    ring = {"link": None, "at": 0.0}
+
+    async def read_ring(client):
+        """How much the device is still holding.
+
+        Asked on the streaming connection, because the radio is exclusive and
+        that connection is the only one there is. The storage control
+        characteristic is a different one from the audio, so this listens on
+        both rather than interrupting either.
+        """
+        if ring["link"] is None:
+            link = omi_sync.Link(client)
+            await client.start_notify(omi_sync.CTRL, link.on_notify)
+            ring["link"] = link
+        info = await ring["link"].ring_info(timeout=6.0)
+        held = max(0, info["write_seq"] - info["read_seq"])
+        spp = stats.get("seconds_per_packet")
+        stats["storage"] = {
+            "held_packets": held,
+            "held_bytes": held * info["packet_bytes"],
+            # An estimate, and said to be one: it rests on the ratio measured
+            # at the last sync, and a device that has been idle packs its
+            # packets differently from one in a loud room.
+            "held_seconds": round(held * spp, 1) if spp else None,
+            "capacity_packets": info["capacity"],
+            "capacity_seconds": (round(info["capacity"] * spp, 1)
+                                 if spp else None),
+            # Audio the ring overwrote before anything collected it. The one
+            # number here that means something was lost.
+            "dropped": info["dropped"],
+            "packet_bytes": info["packet_bytes"],
+            "at": time.time(),
+        }
+
     async def on_tick(client):
+        if time.time() - ring["at"] >= 60:
+            ring["at"] = time.time()
+            try:
+                await read_ring(client)
+            except Exception:
+                ring["link"] = None      # re-subscribe on the next attempt
+
         want = read_wanted()
         if not want or want["id"] == applied["id"]:
             return

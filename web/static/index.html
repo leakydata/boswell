@@ -1101,6 +1101,28 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
       </details>
     </div>
 
+    <!-- The second recorder's onboard storage. Deliberately not the same
+         shape as the other recorder's: that one lists recordings and fetches
+         the one you point at, and this device cannot do either. Its storage
+         is a ring of packets, not files, and reading advances its own read
+         pointer -- so there is no way to look at one recording and leave it
+         there. What can honestly be shown is how much is waiting, how much
+         it holds, and whether anything was lost. -->
+    <div class="card" id="omirec" hidden>
+      <h2>Recordings on the device <span class="owner">Omi</span></h2>
+      <dl class="herostats">
+        <dt>Waiting</dt><dd id="omirwait">—</dd>
+        <dt>Holds</dt><dd id="omircap">—</dd>
+        <dt>Lost to overflow</dt><dd id="omirdrop">—</dd>
+      </dl>
+      <p class="note" id="omirnote">Whatever it recorded while away from the
+        computer comes in on its own, as soon as it reconnects — there is
+        nothing to press. It cannot be browsed one recording at a time the
+        way a storage card can: this device hands its storage back as one
+        stream and moves its own read pointer as it goes, so a recording
+        looked at is a recording collected.</p>
+    </div>
+
     <!-- Which recorders this install has. A panel exists because a recorder
          was paired, not because the code knows the make -- somebody who owns
          an Omi and nothing else should not meet a page about a handmade
@@ -1834,7 +1856,7 @@ function paintPairing(){
   // nothing heard from the daemon. Pairing can take such a panel away but
   // must not put back one its own state says should be gone.
   for (const [id, on] of [["recrow", boswell], ["omicard", omi],
-                          ["omiset", omi]]){
+                          ["omiset", omi], ["omirec", omi]]){
     if ($(id) && !on) $(id).hidden = true;
   }
 
@@ -6837,6 +6859,31 @@ async function omiPoll(){
       $("omidimv").textContent = st.dim_ratio + "%";
     }
   }
+  /* What the device is still holding. Only meaningful while something is
+     connected to ask it -- the figure is read over the radio, not kept. */
+  const ring = st.storage;
+  $("omirec").hidden = !known || !isPaired;
+  // Not `mins` -- that name is already the session's minutes above.
+  const spanOf = (sec) => sec == null ? null
+      : sec < 90 ? `${Math.round(sec)} s`
+      : sec < 5400 ? `${Math.round(sec / 60)} min`
+      : `${(sec / 3600).toFixed(1)} hours`;
+  if (ring){
+    $("omirwait").textContent = ring.held_packets
+        ? (spanOf(ring.held_seconds) || ring.held_packets + " packets")
+        : "nothing";
+    $("omircap").textContent = spanOf(ring.capacity_seconds)
+        || `${ring.capacity_packets.toLocaleString()} packets`;
+    // Zero is the answer worth showing plainly; anything else is audio that
+    // existed and does not any more, which is not a detail.
+    $("omirdrop").textContent = ring.dropped
+        ? `${ring.dropped.toLocaleString()} packets`
+        : "none";
+    $("omirdrop").style.color = ring.dropped ? "var(--bad)" : "";
+  } else {
+    for (const id of ["omirwait", "omircap", "omirdrop"]) $(id).textContent = "—";
+  }
+
   $("omisetnote").textContent = live
       ? "Written on the connection the recorder already has, so a change "
         + "lands within a second or two and the figure here is read back off "
