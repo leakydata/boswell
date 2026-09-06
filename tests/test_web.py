@@ -2372,8 +2372,16 @@ class TestTheProTouches:
         assert 'skeleton(el, 8, "skelclip")' in page
 
     def test_the_tab_title_carries_the_recording_state(self):
+        # The intent is unchanged and the implementation moved. It used to
+        # read the websocket state directly, which was correct while one
+        # device was the only device; with a second recorder the title has to
+        # come from whichever of them is actually working, so it is decided
+        # in paintPrimary() from the shared view of both.
         page = self._page()
-        assert 'document.title = !s.connected' in page
+        title = page[page.index("function paintPrimary()"):]
+        title = title[:title.index('$("ver")')]
+        assert "document.title" in title
+        assert '"\u25cf Boswell"' in title and '"\u25cb Boswell"' in title
         # And losing the link stops claiming anything.
         assert 'document.title = "\u2212 Boswell"' in page
 

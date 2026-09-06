@@ -158,3 +158,43 @@ def test_the_backlog_comes_in_the_order_it_happened():
     fn = src[src.index("async def transcriber_sweep("):]
     fn = fn[:fn.index("\n@asynccontextmanager")]
     assert "sorted(os.listdir(DATA))" in fn
+
+
+# ------------------------------------------------- which recorder is primary
+#
+# The header was about the device this server holds a Bluetooth connection
+# to, because for a long time that was the only recorder. With two,
+# "disconnected" in the header while the Omi records is simply false -- and
+# the Omi is the smaller of the two, so it may well end up being the one worn.
+
+def test_the_capturing_recorder_wins_over_a_merely_connected_one():
+    html = read("web/static/index.html")
+    fn = html[html.index("function primaryRecorder()"):]
+    fn = fn[:fn.index("\n}")]
+    assert "r.connected && r.capturing" in fn
+    assert fn.index("r.connected && r.capturing") < fn.index("r => r.connected)")
+
+
+def test_both_states_feed_one_decision():
+    # They arrive by different routes and at different times -- the Boswell
+    # over the websocket, the Omi from a poll of a file another process
+    # writes. Painting the header from each is how it comes to flicker
+    # between two answers.
+    html = read("web/static/index.html")
+    assert "recorders.boswell = {" in html
+    assert "recorders.omi = {" in html
+    assert html.count("paintPrimary()") >= 3
+
+
+def test_two_recording_is_not_reported_as_one():
+    html = read("web/static/index.html")
+    assert "recorders · recording" in html
+
+
+def test_the_tab_title_is_the_app_not_the_device():
+    # Among eleven open tabs it answers "is my recorder doing its job".
+    # Which box is doing it is a second question that does not fit in a tab.
+    html = read("web/static/index.html")
+    fn = html[html.index("function paintPrimary()"):]
+    fn = fn[:fn.index('$("ver")')]
+    assert '"● Boswell"' in fn and '"○ Boswell"' in fn

@@ -1714,12 +1714,65 @@ function showTokenGate(){
     e => { if (e.key === "Enter") go(); });
 }
 
+/* Which recorder is actually working, when there can be more than one.
+ *
+ * The header and the tab title used to be about the device this server holds
+ * a Bluetooth connection to, because for a long time that was the only
+ * recorder there was. With two, "disconnected" in the header while the Omi
+ * sits happily recording is simply false -- and the Omi may end up being the
+ * one worn, since it is the smaller of the two.
+ *
+ * The two states arrive by different routes and at different times: the
+ * Boswell over the websocket, the Omi from a poll of a file another process
+ * writes. So each writes what it knows here, and one function decides. Having
+ * them each paint the header directly is how it would come to flicker between
+ * two answers.
+ */
+const recorders = {
+  boswell: {name: null, connected: false, capturing: false, scanning: false},
+  omi:     {name: "Omi", connected: false, capturing: false},
+};
+
+function primaryRecorder(){
+  // The connected one wins, and between two connected ones the one actually
+  // capturing does. A recorder that is merely reachable is not the answer to
+  // "what is recording me".
+  const list = [recorders.boswell, recorders.omi];
+  return list.find(r => r.connected && r.capturing)
+      || list.find(r => r.connected)
+      || null;
+}
+
+function paintPrimary(){
+  const p = primaryRecorder();
+  const any = recorders.boswell.capturing || recorders.omi.capturing;
+
+  // The tab title is the app, not the device: among eleven open tabs this
+  // answers "is my recorder doing its job", and which box is doing it is a
+  // second question that does not fit in a tab.
+  document.title = !p ? (recorders.boswell.scanning ? "… Boswell" : "Boswell")
+                 : any ? "● Boswell" : "○ Boswell";
+
+  // Naming one of them while two are recording is a small lie that reads as
+  // "only this one is on". Say how many instead, and let the panels below
+  // say which.
+  const busy = [recorders.boswell, recorders.omi].filter(r => r.capturing);
+  $("ver").textContent =
+      busy.length > 1 ? `${busy.length} recorders · recording`
+    : !p               ? "disconnected"
+    : `${p.name || "connected"}${p.capturing ? " · recording" : ""}`;
+}
+
 function paint(s){
   connected = s.connected; armed = s.armed;
   /* The tab title carries the standing question: among eleven open tabs,
      which one is the recorder and is it doing its job. */
-  document.title = !s.connected ? (s.scanning ? "… Boswell" : "Boswell")
-                 : s.armed ? "● Boswell" : "○ Boswell";
+  recorders.boswell = {
+    name: s.device_name || s.device_address || "connected",
+    connected: !!s.connected, capturing: !!(s.connected && s.armed),
+    scanning: !!s.scanning,
+  };
+  paintPrimary();
   const dot = $("dot");
   /* One predicate for "there is a backlog", used by the dot, the status line
      and the meter below.
@@ -1755,13 +1808,8 @@ function paint(s){
                           ? "asked to stop and still capturing; retrying — audio "
                             + "arriving now is being saved"
                           : `${s.rate/1000} kHz · ${s.codec_name || "ADPCM"} · ${s.frames} frames`;
-  // What the device calls itself, not what this file assumed it was called.
-  // "XIAO-MIC" was hardcoded here, so the panel said it whatever was on the
-  // other end -- fine while there was only ever one recorder, and a label
-  // that lies the moment there are two.
-  $("ver").textContent = s.connected
-    ? (s.device_name || s.device_address || "connected")
-    : "disconnected";
+  // The header is painted by paintPrimary() from `recorders`, because with
+  // two devices the answer is not this one's state alone.
   lastStateAt = Date.now();
 
   /* Live state in the top bar, in the same words and the same colours the
@@ -6118,6 +6166,12 @@ let lastStateAt = 0;
 
 function linkLost(why){
   lastStateAt = 0;
+  recorders.boswell.connected = false;
+  recorders.boswell.capturing = false;
+  paintPrimary();
+  // Losing the websocket is a different fault from a recorder stopping: this
+  // page no longer knows anything, and says so rather than reporting the
+  // last thing it heard.
   document.title = "− Boswell";
   const cap = $("capState");
   cap.hidden = false;
@@ -6311,6 +6365,18 @@ async function omiPoll(){
 
   const known = s && (s.state || s.clips);
   $("omicard").hidden = !known;
+
+  // Told to the shared view of who is recording, so the header can name the
+  // Omi when it is the one working -- which is the ordinary case whenever
+  // the other device is unplugged, and may become the usual one.
+  recorders.omi = {
+    name: (s.stats && s.stats.model) || "Omi",
+    connected: !!(s && s.running && s.state !== "not found"
+                  && s.state !== "looking"),
+    capturing: !!(s && s.running && s.state === "recording"),
+  };
+  paintPrimary();
+
   if (!known) return;
 
   const clips = s.clips || 0;
