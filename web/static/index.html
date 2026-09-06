@@ -6760,10 +6760,14 @@ async function loadTranscriber(){
   choose("local", "On this machine",
          "Whisper, running here. Nothing leaves the machine. " + t.device, true);
   choose("openai", "OpenAI",
-         "whisper-1, over the network. Audio is sent to OpenAI — the only "
-         + "part of this project where that is true. Chosen because it is "
-         + "the model that returns word timings, without which no voice can "
-         + "be named.", t.openai_ready);
+         "whisper-1, over the network. The words only — who spoke is still "
+         + "worked out here, and on a machine with no GPU that is the slower "
+         + "half. Audio is sent to OpenAI.", t.openai_ready);
+  choose("deepgram", "Deepgram",
+         "nova-3, over the network. The words and who spoke, in one call — "
+         + "the option for a machine with no GPU, because diarizing is the "
+         + "stage that cannot keep up here. Audio is sent to Deepgram.",
+         t.deepgram_ready);
 
   const note = document.createElement("p");
   note.className = "note";

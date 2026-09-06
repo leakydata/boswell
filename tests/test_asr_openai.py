@@ -89,7 +89,10 @@ def test_the_local_model_is_not_loaded_to_sit_idle():
     # at all.
     src = open(os.path.join(os.path.dirname(__file__), "..",
                             "web", "pipeline.py")).read()
-    assert 'if self.transcriber() == "openai" and not getattr' in src
+    load = src[src.index("    def _load(self):"):]
+    load = load[:load.index("def _load_helpers")]
+    assert "_asr_forced" in load, "the local model loads regardless of path"
+    assert "return" in load
     assert "_load_helpers" in src, "diarization must still load"
 
 

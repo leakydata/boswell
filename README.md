@@ -52,9 +52,29 @@ timings also mean the local alignment pass is skipped, and the local Whisper
 model is never loaded at all, which is the point on a machine that cannot hold
 it.
 
-If OpenAI is unreachable or refuses the key, the clip falls back to the local
-model rather than being lost. Audio is only sent when this is switched on;
-it is the one part of this project where anything leaves the machine.
+**Deepgram** does both halves: `nova-3` with diarization returns the words and
+who spoke in one call, which is the option that actually lets a machine with
+no GPU keep up.
+
+What no service returns is a **voiceprint**, and without one nobody in the
+archive is ever named. So the identity stays here whichever path transcribes:
+the speaker's stretches are pooled and embedded locally, using the model the
+diarizer already holds rather than a second one, because every voiceprint
+already stored was made by that model. Measured here, one 30-second clip with
+three speakers:
+
+| | CPU | GPU |
+|---|---|---|
+| diarize and embed together (pyannote) | 0.47× realtime | 32× |
+| embed alone | **19.1×** | 144× |
+
+The expensive part is the segmenting and the clustering, not the embedding. So
+the turn-taking can be bought and the identity kept.
+
+If a service is unreachable or refuses the key, the clip falls back to the
+local models rather than being lost. Audio is only sent when one of these is
+switched on; it is the one part of this project where anything leaves the
+machine.
 
 ### API keys
 

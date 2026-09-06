@@ -70,6 +70,7 @@ import index_db
 import recorders
 import secrets_store
 import asr_openai
+import asr_deepgram
 import compute
 
 # BlueZ runs one discovery at a time and refuses the second outright
@@ -1985,18 +1986,17 @@ def _recorder_rows(rows=None):
 @app.get("/api/transcriber")
 async def api_transcriber():
     """Which transcriber is in use, and what each one would cost you."""
-    want = PREFS.get("transcriber", "local")
-    have_key = asr_openai.available()
     return {
-        "chosen": want,
+        "chosen": PREFS.get("transcriber", "local"),
         "in_use": worker.transcriber(),
-        "openai_ready": have_key,
-        # Said plainly, because the whole reason to reach for the cloud is a
-        # machine that cannot keep up, and this only fixes half of that.
-        "note": ("Diarization still runs on this machine either way, and on a "
-                 "CPU it is the slower half: about 0.47x realtime against "
-                 "2.6x for local transcription. Sending the words out makes "
-                 "them keep up; it does not make the speakers keep up."),
+        "openai_ready": asr_openai.available(),
+        "deepgram_ready": asr_deepgram.available(),
+        "note": ("Voiceprints are always made on this machine, whichever of "
+                 "these does the transcribing — nobody could be named "
+                 "otherwise, and no service sends one back. That costs about "
+                 "a twentieth of realtime on a CPU, because the expensive "
+                 "part of diarization is the segmenting and the clustering, "
+                 "not the embedding."),
         "device": compute.describe(),
     }
 
@@ -2004,10 +2004,13 @@ async def api_transcriber():
 @app.post("/api/transcriber")
 async def api_set_transcriber(body: dict):
     want = (body.get("transcriber") or "").strip()
-    if want not in ("local", "openai"):
-        raise HTTPException(400, "transcriber must be local or openai")
-    if want == "openai" and not asr_openai.available():
-        raise HTTPException(400, "no OpenAI key — Settings → API keys")
+    ready = {"local": lambda: True, "openai": asr_openai.available,
+             "deepgram": asr_deepgram.available}
+    if want not in ready:
+        raise HTTPException(400, "transcriber must be "
+                                 + ", ".join(ready))
+    if not ready[want]():
+        raise HTTPException(400, f"no {want} key — Settings → API keys")
     PREFS["transcriber"] = want
     save_prefs(PREFS)
     # Read per clip by the worker, so this takes effect on the next recording

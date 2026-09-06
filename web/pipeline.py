@@ -21,6 +21,8 @@ import numpy as np
 import compute
 import secrets_store
 import asr_openai
+import asr_deepgram
+import embedder
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.abspath(os.path.join(HERE, "..", "data"))
@@ -1087,7 +1089,8 @@ class Worker:
         # no reason for the risk.
         if self._asr is not None:
             return
-        if self.transcriber() == "openai" and not getattr(self, "_asr_forced", False):
+        if self.transcriber() in ("openai", "deepgram") \
+                and not getattr(self, "_asr_forced", False):
             # Nothing local is transcribing, so do not spend a card's worth of
             # memory and twenty seconds loading a model to sit idle. The point
             # of the cloud path is the machine that cannot hold this model at
@@ -1310,7 +1313,17 @@ class Worker:
         would turn a paid convenience into a way to lose a conversation.
         """
         import whisperx
-        if self.transcriber() == "openai":
+        which = self.transcriber()
+        if which == "deepgram":
+            try:
+                # Comes back already diarized. The speakers are theirs; the
+                # voiceprints are made here, because they cannot supply one.
+                return asr_deepgram.transcribe(path)
+            except asr_deepgram.Unavailable as e:
+                self.notify("log", text=f"Deepgram: {e} — using the local model")
+                self._asr_forced = True
+                self._load()
+        elif which == "openai":
             try:
                 return asr_openai.transcribe(path)
             except asr_openai.Unavailable as e:
@@ -1327,9 +1340,12 @@ class Worker:
         """Which one to use. Read per clip rather than cached, so changing it
         in Settings takes effect on the next recording and not on the next
         restart."""
-        if getattr(self, "_transcriber", "local") != "openai":
-            return "local"
-        return "openai" if asr_openai.available() else "local"
+        want = getattr(self, "_transcriber", "local")
+        if want == "openai":
+            return "openai" if asr_openai.available() else "local"
+        if want == "deepgram":
+            return "deepgram" if asr_deepgram.available() else "local"
+        return "local"
 
     def _process(self, clip):
         import whisperx
@@ -1340,7 +1356,17 @@ class Worker:
         res = self._words(path, audio)
 
         names, embeddings = {}, {}
-        if self._diar is not None:
+        cloud_diarized = any(x.get("speaker") for x in res.get("segments") or [])
+        if cloud_diarized:
+            # Somebody else did the diarizing. The one thing they cannot send
+            # back is a voiceprint, and without one nobody is ever named, so
+            # the vectors are made here from the stretches they marked.
+            spans = embedder.spans_from_segments(res["segments"])
+            clean = (embedder.voiceprints(self._embed_audio, audio, 16000, spans)
+                     if spans else {})
+            embeddings = {k: v.tolist() for k, v in clean.items()}
+            names = identify(clean, clip=clip) if clean else {}
+        elif self._diar is not None:
             df, emb = self._diar(audio, return_embeddings=True)
             res = whisperx.assign_word_speakers(df, res)
             # pyannote returns a NaN embedding when a speaker cluster has too
@@ -1477,6 +1503,21 @@ class Worker:
     # And how much of that agreeing speech is needed before it is worth
     # enrolling from.
     CORE_MIN_SECONDS = 4.0
+
+    def _embed_audio(self, chunk):
+        """One vector for one stretch of samples, from the diarizer's own
+        embedding model. Returns None if that model is not loaded, which is
+        the honest answer rather than a second model's opinion."""
+        import torch
+        model = getattr(getattr(self._diar, "model", None), "_embedding", None)
+        if model is None:
+            return None
+        w = torch.from_numpy(np.asarray(chunk, dtype=np.float32)).reshape(1, 1, -1)
+        dev = getattr(model, "device", None)
+        if dev is not None:
+            w = w.to(dev)
+        v = np.asarray(model(w)).ravel()
+        return unit(v) if v.size and np.all(np.isfinite(v)) else None
 
     def _embed_spans(self, audio, spans, sr=16000):
         """Embed individual stretches of audio with the diarizer's own model.
