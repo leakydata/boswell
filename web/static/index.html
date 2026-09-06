@@ -1840,6 +1840,11 @@ const recorders = {
  * succeed. Panels now follow this list.
  */
 let paired = [];
+/* Whether the list has been fetched at all. Until it has, "nothing is paired"
+   and "we have not asked yet" are the same empty array, and treating the
+   second as the first flashes "no recorder paired" over a working setup on
+   every page load. */
+let pairedLoaded = false;
 
 function paintPairing(){
   const have = k => paired.some(r => r.kind === k);
@@ -1898,8 +1903,11 @@ async function loadPaired(){
   try{
     const d = await (await fetch("/api/recorders")).json();
     paired = d.recorders || [];
+    pairedLoaded = true;
   }catch(e){ return; }
   paintPairing();
+  // The header names a recorder, so it has to know which ones are ours.
+  paintPrimary();
 }
 
 on("bScan", "click", async () => {
@@ -1974,32 +1982,50 @@ function deviceParam(){
   return deviceFilter ? "&device=" + encodeURIComponent(deviceFilter) : "";
 }
 
+/* Only the recorders this install has. Both entries in `recorders` exist
+   from the start -- one per kind the code knows how to talk to -- and that is
+   not the same as one per device somebody owns. A fresh install with nothing
+   paired was headed "Omi · paused" in red, naming hardware the reader may
+   never have seen. */
+function ourRecorders(){
+  if (!pairedLoaded) return [recorders.boswell, recorders.omi];
+  const kinds = new Set(paired.map(r => r.kind));
+  return [["boswell", recorders.boswell], ["omi", recorders.omi]]
+      .filter(([k]) => kinds.has(k)).map(([, r]) => r);
+}
+
 function primaryRecorder(){
   // The connected one wins, and between two connected ones the one actually
   // capturing does. A recorder that is merely reachable is not the answer to
   // "what is recording me".
-  const list = [recorders.boswell, recorders.omi];
+  const list = ourRecorders();
   return list.find(r => r.connected && r.capturing)
       || list.find(r => r.connected)
       || null;
 }
 
 function paintPrimary(){
+  const mine = ourRecorders();
+  const none = pairedLoaded && !mine.length;
   const p = primaryRecorder();
-  const any = recorders.boswell.capturing || recorders.omi.capturing;
+  const any = mine.some(r => r.capturing);
 
   // The tab title is the app, not the device: among eleven open tabs this
   // answers "is my recorder doing its job", and which box is doing it is a
   // second question that does not fit in a tab.
-  document.title = !p ? (recorders.boswell.scanning ? "… Boswell" : "Boswell")
+  document.title = !p ? (recorders.boswell.scanning && !none
+                           ? "… Boswell" : "Boswell")
                  : any ? "● Boswell" : "○ Boswell";
 
   // Naming one of them while two are recording is a small lie that reads as
   // "only this one is on". Say how many instead, and let the panels below
   // say which.
-  const busy = [recorders.boswell, recorders.omi].filter(r => r.capturing);
+  const busy = mine.filter(r => r.capturing);
   $("ver").textContent =
-      busy.length > 1 ? `${busy.length} recorders · recording`
+      // Not the pill's words again -- that says the state; this says what to
+      // do about it, which is the only useful thing left to put here.
+      none             ? "pair one on the Device page"
+    : busy.length > 1  ? `${busy.length} recorders · recording`
     : !p               ? "disconnected"
     : `${p.name || "connected"}${p.capturing ? " · recording" : ""}`;
 
@@ -2015,7 +2041,8 @@ function paintPrimary(){
      is a third state the reader has to notice the absence of, and the one it
      is easiest to misread as the one before it. */
   cap.hidden = false;
-  const st = !p ? (recorders.boswell.scanning
+  const st = none ? ["no recorder paired", "var(--faint)"]
+           : !p ? (recorders.boswell.scanning
                      ? ["looking for the device", "#4a90e0"]
                      : ["no recorder connected", "var(--faint)"])
            // "2 recorders" in the pill beside "2 recorders - recording" in
@@ -2038,13 +2065,17 @@ function paintPrimary(){
      is the same failure the pill below was built to avoid: an absence the
      reader has to notice, instead of a state that is stated. */
   const stateOf = (r) => r.capturing ? "recording"
-                       : r.connected ? "paused"
+                       : r.connected ? ({syncing: "catching up",
+                                         "catching up": "catching up"}[r.state]
+                                        || "paused")
                        : r.scanning ? "searching for it"
+                       : r.state === "lost" ? "lost the link"
+                       : r.state === "waiting" ? "waiting to reconnect"
                        : "not connected";
-  cap.title = [recorders.boswell, recorders.omi]
-      .filter(r => r.name)
+  cap.title = mine.filter(r => r.name)
       .map(r => `${r.name} — ${stateOf(r)}`)
-      .join("\n") || "no recorder connected";
+      .join("\n")
+      || (none ? "pair a recorder on the Device page" : "no recorder connected");
 }
 
 function paint(s){
@@ -6756,9 +6787,16 @@ async function omiPoll(){
   // the other device is unplugged, and may become the usual one.
   recorders.omi = {
     name: (s.stats && s.stats.model) || "Omi",
-    connected: !!(s && s.running && s.state !== "not found"
-                  && s.state !== "looking"),
+    /* "lost" and "waiting" are the daemon saying the link went; counting
+       them as connected had the header calling a recorder that is not there
+       paused, which is the same lie the capture pill was built to stop. */
+    connected: !!(s && s.running
+                  && !["not found", "looking", "lost", "waiting",
+                       "stopped", "not paired"].includes(s.state)),
     capturing: !!(s && s.running && s.state === "recording"),
+    // Its own word, so the header can say "catching up" rather than
+    // flattening every not-recording state to "paused".
+    state: (s && s.state) || null,
   };
   paintPrimary();
 

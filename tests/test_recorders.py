@@ -148,3 +148,28 @@ def test_whisper_falls_off_mps_because_ctranslate2_has_no_backend():
         del os.environ["BOSWELL_TORCH_DEVICE"]
         import compute
         importlib.reload(compute)
+
+
+def test_the_header_only_names_recorders_this_install_has():
+    """`recorders` has one entry per kind the code can talk to, which is not
+    one per device somebody owns. A fresh install with nothing paired was
+    headed "Omi - paused" in red, naming hardware the reader may never have
+    seen."""
+    html = open(os.path.join(os.path.dirname(__file__), "..",
+                             "web", "static", "index.html")).read()
+    assert "function ourRecorders()" in html
+    assert "no recorder paired" in html
+    # And it must not read the list before it has been fetched: empty and
+    # not-yet-asked are the same array, and confusing them flashes "no
+    # recorder paired" over a working setup on every load.
+    assert "pairedLoaded" in html
+
+
+def test_a_lost_link_is_not_a_connected_recorder():
+    # "lost" and "waiting" are the daemon saying the link went. Counting them
+    # as connected had the header calling an absent recorder paused.
+    html = open(os.path.join(os.path.dirname(__file__), "..",
+                             "web", "static", "index.html")).read()
+    block = html[html.index("connected: !!(s && s.running"):][:400]
+    for word in ("lost", "waiting", "not found", "looking", "stopped"):
+        assert f'"{word}"' in block, f"{word} still counts as connected"
