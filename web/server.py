@@ -2095,6 +2095,12 @@ async def api_devices():
     except (OSError, ValueError):
         pass
 
+    # What each paired recorder is called, so a device that is switched off
+    # is still named. Without this the filter listed the Boswell as a blank
+    # the moment it stopped answering -- the same fault as the panel heading
+    # falling back to "Device".
+    named = {r["id"]: r.get("name") for r in recorders.load(seed=_seed_recorders)}
+
     out = []
     for key, d in seen.items():
         d["connected"] = bool(key) and key in (live, omi_addr)
@@ -2103,6 +2109,8 @@ async def api_devices():
             d["name"] = device.state.get("device_name") or "this device"
         elif key and key == omi_addr:
             d["name"] = "Omi"
+        elif key and named.get(key):
+            d["name"] = named[key]
         elif not key:
             # Everything recorded before clips carried a device id. All from
             # the one recorder that existed then, but nothing wrote it down,
