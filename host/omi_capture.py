@@ -145,6 +145,36 @@ async def read_volatile(client):
     return out
 
 
+async def apply_settings(client, mic_gain=None, dim_ratio=None):
+    """Change what can be changed on a running Omi.
+
+    Both of these are read-write in their firmware and neither survives being
+    guessed at: gain is what the audio quality depends on, and the LED is what
+    tells a room it is being recorded. Written on a connection somebody else
+    already has, for the same reason everything else here is -- the radio is
+    exclusive, so whatever holds the device is the only thing that can ask it
+    anything.
+
+    Returns the fields it managed to write. A refusal is reported rather than
+    raised: a setting that would not take is not a reason to stop recording.
+    """
+    done = {}
+    for uuid, name, value in ((OMI_MIC_GAIN,  "mic_gain",  mic_gain),
+                              (OMI_DIM_RATIO, "dim_ratio", dim_ratio)):
+        if value is None:
+            continue
+        try:
+            v = max(0, min(255, int(value)))
+            await client.write_gatt_char(uuid, bytes([v]), response=True)
+            # Read back rather than trust the write: a firmware that clamps
+            # or ignores a value would otherwise leave the interface showing
+            # a number the device never held.
+            done[name] = (await client.read_gatt_char(uuid))[0]
+        except Exception:
+            pass
+    return done
+
+
 async def set_clock(client, epoch=None):
     """Tell it the time.
 
@@ -270,12 +300,17 @@ async def find_omi(timeout=15.0):
 
 
 async def capture(address, seconds=None, quiet=False, on_progress=None,
-                  should_stop=None, on_stats=None, stats_every=60):
+                  should_stop=None, on_stats=None, stats_every=60,
+                  on_tick=None):
     """Stream from one Omi until interrupted, filing clips as it goes.
 
     `on_stats` is handed the readings that change while it runs -- battery
     above all -- every `stats_every` seconds, because the radio is exclusive
     and this loop is the only thing holding the device.
+
+    `on_tick` is awaited once a second with the live client, so a caller can
+    write to the device at all. Nothing else can: the connection this loop
+    holds is the only one there is.
     """
     device_id = norm_id(address)
     clipper = Clipper(device_id)
@@ -338,6 +373,11 @@ async def capture(address, seconds=None, quiet=False, on_progress=None,
                     # rather than only that it once began.
                     on_progress({"clips": clipper.clips,
                                  "frames": clipper.frames})
+                if on_tick:
+                    try:
+                        await on_tick(client)
+                    except Exception:
+                        pass     # never the reason a recording stops
                 if on_stats and time.time() - last_stats >= stats_every:
                     last_stats = time.time()
                     try:

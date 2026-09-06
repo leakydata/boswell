@@ -329,3 +329,65 @@ def test_the_daemon_keeps_its_published_battery_current():
     # Otherwise the fresh reading is taken and then thrown away.
     src = read_file("host/omid.py")
     assert "on_stats=stats.update" in src
+
+
+# ------------------------------------------------- changing what can change
+def test_a_setting_is_read_back_rather_than_assumed():
+    """A firmware that clamps or ignores a value must not leave the interface
+    showing a number the device never held."""
+    import asyncio
+
+    class Clamping:
+        """Accepts a gain but keeps only the low three bits, as a device that
+        disagrees with the host would."""
+        def __init__(self):
+            self.held = {}
+
+        async def write_gatt_char(self, uuid, data, response=True):
+            self.held[uuid] = bytes([data[0] & 0x07])
+
+        async def read_gatt_char(self, uuid):
+            return self.held[uuid]
+
+    c = Clamping()
+    got = asyncio.run(oc.apply_settings(c, mic_gain=30))
+    assert got == {"mic_gain": 30 & 0x07}, "reported the asked-for value"
+
+
+def test_a_refused_setting_does_not_stop_the_recording():
+    import asyncio
+
+    class Refusing:
+        async def write_gatt_char(self, uuid, data, response=True):
+            raise RuntimeError("not writable")
+
+    assert asyncio.run(oc.apply_settings(Refusing(), mic_gain=6)) == {}
+
+
+def test_only_the_named_settings_are_written():
+    # Passing nothing must touch nothing: the loop is entered once a second.
+    import asyncio
+
+    class Loud:
+        async def write_gatt_char(self, *a, **k):
+            raise AssertionError("wrote with nothing to write")
+
+    assert asyncio.run(oc.apply_settings(Loud())) == {}
+
+
+def test_the_daemon_applies_a_request_by_id():
+    """Asking for the value the device already holds is still an instruction.
+
+    Compared by value, "no change needed" and "never arrived" look identical
+    to whoever is watching the slider.
+    """
+    src = read_file("host/omid.py")
+    assert 'want["id"] == applied["id"]' in src
+    assert 'stats["applied_id"]' in src
+
+
+def test_the_page_cannot_write_to_the_omi_itself():
+    # The radio is exclusive and the daemon is holding it, so a setting is a
+    # request left in a file rather than a write.
+    src = read_file("web/server.py")
+    assert "omi_wanted.json" in src

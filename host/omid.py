@@ -21,6 +21,7 @@ wait a moment and try again.
 
 import argparse
 import asyncio
+import json
 import os
 import signal
 import sys
@@ -40,6 +41,13 @@ import omi_sync
 # process that must not block on us, and because it survives both of us.
 STATUS = os.path.join(clipwriter.DATA, "omi_status.json")
 
+# What somebody has asked the device to become. The interface cannot write to
+# the Omi itself -- the radio is exclusive and this process is holding it --
+# so a request is left here and applied on the connection that exists. The
+# same shape as the status file going the other way, and for the same reason:
+# two processes, no shared memory, and a file that survives both of them.
+WANTED = os.path.join(clipwriter.DATA, "omi_wanted.json")
+
 # Backing off, in seconds. Quick at first because the usual failure is the
 # device being briefly busy; longer after that because the usual failure
 # after several tries is that it is not in the room.
@@ -54,6 +62,16 @@ def publish(**fields):
         atomicio.write_json(STATUS, fields)
     except Exception:
         pass          # status is a courtesy; never the reason a run fails
+
+
+def read_wanted():
+    """The settings request, or None. A malformed file is not a request."""
+    try:
+        with open(WANTED) as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return d if isinstance(d, dict) and d.get("id") is not None else None
 
 
 async def one_session(address, quiet=False):
@@ -138,6 +156,26 @@ async def one_session(address, quiet=False):
             except asyncio.TimeoutError:
                 pass
 
+    # Applied by id rather than by comparing values, so asking for the gain
+    # the device already has is still an instruction that completes -- the
+    # interface is waiting to hear that it took, and "no change needed" looks
+    # exactly like "never arrived" to whoever is watching the slider.
+    applied = {"id": None}
+
+    async def on_tick(client):
+        want = read_wanted()
+        if not want or want["id"] == applied["id"]:
+            return
+        got = await omi_capture.apply_settings(
+            client, mic_gain=want.get("mic_gain"),
+            dim_ratio=want.get("dim_ratio"))
+        applied["id"] = want["id"]
+        # Read back into the published stats, so the interface shows what the
+        # device holds rather than what it was asked for.
+        stats.update(got)
+        stats["applied_id"] = want["id"]
+        print(f"applied {got or 'nothing'} (request {want['id']})", flush=True)
+
     beat = {"clips": 0, "frames": 0}
     pulse = asyncio.create_task(heartbeat())
     try:
@@ -149,7 +187,8 @@ async def one_session(address, quiet=False):
                                             # the next beat carries the new
                                             # battery without another path
                                             # through the status file.
-                                            on_stats=stats.update)
+                                            on_stats=stats.update,
+                                            on_tick=on_tick)
     finally:
         stop.set()
         await pulse

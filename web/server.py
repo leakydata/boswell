@@ -1957,6 +1957,41 @@ async def api_devices():
     return {"devices": out}
 
 
+@app.post("/api/omi/settings")
+async def api_omi_settings(body: dict):
+    """Ask the Omi to change a setting.
+
+    Left in a file for the daemon rather than written over Bluetooth here:
+    the radio is exclusive and the daemon is holding it, so this process
+    cannot reach the device at all. The daemon applies it on the connection
+    that already exists and reads the value back into its status, which is
+    how the interface learns it took rather than merely that it was asked.
+    """
+    fields = {}
+    for name, lo, hi in (("mic_gain", 0, 255), ("dim_ratio", 0, 100)):
+        if body.get(name) is None:
+            continue
+        try:
+            v = int(body[name])
+        except (TypeError, ValueError):
+            raise HTTPException(400, f"{name} must be a whole number")
+        if not lo <= v <= hi:
+            raise HTTPException(400, f"{name} must be between {lo} and {hi}")
+        fields[name] = v
+    if not fields:
+        raise HTTPException(400, "nothing to set")
+
+    # Identified by the moment it was asked, so the daemon applies a request
+    # once and the interface can tell "it took" from "it never arrived" --
+    # which asking for the value the device already holds would not otherwise
+    # distinguish.
+    fields["id"] = time.time()
+    atomicio.write_json(os.path.join(DATA, "omi_wanted.json"), fields)
+    device.event("log", text="asked the Omi for "
+                 + ", ".join(f"{k} {v}" for k, v in fields.items() if k != "id"))
+    return {"ok": True, **fields}
+
+
 @app.get("/api/omi")
 async def api_omi():
     """What the second recorder is doing.

@@ -937,6 +937,26 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
         alongside it — recovered audio is saved as its own clip.</p>
     </div>
 
+    <!-- The second recorder's settings. A card of its own rather than rows
+         added to the one above, because these are written to a different
+         device over a different connection and half of them would be
+         disabled at any moment. -->
+    <div class="card" id="omiset" hidden>
+      <h2>Capture <span class="owner">Omi</span></h2>
+      <label class="row">Microphone gain
+        <input type="range" id="omigain" min="0" max="20" value="6" step="1" disabled>
+        <span class="val" id="omigainv">6</span>
+      </label>
+      <label class="row">Status light
+        <input type="range" id="omidim" min="0" max="100" value="1" step="1" disabled>
+        <span class="val" id="omidimv">1%</span>
+      </label>
+      <p class="note" id="omisetnote">Written on the connection the recorder
+        already has, so a change lands within a second or two and the figure
+        here is read back off the device rather than assumed. Both are only
+        adjustable while it is connected.</p>
+    </div>
+
     <div class="card" id="recrow" hidden>
       <h2>Recordings on the device <span class="owner" data-owner>Boswell</span></h2>
       <div class="row" style="align-items:center">
@@ -1826,13 +1846,23 @@ function paintPrimary(){
   const st = !p ? (recorders.boswell.scanning
                      ? ["looking for the device", "#4a90e0"]
                      : ["no recorder connected", "var(--faint)"])
-           : busy.length > 1 ? [`${busy.length} recorders`, "#5ad07a"]
+           // "2 recorders" in the pill beside "2 recorders - recording" in
+           // the line next to it said one thing twice and the state nowhere.
+           // The pill says the state; the line says how many; the tooltip
+           // says which is doing what, because a summary cannot.
+           : busy.length > 1 ? ["recording", "#5ad07a"]
            : p.capturing ? (p.backlog > 2048 ? ["catching up", "#4ad0d0"]
                                              : ["recording", "#5ad07a"])
            : ["paused", "#e05a5a"];
   cap.querySelector("i").style.background = st[1];
   cap.querySelector("b").textContent = st[0];
   cap.style.color = st[1];
+  // Each recorder by name and state, for when the summary is not enough.
+  // The panels on the Device tab are the full answer; this is the glance.
+  cap.title = [recorders.boswell, recorders.omi]
+      .filter(r => r.connected || r.capturing)
+      .map(r => `${r.name || "recorder"} — ${r.capturing ? "recording" : "paused"}`)
+      .join("\n") || "no recorder connected";
 }
 
 function paint(s){
@@ -6342,6 +6372,29 @@ function gainLabel(v){
   const db = (v - 40) * 0.5;
   return `${v} · ${db >= 0 ? "+" : ""}${db.toFixed(1)} dB`;
 }
+/* The Omi's settings go through the daemon, because this page cannot reach
+   the device: the radio is exclusive and the daemon is holding it. So a
+   change is a request, and the value shown afterwards is what the device
+   read back -- not what we asked for. */
+/* The id of the request we are waiting to see land, and when we started
+   waiting. Both are needed: without the id a slider settles back the instant
+   any earlier request is reported, and without the deadline a device that
+   goes away mid-change freezes the controls until the page is reloaded. */
+let omiPending = null, omiPendingAt = 0;
+async function askOmi(fields){
+  try{
+    const r = await (await fetch("/api/omi/settings", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(fields)})).json();
+    if (r && r.id){ omiPending = r.id; omiPendingAt = Date.now(); }
+  }catch(e){ log("could not reach the server to change the Omi"); }
+}
+const omigain = $("omigain"), omidim = $("omidim");
+omigain.oninput = () => { $("omigainv").textContent = omigain.value; };
+omigain.onchange = () => askOmi({mic_gain: +omigain.value});
+omidim.oninput = () => { $("omidimv").textContent = omidim.value + "%"; };
+omidim.onchange = () => askOmi({dim_ratio: +omidim.value});
+
 const gain = $("gain");
 gain.oninput = () => {
   const v = +gain.value;
@@ -6569,8 +6622,9 @@ async function omiPoll(){
   if (s.state !== "recording"){
     add("codec", st.codec_name || (st.codec != null ? `id ${st.codec}` : null));
   }
-  add("mic gain", st.mic_gain);
-  add("led", st.dim_ratio != null ? `${st.dim_ratio}%` : null);
+  // Gain and the status light are controls of their own now, in the Omi's
+  // capture card. Printing them here as well gave the same fact two places
+  // to be read from, one of which could not be acted on.
   add("model", st.model);
   add("firmware", st.firmware);
   add("hardware", st.hardware);
@@ -6591,6 +6645,37 @@ async function omiPoll(){
   // Its address, so which physical thing this panel is about is never a
   // guess -- the same reason the panel above stopped saying XIAO-MIC.
   $("omiaddr").textContent = s.address || "";
+
+  /* The settings card follows the device, not the request. A slider that
+     springs back to what the hardware actually holds is telling the truth;
+     one that keeps showing what was asked for is not. Left alone while it is
+     being dragged, and while a request is still outstanding. */
+  const live = !!(s.running && s.state === "recording");
+  $("omiset").hidden = !known;
+  omigain.disabled = omidim.disabled = !live;
+  const landed = typeof st.applied_id === "number" && st.applied_id >= omiPending;
+  // Fifteen seconds is far longer than the once-a-second apply takes. Past
+  // that the request is not coming, and the honest thing is to show what the
+  // device says rather than hold the asked-for value on screen forever.
+  const settled = omiPending === null || landed
+                  || Date.now() - omiPendingAt > 15000;
+  if (settled){
+    omiPending = null;
+    if (st.mic_gain != null && document.activeElement !== omigain){
+      omigain.value = st.mic_gain;
+      $("omigainv").textContent = st.mic_gain;
+    }
+    if (st.dim_ratio != null && document.activeElement !== omidim){
+      omidim.value = st.dim_ratio;
+      $("omidimv").textContent = st.dim_ratio + "%";
+    }
+  }
+  $("omisetnote").textContent = live
+      ? "Written on the connection the recorder already has, so a change "
+        + "lands within a second or two and the figure here is read back off "
+        + "the device rather than assumed."
+      : "Adjustable only while it is connected and recording — the daemon "
+        + "holds the only connection there is, and it is not holding one now.";
 
   /* Headline, subtext and dot, in the words and colours the panel above uses.
      Two recorders described in two different vocabularies is two things to
