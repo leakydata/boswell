@@ -1815,6 +1815,67 @@ async def api_envelope(name: str):
     return JSONResponse(out)
 
 
+@app.get("/api/devices")
+async def api_devices():
+    """Every recorder that has put audio into this archive.
+
+    Counted from the times records rather than from a list somebody
+    maintains, because the archive is the only thing that actually knows. A
+    device that stopped being used still appears, with its last clip, which
+    is the question worth answering about one.
+    """
+    seen = {}
+    if os.path.isdir(TIMES):
+        for name in os.listdir(TIMES):
+            if not name.endswith(".json"):
+                continue
+            try:
+                with open(os.path.join(TIMES, name)) as f:
+                    r = json.load(f)
+            except (OSError, ValueError):
+                continue
+            key = r.get("device_id") or ""
+            d = seen.setdefault(key, {"device_id": key or None, "clips": 0,
+                                      "seconds": 0.0, "first": None,
+                                      "last": None, "sources": {}})
+            d["clips"] += 1
+            d["seconds"] += float(r.get("seconds") or 0)
+            src = r.get("source") or "?"
+            d["sources"][src] = d["sources"].get(src, 0) + 1
+            for edge, pick in (("first", min), ("last", max)):
+                t = r.get("started")
+                if t:
+                    d[edge] = t if d[edge] is None else pick(d[edge], t)
+
+    live = _norm_device_id(device.state.get("device_address"))
+    omi_addr = None
+    try:
+        with open(os.path.join(DATA, "omi_status.json")) as f:
+            omi_addr = _norm_device_id(json.load(f).get("address"))
+    except (OSError, ValueError):
+        pass
+
+    out = []
+    for key, d in seen.items():
+        d["connected"] = bool(key) and key in (live, omi_addr)
+        # A name for the thing rather than a hex string, where one is known.
+        if key and key == live:
+            d["name"] = device.state.get("device_name") or "this device"
+        elif key and key == omi_addr:
+            d["name"] = "Omi"
+        elif not key:
+            # Everything recorded before clips carried a device id. All from
+            # the one recorder that existed then, but nothing wrote it down,
+            # and inventing the answer now would be worse than saying so.
+            d["name"] = "before recorders were named"
+        else:
+            d["name"] = None
+        out.append(d)
+
+    out.sort(key=lambda d: (-(d["last"] or 0)))
+    return {"devices": out}
+
+
 @app.get("/api/omi")
 async def api_omi():
     """What the second recorder is doing.

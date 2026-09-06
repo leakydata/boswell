@@ -117,3 +117,35 @@ def test_the_message_says_it_is_a_serial_rather_than_missing():
 def test_the_serial_message_survives_an_empty_scan():
     msg = bc.describe_missing("A4C0D6ECF3D91437", [])
     assert "USB serial" in msg
+
+
+# ------------------------------------------------------- the rename
+#
+# The board advertised XIAO-MIC, which is the name of the module it is built
+# on rather than the name of the thing. Renaming it is a two-sided change: a
+# host that stops recognising the old name reports the device missing while
+# it sits there advertising, and a board that has not been reflashed yet is
+# the ordinary case for as long as the rename takes.
+
+def test_the_new_name_is_matched():
+    assert bc.DEVICE_NAME == "Boswell"
+    assert bc.device_matches(None, ADDR, "Boswell")
+
+
+def test_the_old_name_is_still_matched():
+    assert bc.device_matches(None, ADDR, "XIAO-MIC")
+
+
+def test_something_else_is_not():
+    assert not bc.device_matches(None, ADDR, "Omi")
+    assert not bc.device_matches(None, ADDR, "")
+
+
+def test_the_firmwares_advertise_the_new_name():
+    import os
+    root = os.path.join(os.path.dirname(__file__), "..")
+    conf = open(os.path.join(root, "firmware", "zephyr", "boswell",
+                             "prj.conf")).read()
+    assert 'CONFIG_BT_DEVICE_NAME="Boswell"' in conf
+    ino = open(os.path.join(root, "firmware", "ble_mic", "ble_mic.ino")).read()
+    assert 'Bluefruit.setName("Boswell")' in ino

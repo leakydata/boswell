@@ -809,6 +809,7 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
       <span class="tbadge" id="badgeNotes" hidden></span></button>
     <button id="tabHeard" type="button" role="tab" aria-controls="viewHeard" aria-selected="false" tabindex="-1">Heard</button>
     <button id="tabTidy" type="button" role="tab" aria-controls="viewTidy" aria-selected="false" tabindex="-1">Clear out</button>
+    <button id="tabSet" type="button" role="tab" aria-controls="viewSet" aria-selected="false" tabindex="-1">Settings</button>
   </nav>
   <div class="archivefoot" id="archiveFoot" hidden></div>
   </div>
@@ -1407,6 +1408,42 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
       </div>
     </div>
   </div>
+
+  <!-- Settings, and the place device management lives.
+       Everything here is about the setup rather than about the recordings,
+       which is the distinction that matters: the Device tab answers "is it
+       working right now" and this one answers "what is it, and how is it
+       configured". Mixing them is how the Device tab became a list of
+       twenty controls of wildly different importance. -->
+  <div class="view" id="viewSet" role="tabpanel" aria-labelledby="tabSet" tabindex="0" hidden>
+
+    <div class="card">
+      <h2>Recorders</h2>
+      <p class="note">Every device that has put audio into this archive.
+        Clips are told apart by the recorder that made them, so two devices
+        can run at once without their audio being confused — which matters
+        because a boot id is sixteen random bits and two of them collide
+        sooner than feels possible.</p>
+      <div id="setdevices" style="margin-top:10px">
+        <p class="note">loading…</p>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Archive</h2>
+      <div id="setstats" class="note">loading…</div>
+    </div>
+
+    <div class="card">
+      <h2>Services</h2>
+      <p class="note">Two recorders, two services, deliberately separate:
+        they fail independently and a fault in one must not take the other's
+        audio with it.</p>
+      <div id="setservices" style="margin-top:10px" class="note">loading…</div>
+    </div>
+
+  </div>
+
 
   <!-- ============ HEARD ============ -->
   <div class="view" id="viewHeard" role="tabpanel" aria-labelledby="tabHeard" tabindex="0" hidden>
@@ -2146,7 +2183,8 @@ function showTab(which){
   for (const [t, v, k] of [["tabDev","viewDev","dev"],["tabRec","viewRec","rec"],
                            ["tabPpl","viewPpl","ppl"],["tabNotes","viewNotes","notes"],
                            ["tabHeard","viewHeard","heard"],
-                           ["tabTidy","viewTidy","tidy"]]){
+                           ["tabTidy","viewTidy","tidy"],
+                           ["tabSet","viewSet","set"]]){
     const on = which === k;
     $(t).setAttribute("aria-selected", on);
     // Roving tabindex: one stop for the whole tablist, then arrow keys move
@@ -2158,6 +2196,7 @@ function showTab(which){
   if (which === "rec"){ loadClips(); loadPulse(); if ($("pulseCard").open) drawPulse(); }
   if (which === "dev") loadBattery();
   if (which === "ppl"){ loadPeople(); loadVocab(); loadVoices(); pollBulk(); }
+  if (which === "set") loadSettings();
   if (which === "notes"){ loadAgent(); loadItems(); loadTopics(); loadDuplicates(); }
   if (which === "heard") loadHeard();
   if (which === "tidy") loadTidy();
@@ -2205,7 +2244,8 @@ function parseHash(){
   return {tab, params: new URLSearchParams(qmark === -1 ? "" : h.slice(qmark + 1))};
 }
 const TABS = [["tabDev","dev"],["tabRec","rec"],["tabPpl","ppl"],
-              ["tabNotes","notes"],["tabHeard","heard"],["tabTidy","tidy"]];
+              ["tabNotes","notes"],["tabHeard","heard"],["tabTidy","tidy"],
+              ["tabSet","set"]];
 for (const [id, key] of TABS) $(id).onclick = () => showTab(key);
 /* The address bar is restored further down, after the variables it mirrors
    exist -- a let is unreachable before its own declaration runs. */
@@ -6151,6 +6191,101 @@ function toggleVad(){
   send({cmd:"vad", on});
 }
 vad.onclick = toggleVad;
+
+/* ---- settings ---- */
+//
+// Everything about the setup rather than about the recordings. The Device
+// tab answers "is it working right now"; this one answers "what is it".
+// Loaded when the tab is opened, not polled: none of it changes second to
+// second, and a settings page that repaints under you is hard to read.
+
+function ago(t){
+  if (!t) return "never";
+  const s = Math.max(0, Date.now() / 1000 - t);
+  if (s < 90) return "just now";
+  if (s < 3600) return `${Math.round(s / 60)} min ago`;
+  if (s < 172800) return `${Math.round(s / 3600)} h ago`;
+  return `${Math.round(s / 86400)} days ago`;
+}
+
+function hours(sec){
+  if (sec < 60) return `${Math.round(sec)} s`;
+  if (sec < 3600) return `${Math.round(sec / 60)} min`;
+  return `${(sec / 3600).toFixed(1)} h`;
+}
+
+async function loadSettings(){
+  let d;
+  try { d = await (await fetch("/api/devices")).json(); }
+  catch(e){ $("setdevices").innerHTML = "<p class=note>could not read the archive</p>"; return; }
+
+  const el = $("setdevices");
+  el.innerHTML = "";
+  let clips = 0, secs = 0;
+
+  for (const dev of (d.devices || [])){
+    clips += dev.clips; secs += dev.seconds;
+    const row = document.createElement("div");
+    row.style.cssText = "padding:8px 0;border-top:1px solid var(--rule)";
+
+    const title = document.createElement("div");
+    title.style.cssText = "display:flex;gap:8px;align-items:baseline";
+    const nm = document.createElement("strong");
+    nm.textContent = dev.name || dev.device_id || "unknown";
+    // Unattributed audio is not a device and should not look like one.
+    if (!dev.device_id) nm.style.fontWeight = "normal";
+    const id = document.createElement("span");
+    id.className = "note";
+    id.style.cssText = "font-family:var(--mono);font-size:11px;flex:1";
+    id.textContent = dev.device_id || "";
+    const st = document.createElement("span");
+    st.className = "note";
+    st.textContent = dev.connected ? "connected" : "";
+    if (dev.connected) st.style.color = "var(--ok, inherit)";
+    title.append(nm, id, st);
+
+    const sub = document.createElement("div");
+    sub.className = "note";
+    const how = Object.entries(dev.sources || {})
+      .map(([k, v]) => `${v} ${k}`).join(", ");
+    sub.textContent = `${dev.clips.toLocaleString()} clips · ${hours(dev.seconds)}`
+      + ` · last ${ago(dev.last)}` + (how ? ` · ${how}` : "");
+
+    row.append(title, sub);
+    el.appendChild(row);
+  }
+  if (!el.children.length) el.innerHTML = "<p class=note>nothing recorded yet</p>";
+
+  // Unattributed audio is not a recorder and must not be counted as one.
+  // Everything recorded before clips carried a device id is one bucket, not
+  // one device, and saying "3 recorders" when there are two is the kind of
+  // small lie a settings page exists not to tell.
+  const named = (d.devices || []).filter(x => x.device_id).length;
+  const orphan = (d.devices || []).find(x => !x.device_id);
+  $("setstats").textContent =
+    `${clips.toLocaleString()} clips, ${hours(secs)} of audio, from `
+    + `${named} recorder${named === 1 ? "" : "s"}`
+    + (orphan ? `, plus ${orphan.clips.toLocaleString()} recorded before `
+              + `clips said which device made them.` : ".");
+
+  // What is running, said plainly. Both are read-only observations -- this
+  // page reports the setup, it does not start and stop things, because a
+  // settings page that can silently stop a recorder is a settings page that
+  // eventually does.
+  let omi = {};
+  try { omi = await (await fetch("/api/omi")).json(); } catch(e){}
+  $("setservices").innerHTML =
+    `<div>boswell — the device this server is connected to: `
+    + `<strong>${st_ok(true)}</strong></div>`
+    + `<div style="margin-top:4px">omid — the Omi: `
+    + `<strong>${st_ok(!!omi.running)}</strong>`
+    + (omi.state ? ` (${omi.state})` : "") + `</div>`
+    + `<p class="note" style="margin-top:8px">Started and stopped with `
+    + `<code>systemctl --user start boswell</code> and `
+    + `<code>omid</code>.</p>`;
+}
+
+function st_ok(on){ return on ? "running" : "not running"; }
 
 // The second recorder. Polled rather than pushed: it is another process
 // entirely, reporting through a file, and the websocket carries the device

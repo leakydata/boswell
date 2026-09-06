@@ -1108,6 +1108,49 @@ Naming works at two levels, because misattribution has two different causes:
   diarized cluster, so enrolling from one misattributed line would teach the
   wrong voice.
 
+## Using an Omi as a second recorder
+
+An [Omi](https://github.com/BasedHardware/omi) CV 1 works as a Boswell
+recorder, alongside or instead of the device this project builds. It
+connects with no pairing and no authentication, its GATT table matches their
+open-source firmware, and its Opus is byte-identical to this project's -- 20
+ms frames, 16 kHz, 32 kbps, CELT restricted low delay -- so the audio needs
+no translation. Their codec 21 means Opus at 20 ms; 20 is the devkit's 10 ms.
+
+    uv run host/omi_capture.py --scan       # find one
+    uv run host/omi_sync.py --info          # what it has stored
+    uv run host/omid.py                     # sync, then stream, and keep going
+
+`omid` is the daemon, and `host/omid.service` runs it. It catches up on
+whatever the device stored while out of range, then streams live, then
+reconnects when the link drops. Sync comes first deliberately: streaming
+first leaves the stored audio behind every time somebody walks back into
+range.
+
+Two properties of their protocol are worth knowing before relying on it.
+
+**Reading consumes.** The device advances its own read pointer as it confirms
+bytes sent, so a packet handed over is gone -- asking again returns "sequence
+out of range". There is no re-read and no option that avoids this. Bytes are
+therefore spooled to disk and fsynced the moment they arrive, before anything
+tries to decode them, so a crash costs the seconds in flight rather than
+everything unprocessed.
+
+**Only one connection at a time.** While `omid` holds the device, the Omi
+phone app cannot, and the reverse. This is a replacement for that app, not a
+companion to it.
+
+Offloaded audio carries real timestamps -- the device stamps what it stores.
+Its live stream does not, carrying only a packet counter, so those clips are
+written `time_known: false` and placed by arrival. The device this project
+builds knows the time on both paths, because the host tells it.
+
+Both recorders write into one archive, told apart by `device_id` in every
+times record. That matters more than it sounds: de-duplication keys on
+`(device_id, boot_id, device_ms)`, and a boot id is sixteen random bits --
+two recorders in one house collide on one sooner than feels possible, and
+what they would merge is audio from two different rooms.
+
 ## What Omi does differently
 
 [Omi](https://github.com/BasedHardware/omi) is the closest prior art: the same

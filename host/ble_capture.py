@@ -24,7 +24,18 @@ AUDIO_UUID   = "4b1a0002-8f2c-4d5e-9a3b-1c7e6f8d0a21"
 CTRL_UUID    = "4b1a0003-8f2c-4d5e-9a3b-1c7e6f8d0a21"
 INFO_UUID    = "4b1a0004-8f2c-4d5e-9a3b-1c7e6f8d0a21"
 
-DEVICE_NAME = "XIAO-MIC"
+DEVICE_NAME = "Boswell"
+
+# The name the firmware advertised before it was given the project's own.
+# Still accepted, and not as a courtesy: a board that has not been reflashed
+# yet is the ordinary case during a rename, and a host that stopped
+# recognising it would report the device missing while it sat there
+# advertising. The Arduino build still uses it too.
+LEGACY_NAMES = ("XIAO-MIC",)
+
+
+def is_our_name(name):
+    return name in (DEVICE_NAME,) + LEGACY_NAMES
 
 
 # ------------------------------------------------------- choosing a board
@@ -72,7 +83,7 @@ def device_matches(want, address, name):
     """
     name = name or ""
     if not want:
-        return name == DEVICE_NAME
+        return is_our_name(name)
     if looks_like_usb_serial(want):
         # Never matches anything. describe_missing() says why.
         return False
@@ -278,13 +289,15 @@ async def do_scan():
         print("no BLE devices found")
         return
     for d in devices:
-        mark = "  <-- this one" if (d.name or "") == DEVICE_NAME else ""
+        mark = "  <-- this one" if is_our_name(d.name or "") else ""
         print(f"  {d.address}  rssi={getattr(d, 'rssi', '?'):>4}  {d.name or '(unnamed)'}{mark}")
 
 
 async def capture(args):
     print(f"scanning for {DEVICE_NAME} ...")
-    dev = await BleakScanner.find_device_by_name(DEVICE_NAME, timeout=20.0)
+    # Through the matcher rather than by exact name, so a board still
+    # advertising the old one is found by this path too.
+    dev, _ = await find_device(wanted_device(), timeout=20.0)
     if dev is None:
         print(f"{DEVICE_NAME} not found. Is the board powered and advertising?",
               file=sys.stderr)

@@ -923,7 +923,7 @@ void setup() {
   Bluefruit.configPrphBandwidth(BANDWIDTH_MAX);
   Bluefruit.begin(1, 0);
   Bluefruit.setTxPower(txPower);
-  Bluefruit.setName("XIAO-MIC");
+  Bluefruit.setName("Boswell");
   Bluefruit.autoConnLed(false);   // we drive the RGB LED ourselves
   Bluefruit.Periph.setConnectCallback(connect_cb);
   Bluefruit.Periph.setDisconnectCallback(disconnect_cb);
@@ -979,7 +979,7 @@ void setup() {
 
   updateLed();
   watchdogBegin();
-  Serial.println("XIAO-MIC advertising");
+  Serial.println("Boswell advertising");
 
   // Last, deliberately: the radio must come up even if the IMU misbehaves.
   InternalFS.begin();

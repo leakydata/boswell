@@ -5,6 +5,12 @@
 # take the other's audio with it. The archive is where they meet.
 #
 # Install:
+# The two paths below assume the repository is at ~/Documents/electronics/
+# nRF52840 and that uv is at ~/.local/bin/uv. Change both to wherever you
+# actually cloned it -- systemd will not guess, and a unit with the wrong
+# WorkingDirectory fails with a message about the interpreter rather than
+# about the path.
+#
 #   cp host/omid.service ~/.config/systemd/user/
 #   systemctl --user daemon-reload
 #   systemctl --user enable --now omid
