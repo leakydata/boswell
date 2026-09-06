@@ -39,6 +39,14 @@
   --accent:#46AEC2; --ok:#4FB37F; --warn:#D3A03F; --bad:#DB6B57;
 }}
 *{box-sizing:border-box}
+/* Thin, theme-aware scrollbars everywhere; the default grey bars broke the
+   illusion on every page that scrolls -- which is all of them. */
+*{scrollbar-width:thin;scrollbar-color:var(--rule) transparent}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--rule);border-radius:5px;
+  border:2px solid var(--paper)}
+::-webkit-scrollbar-thumb:hover{background:var(--faint)}
 html{
   /* Without this, dark mode leaves scrollbars and native controls light. */
   color-scheme:light dark;
@@ -659,6 +667,28 @@ select.speed{min-height:0;padding:5px 26px 5px 9px;font-size:12.5px;
 .labbar .ok{background:color-mix(in srgb,var(--ok) 70%,transparent)}
 .labbar .warn{background:color-mix(in srgb,var(--warn) 70%,transparent)}
 .labbar .none{background:color-mix(in srgb,var(--accent) 60%,transparent)}
+
+/* ---- skeleton loaders ---- */
+.skel{position:relative;overflow:hidden;background:var(--sunk);
+  border:1px solid var(--rule);border-radius:8px}
+.skel::after{content:"";position:absolute;inset:0;transform:translateX(-100%);
+  background:linear-gradient(90deg, transparent, color-mix(in srgb,
+    var(--surface) 70%, transparent), transparent);
+  animation:shimmer 1.4s infinite}
+@keyframes shimmer{100%{transform:translateX(100%)}}
+.skelclip{height:64px;margin-bottom:8px}
+.skelcard{height:96px;margin-bottom:12px}
+@media (prefers-reduced-motion:reduce){.skel::after{animation:none}}
+
+/* ---- print: transcripts on paper, chrome left behind ---- */
+@media print{
+  header,.tabs,.toolbar,.toolbar2,.topbar,.btns,.daystrip,.daygroup,
+  .wave,.spk,#toasts,#mini,.archivefoot,.battspark,.tag,.lbl,.cd{display:none!important}
+  body{background:#fff;color:#000}
+  .card{border:none;padding:0}
+  .wrap{display:block;max-width:none}
+  .seg .txt,.cvtext{font-size:11pt}
+}
 
 /* ---- command palette and shortcut dialogs ---- */
 .palettebtn{min-height:0;padding:4px 9px;font-size:12px;flex:none;
@@ -1433,6 +1463,7 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
 
 
 
+
 const $ = id => document.getElementById(id);
 let ws, armed = false, connected = false, drainPeak = 0;
 
@@ -1489,6 +1520,21 @@ function toast(text, kind){
     el.classList.remove("in");
     setTimeout(() => el.remove(), 300);
   }, 6000);
+}
+
+/* ---- skeletons ----
+   "loading…" is honest and useless: nothing says how long, and the jump
+   from text to rows moves the page. Shimmer rows hold the shape. */
+function skeleton(el, n, cls){
+  if (!el) return;
+  el.classList.add("empty-now");
+  el.replaceChildren();
+  for (let i = 0; i < n; i++){
+    const d = document.createElement("div");
+    d.className = "skel " + (cls || "skelrow");
+    d.style.animationDelay = (i * 0.08) + "s";
+    el.appendChild(d);
+  }
 }
 
 /* ---- attention badges ----
@@ -2282,6 +2328,7 @@ $("itemKind").onchange = () => loadItems();
 
 async function loadItems(){
   const el = $("itemList");
+  skeleton(el, 4, "skelcard");
   try{
     const kind = $("itemKind").value;
     const items = await (await fetch("/api/agent/items" + (kind ? `?kind=${kind}` : ""))).json();
@@ -2365,6 +2412,7 @@ function fmtMins(sec){
 
 async function loadPeople(){
   const el = $("pplList");
+  skeleton(el, 2, "skelcard");
   try{
     const people = await (await fetch("/api/speakers")).json();
     loadArchiveFoot();
@@ -2589,6 +2637,7 @@ let voiceCards = [];
 async function loadVoices(){
   const el = $("voiceQueue");
   voiceCards = [];
+  skeleton(el, 3, "skelcard");
   try{
     const q = await (await fetch(
       `/api/voices/queue?limit=40&include_media=${showMedia}`
@@ -3567,6 +3616,7 @@ function renderDayStrip(items){
 async function loadConversations(el){
   const fetched = (await (await fetch("/api/conversations")).json());
   convCache = fetched;
+  el.classList.remove("empty-now");
   renderDayStrip(fetched.map(c => ({t: c.start, seconds: c.seconds})));
   const all = fetched.filter(c => inDateRange(c.end));
   /* The same filter as the clip list. A conversation's speaker list is the
@@ -4076,6 +4126,7 @@ async function loadClips(){
   listCursor = -1;
   syncHash();
   syncFilterToggle();
+  if (el.classList.contains("empty-now")) skeleton(el, 8, "skelclip");
   try{
     // With a query, the server searches every segment. Matching against the
     // 180-character preview here only ever found the opening sentence.
@@ -4090,6 +4141,7 @@ async function loadClips(){
        days at the current rate, and the fix then is to push the date filter
        into the query rather than to raise this again. */
     const all = await (await fetch("/api/clips?limit=" + CLIP_FETCH_LIMIT)).json();
+    el.classList.remove("empty-now");
     loadSoundFilter();
     renderDayStrip(all.map(c => ({t: capTime(c), seconds: c.seconds})));
     // has_speech is null until a clip is transcribed; an unknown clip is not
@@ -4118,7 +4170,9 @@ async function loadClips(){
     }
     if (!all.length){
       $("clipCount").textContent = "";
-      el.innerHTML = '<div class="empty">No recordings yet. Capture some audio on the Device tab.</div>';
+      el.innerHTML = '<div class="empty">No recordings yet.<br><span class="ssub">'
+        + 'Connect on the Device tab and press Start capture — '
+        + 'what the device hears lands here.</span></div>';
       return;
     }
     $("clipCount").textContent =
@@ -6460,6 +6514,7 @@ loadBattery();
 $("pulseCard").open = pulseWanted();
 if (pulseWanted()) loadPulse();
 addEventListener("resize", () => { if ($("pulseCard").open) drawPulse(); });
+
 
 
 

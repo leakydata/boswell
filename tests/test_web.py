@@ -2299,3 +2299,84 @@ class TestTheInterfaceAnswersForADay:
         assert "let voiceCards" in page
         assert 'c.cands[+e.key - 1]' in page
         assert 'id="voiceKbdHint"' in page
+
+
+class TestTheProTouches:
+    """The layer that makes a tool feel finished: the palette, the charts,
+    the playback ergonomics, the loading shapes, and the small honesties.
+
+    Each of these earned its place by answering a daily question faster
+    than the interface it replaced.
+    """
+
+    def _page(self):
+        import os
+        here = os.path.dirname(__file__)
+        with open(os.path.join(here, "..", "web", "static", "index.html"),
+                  encoding="utf-8") as f:
+            return f.read()
+
+    def test_the_command_palette_exists_and_reaches_everywhere(self):
+        page = self._page()
+        assert 'id="palette"' in page
+        assert "const COMMANDS = [" in page
+        for command in ("Go to Recordings", "Start capture", "Save a clip now",
+                        "Jump to today", "Search recordings"):
+            assert command in page
+        # Ctrl+K opens it from anywhere; the button makes it discoverable.
+        assert 'e.key === "k" || e.key === "K"' in page
+        assert 'id="paletteBtn"' in page
+
+    def test_the_shortcuts_sheet_tells_the_truth(self):
+        page = self._page()
+        assert 'id="keys"' in page
+        # g-then-letter navigation, the voice keys, and the waveform scrub.
+        assert "go to a section" in page
+        assert "scrub the waveform" in page
+
+    def test_g_then_letter_navigates_with_a_time_limit(self):
+        page = self._page()
+        assert "gPending = true" in page
+        # A stray g must not wait forever for its letter.
+        assert "setTimeout(() => { gPending = false; }, 1600)" in page
+
+    def test_list_navigation_is_context_aware(self):
+        page = self._page()
+        assert "function listRows" in page
+        # The waveform owns its own arrows; the list must not steal them.
+        assert 'if (a === $("wcanvas")) return true;' in page
+
+    def test_the_pulse_draws_thirty_days_with_empty_ones_as_ticks(self):
+        page = self._page()
+        assert 'id="pulseCard"' in page
+        assert "function drawPulse" in page
+        # Days the device was off are part of the shape, not missing columns.
+        assert "list.push(days.get(k) ||" in page
+        # Clicking a bar is the same gesture as picking the day from the strip.
+        assert "dayFilter = dayFilter === d.k ? \"\" : d.k;" in page
+
+    def test_playback_speed_is_kept_and_applied_to_both_players(self):
+        page = self._page()
+        assert 'id="speedSel"' in page
+        assert 'localStorage.getItem("boswell_rate")' in page
+        assert 'for (const p of [$("player"), $("cvPlayer")]) p.playbackRate = v;' in page
+
+    def test_the_transcript_follows_the_audio(self):
+        page = self._page()
+        assert "function followTranscript" in page
+        assert 'segs[idx].classList.add("nowline")' in page
+
+    def test_lists_hold_their_shape_while_loading(self):
+        page = self._page()
+        assert "function skeleton" in page
+        assert 'skeleton(el, 8, "skelclip")' in page
+
+    def test_the_tab_title_carries_the_recording_state(self):
+        page = self._page()
+        assert 'document.title = !s.connected' in page
+        # And losing the link stops claiming anything.
+        assert 'document.title = "\u2212 Boswell"' in page
+
+    def test_printing_leaves_the_transcript_on_the_paper(self):
+        page = self._page()
+        assert "@media print{" in page
