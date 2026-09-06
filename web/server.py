@@ -2068,6 +2068,60 @@ async def api_recorders():
     return {"recorders": _recorder_rows()}
 
 
+# How long a paired recorder may be silent before that is worth saying. Long
+# enough that stepping out of the room is not an alarm; short enough that
+# somebody notices the same evening rather than the next day.
+QUIET_AFTER = 40 * 60
+
+
+@app.get("/api/recorders/quiet")
+async def api_recorders_quiet():
+    """Paired recorders that have gone quiet, and whether that matters.
+
+    The interface knew a recorder had stopped delivering at 17:30 and said
+    nothing about it for two hours; the owner found out by asking. A thing
+    that works and a thing that stopped looked identical again, which is the
+    fault this project keeps rediscovering.
+
+    Silence is not always loss. An Omi out of range keeps recording to its own
+    storage and hands it over when it returns, so the honest line is "away,
+    holding it" rather than an alarm. A Boswell with no card has nowhere to
+    put audio it cannot send, and that one is a real gap.
+    """
+    now = time.time()
+    out = []
+    for r in _recorder_rows():
+        if r["connected"]:
+            continue
+        last = index_db.last_clip_for(r["id"])
+        quiet_for = (now - last) if last else None
+        if quiet_for is None or quiet_for < QUIET_AFTER:
+            continue
+        if r["kind"] == "omi":
+            # Its ring holds about a day. Away is not the same as lost.
+            keeping = True
+            note = ("It records to its own storage while away and hands it "
+                    "over when it comes back, so this is a gap in delivery "
+                    "rather than in the recording.")
+        else:
+            # Only knowable while something is connected to ask. Reporting a
+            # remembered "no card" as fact would be inventing the worse of
+            # the two answers from a stale reading.
+            card = device.state.get("card_present")
+            known = device.state.get("connected") and card is not None
+            keeping = bool(card) if known else None
+            note = ("It is storing to its card while away."
+                    if known and card else
+                    "It has no storage card, so anything it hears while away "
+                    "is not kept." if known else
+                    "Whether it is storing to a card cannot be checked while "
+                    "it is not connected.")
+        out.append({"id": r["id"], "name": r["name"], "kind": r["kind"],
+                    "quiet_seconds": round(quiet_for), "keeping": keeping,
+                    "note": note})
+    return {"quiet": out, "after_seconds": QUIET_AFTER}
+
+
 @app.post("/api/recorders/diagnose")
 async def api_recorders_diagnose(seconds: float = 8.0):
     """Why is a recorder not recording? Answered in one press.
@@ -2085,10 +2139,23 @@ async def api_recorders_diagnose(seconds: float = 8.0):
 
     checks = []
 
+    # 0. Is the thing that talks to the second recorder even running? This is
+    #    the fault a person without a terminal cannot see at all: everything
+    #    else can look perfect while nothing is listening.
+    if recorders.has("omi"):
+        st = _omi_state()
+        checks.append({
+            "name": "Omi service",
+            "ok": st is not None,
+            "detail": (f"running, currently {st}" if st else
+                       "not running — nothing is listening for that recorder"),
+            "fix": None if st else "restart",
+        })
+
     # 1. Is there a working radio at all? Everything else is meaningless if
     #    the adapter is missing or powered down, and that is the one fault a
     #    person can fix in five seconds.
-    adapter = {"name": "Bluetooth adapter", "ok": None, "detail": ""}
+    adapter = {"name": "Bluetooth adapter", "ok": None, "detail": "", "fix": None}
     if shutil.which("bluetoothctl"):
         try:
             out = subprocess.run(["bluetoothctl", "show"], capture_output=True,
@@ -2117,6 +2184,7 @@ async def api_recorders_diagnose(seconds: float = 8.0):
     except Exception as e:
         scan_error = f"{type(e).__name__}: {str(e)[:120]}"
     checks.append({
+        "fix": None,
         "name": "Scanning", "ok": scan_error is None and bool(seen),
         "detail": (scan_error if scan_error
                    else f"{len(seen)} Bluetooth device(s) nearby"
@@ -2136,22 +2204,62 @@ async def api_recorders_diagnose(seconds: float = 8.0):
         rssi = nearby.get(ident)
         last = index_db.last_clip_for(ident)
         if r["connected"]:
-            verdict, fix = "connected", ""
+            verdict, steps = "connected", []
         elif rssi is not None:
             verdict = "nearby but not connected"
-            fix = ("It is advertising, so the radio and the device are both "
-                   "fine. The service should pick it up within a minute; if "
-                   "it does not, restart it.")
+            # It is advertising, so the radio and the device are both fine and
+            # the fault is on this side.
+            steps = [
+                "It is advertising, so the device and your Bluetooth are both "
+                "working. The problem is on this computer's side.",
+                "Wait a minute. It retries on its own and usually catches it.",
+                "If it does not, press Try reconnecting below.",
+            ]
         else:
             verdict = "not advertising"
-            fix = ("Nothing was heard from it. It is switched off, out of "
-                   "range, or already connected to something else — a phone "
-                   "app holds the only connection there is, so disconnect it "
-                   "there first.")
-        out.append({**r, "rssi": rssi, "verdict": verdict, "fix": fix,
+            steps = [
+                "Nothing was heard from it, so start with the device itself: "
+                "is it switched on, and is its light doing anything?",
+                "Bring it into the same room as this computer. Bluetooth "
+                "gives up through a couple of walls.",
+                "Close the maker's phone app, or turn Bluetooth off on your "
+                "phone. Only one thing can hold a recorder at a time, and a "
+                "phone holding it looks exactly like a device that is off.",
+                "Put it on the charger for a few minutes. A flat recorder "
+                "stops advertising before it stops looking charged.",
+                "Then press Look again above.",
+            ]
+            if r["kind"] == "omi":
+                steps.append(
+                    "Nothing is being lost meanwhile: it records to its own "
+                    "storage while away and hands it over when it returns.")
+        out.append({**r, "rssi": rssi, "verdict": verdict, "steps": steps,
                     "last_clip": last})
 
     return {"checks": checks, "recorders": out}
+
+
+@app.post("/api/recorders/restart")
+async def api_recorders_restart():
+    """Restart the second recorder's service.
+
+    Exists because the fix for a stuck link is a systemctl line, and a person
+    who came here to use a recorder should not have to learn one. It restarts
+    only this project's own user service; it can do nothing else.
+    """
+    import subprocess
+    try:
+        r = subprocess.run(["systemctl", "--user", "restart", "omid.service"],
+                           capture_output=True, text=True, timeout=30)
+    except Exception as e:
+        raise HTTPException(503, f"could not run systemctl: {type(e).__name__}")
+    if r.returncode != 0:
+        raise HTTPException(
+            503, (r.stderr or "systemctl refused").strip()[:200])
+    device.event("log", text="restarted the Omi service from the interface")
+    return {"ok": True,
+            "note": "Restarted. It takes up to a minute to find the recorder "
+                    "and catch up on anything it stored while away."}
 
 
 @app.post("/api/recorders/scan")
