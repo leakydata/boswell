@@ -1095,6 +1095,9 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
         <option value="day">By day</option>
         <option value="flat">All clips</option>
       </select>
+      <select class="filter" id="fDevice" aria-label="Filter by recorder">
+        <option value="">Any recorder</option>
+      </select>
       <select class="filter" id="fSound" aria-label="Filter by what was heard">
         <option value="">Any sound</option>
       </select>
@@ -1729,9 +1732,16 @@ function showTokenGate(){
  * two answers.
  */
 const recorders = {
-  boswell: {name: null, connected: false, capturing: false, scanning: false},
-  omi:     {name: "Omi", connected: false, capturing: false},
+  boswell: {name: null, connected: false, capturing: false, scanning: false,
+            backlog: 0},
+  omi:     {name: "Omi", connected: false, capturing: false, backlog: 0},
 };
+
+/* The recorder filter as a query fragment, empty when nothing is selected.
+   One place, so a new call site cannot quietly ignore the filter. */
+function deviceParam(){
+  return deviceFilter ? "&device=" + encodeURIComponent(deviceFilter) : "";
+}
 
 function primaryRecorder(){
   // The connected one wins, and between two connected ones the one actually
@@ -1761,6 +1771,29 @@ function paintPrimary(){
       busy.length > 1 ? `${busy.length} recorders · recording`
     : !p               ? "disconnected"
     : `${p.name || "connected"}${p.capturing ? " · recording" : ""}`;
+
+  /* The capture pill reports the PRIMARY recorder, in the same words and
+     colours the device's own light uses.
+
+     It used to report the Boswell whatever else was happening, which put
+     "paused" directly beside "Omi - recording" in the same line. With one
+     recorder that was the whole truth; with two it is a contradiction, and
+     the half a reader believes is the red one. */
+  const cap = $("capState");
+  /* Always shown, never hidden. A pill that disappears when the device drops
+     is a third state the reader has to notice the absence of, and the one it
+     is easiest to misread as the one before it. */
+  cap.hidden = false;
+  const st = !p ? (recorders.boswell.scanning
+                     ? ["looking for the device", "#4a90e0"]
+                     : ["no recorder connected", "var(--faint)"])
+           : busy.length > 1 ? [`${busy.length} recorders`, "#5ad07a"]
+           : p.capturing ? (p.backlog > 2048 ? ["catching up", "#4ad0d0"]
+                                             : ["recording", "#5ad07a"])
+           : ["paused", "#e05a5a"];
+  cap.querySelector("i").style.background = st[1];
+  cap.querySelector("b").textContent = st[0];
+  cap.style.color = st[1];
 }
 
 function paint(s){
@@ -1770,7 +1803,7 @@ function paint(s){
   recorders.boswell = {
     name: s.device_name || s.device_address || "connected",
     connected: !!s.connected, capturing: !!(s.connected && s.armed),
-    scanning: !!s.scanning,
+    scanning: !!s.scanning, backlog: s.backlog_bytes || 0,
   };
   paintPrimary();
   const dot = $("dot");
@@ -1812,22 +1845,8 @@ function paint(s){
   // two devices the answer is not this one's state alone.
   lastStateAt = Date.now();
 
-  /* Live state in the top bar, in the same words and the same colours the
-     device's own light uses -- so what is on screen and what is on the strap
-     agree without translation. */
-  const cap = $("capState");
-  /* Always shown, never hidden. A pill that disappears when the device drops
-     is a third state the reader has to notice the absence of, and the one it
-     is easiest to misread as the one before it. */
-  cap.hidden = false;
-  const st = !s.connected ? (s.scanning ? ["looking for the device", "#4a90e0"]
-                                        : ["device offline", "var(--faint)"])
-           : s.armed ? (s.backlog_bytes > 2048 ? ["catching up", "#4ad0d0"]
-                                               : ["recording", "#5ad07a"])
-           : ["paused", "#e05a5a"];
-  cap.querySelector("i").style.background = st[1];
-  cap.querySelector("b").textContent = st[0];
-  cap.style.color = st[1];
+  // The capture pill is painted by paintPrimary(), which ran above: with two
+  // recorders the answer is not this one's state alone.
   const bat = $("battState");
   bat.hidden = !s.connected || !s.battery_pct;
   if (!bat.hidden){
@@ -3054,7 +3073,8 @@ async function loadPulse(force){
   const now = Date.now();
   if (!force && pulseClips && now - pulseAt < 60000) return;
   let all;
-  try{ all = await (await fetch("/api/clips?limit=" + CLIP_FETCH_LIMIT)).json(); }
+  try{ all = await (await fetch("/api/clips?limit=" + CLIP_FETCH_LIMIT
+                                + deviceParam())).json(); }
   catch(e){ return; }
   pulseClips = all;
   pulseAt = now;
@@ -3454,6 +3474,53 @@ function on(id, event, fn){
 }
 
 let groupMode = "conv";
+/* Which recorder's clips to show. "" is all of them; "none" is the ones that
+   name no recorder, which is a real group -- everything from before device
+   ids existed -- and not the same as asking for everything. */
+let deviceFilter = "";
+on("fDevice", "change", () => {
+  deviceFilter = $("fDevice").value;
+  convCache = null;   // grouped per recorder, so the cache is for one filter
+  resetPages(); loadClips();
+});
+
+/* Filled from the archive rather than hardcoded, so a third recorder appears
+   here the first time it records something.
+
+   Its options arrive over the network, which is why it restores its own saved
+   value at the end instead of leaving that to applyViewPrefs(): that runs at
+   load, when this control still holds nothing to select. */
+async function fillDeviceFilter(){
+  let d;
+  try { d = await (await fetch("/api/devices")).json(); } catch(e){ return; }
+  const sel = $("fDevice");
+  const rows = (d.devices || []).filter(r => r.clips > 0);
+  sel.innerHTML = "";
+  const add = (v, t) => {
+    const o = document.createElement("option");
+    o.value = v; o.textContent = t; sel.appendChild(o);
+  };
+  add("", "Any recorder");
+  for (const r of rows){
+    // The archive already reports the clips that name no recorder as a row
+    // of their own; "none" is what the API calls that group.
+    add(r.device_id || "none", `${r.name || r.device_id} · ${r.clips}`);
+  }
+
+  let want = deviceFilter;
+  try{
+    const saved = JSON.parse(localStorage.getItem("boswell_view") || "{}");
+    if (!want && "fDevice" in saved) want = saved.fDevice;
+  }catch(e){}
+  // A recorder that no longer has clips leaves the filter on "any" rather
+  // than on a value the list cannot show.
+  sel.value = [...sel.options].some(o => o.value === want) ? want : "";
+  if (sel.value !== deviceFilter){
+    deviceFilter = sel.value;
+    convCache = null;
+    resetPages(); loadClips();
+  }
+}
 on("fContent", "change", () => {
   clipFilter = $("fContent").value; resetPages(); loadClips();
 });
@@ -3503,7 +3570,7 @@ on("fGroup", "change", () => {
  * remembered server-side, because they describe what the hardware is doing.
  */
 const VIEW_PREFS = ["fMode", "fGroup", "fContent", "fLabel", "fDate",
-                    "fPerPage", "itemKind", "dupThresh"];
+                    "fPerPage", "fDevice", "itemKind", "dupThresh"];
 
 function loadViewPrefs(){
   let saved = {};
@@ -3556,6 +3623,7 @@ on("fMode", "change", () => {
    variables above, and a let is unreachable until its own declaration has
    run. Calling it earlier threw before the page finished loading. */
 applyViewPrefs();
+fillDeviceFilter();
 
 /* Restore everything the hash carries, then open on the tab it names. The
    hash is the address bar's record of the search, the filters, the picked
@@ -3769,7 +3837,8 @@ function renderDayStrip(items){
 }
 
 async function loadConversations(el){
-  const fetched = (await (await fetch("/api/conversations")).json());
+  const fetched = (await (await fetch("/api/conversations?limit=400"
+                                      + deviceParam())).json());
   convCache = fetched;
   el.classList.remove("empty-now");
   renderDayStrip(fetched.map(c => ({t: c.start, seconds: c.seconds})));
@@ -4091,7 +4160,7 @@ async function loadSearch(el){
      drifts past exact terms. The two are fused by rank on the server. */
   const url = searchMode === "both"
     ? "/api/search/hybrid?limit=40&q=" + encodeURIComponent(query)
-    : "/api/search?q=" + encodeURIComponent(query);
+    : "/api/search?q=" + encodeURIComponent(query) + deviceParam();
   $("dayStrip").hidden = true;
   el.innerHTML = '<div class="empty">searching…</div>';
   let results;
@@ -4312,7 +4381,8 @@ async function loadClips(){
        becomes the wrong shape somewhere around 20000 clips, roughly fifty
        days at the current rate, and the fix then is to push the date filter
        into the query rather than to raise this again. */
-    const all = await (await fetch("/api/clips?limit=" + CLIP_FETCH_LIMIT)).json();
+    const all = await (await fetch("/api/clips?limit=" + CLIP_FETCH_LIMIT
+                                   + deviceParam())).json();
     el.classList.remove("empty-now");
     maybeRestartHint(all);
     loadSoundFilter();
@@ -4460,7 +4530,8 @@ async function loadClips(){
 let convCache = null;
 async function convOf(name){
   try{
-    if (!convCache) convCache = await (await fetch("/api/conversations")).json();
+    if (!convCache) convCache = await (await fetch("/api/conversations?limit=400"
+                                                   + deviceParam())).json();
     return convCache.find(c => c.clips.includes(name)) || null;
   }catch(e){ return null; }
 }
@@ -6399,7 +6470,14 @@ async function omiPoll(){
   add("hardware", st.hardware);
   add("maker", st.maker);
   if (st.device_epoch){
-    const off = Math.round(Math.abs(st.device_epoch - Date.now() / 1000));
+    /* Against the moment the reading was taken, not against now. The stats
+       are read once per session and then shown unchanged, so comparing them
+       with the current time measures the age of the reading and calls it
+       drift -- a clock that was correct at 2:20 read "off by 23 min" at
+       2:43. Older status files carry no read_at; those fall back to now,
+       which is what they have always done. */
+    const readAt = st.read_at || Date.now() / 1000;
+    const off = Math.round(Math.abs(st.device_epoch - readAt));
     // A device clock is not trivia here: it stamps the packets it stores,
     // and those stamps are the only thing that places offloaded audio.
     add("its clock", off > 120

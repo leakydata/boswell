@@ -78,6 +78,13 @@ async def one_session(address, quiet=False):
         from bleak import BleakClient
         async with BleakClient(address, timeout=25.0) as c:
             stats = await omi_capture.read_stats(c)
+            # When this reading was taken. The stats are read once a session
+            # and then republished unchanged, so anything comparing the
+            # device's clock against "now" measures how long the session has
+            # been running, not how far the clock has drifted -- the panel
+            # read "off by 23 min" twenty-three minutes after a clock that
+            # was correct when it was read.
+            stats["read_at"] = time.time()
             # Its own clock is what stamps the packets it stores, and those
             # stamps are the only thing that makes offloaded audio placeable.
             # A device whose clock has drifted files real conversations under
@@ -85,6 +92,11 @@ async def one_session(address, quiet=False):
             drift = abs((stats.get("device_epoch") or 0) - time.time())
             if stats.get("device_epoch") is None or drift > 120:
                 stats["clock_set_to"] = await omi_capture.set_clock(c)
+                # What the clock now says, not what it said before the
+                # correction: leaving the stale reading in place reported a
+                # drift that had just been fixed.
+                stats["device_epoch"] = stats["clock_set_to"]
+                stats["read_at"] = stats["clock_set_to"]
                 print(f"set the device clock (was off by {drift:.0f}s)",
                       flush=True)
     except Exception as e:

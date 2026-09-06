@@ -1920,6 +1920,18 @@ async def api_devices():
             d["name"] = None
         out.append(d)
 
+    # Clips with no times record at all never appeared in the walk above, so
+    # they are counted from the index. Before this they were simply missing
+    # from the totals: the devices list added up to less than the archive.
+    if not any(d["device_id"] is None for d in out):
+        u = index_db.unattributed()
+        if u["clips"]:
+            out.append({"device_id": None, "clips": u["clips"],
+                        "seconds": u["seconds"], "first": u["first"],
+                        "last": u["last"], "sources": {}, "inferred": 0,
+                        "connected": False,
+                        "name": "before recorders were named"})
+
     out.sort(key=lambda d: (-(d["last"] or 0)))
     return {"devices": out}
 
@@ -2304,10 +2316,13 @@ async def api_queue():
 
 
 @app.get("/api/clips")
-async def api_clips(limit: int = 1000):
+async def api_clips(limit: int = 1000, device: str = ""):
     """Served from the index. Reading every transcript per request did not
-    scale past a few hundred clips."""
-    rows = index_db.list_clips(limit)
+    scale past a few hundred clips.
+
+    `device` is a recorder id, or "none" for the clips that name no recorder.
+    """
+    rows = index_db.list_clips(limit, device=device or None)
     # A clip currently being transcribed is not yet reflected on disk.
     if worker.busy:
         for r in rows:
@@ -2498,11 +2513,11 @@ async def api_sounds(limit: int = 40):
 
 
 @app.get("/api/search")
-async def api_search(q: str, limit: int = 200):
+async def api_search(q: str, limit: int = 200, device: str = ""):
     """Full text across every segment, with the matching lines returned."""
     if not q.strip():
         return []
-    return index_db.search(q, limit)
+    return index_db.search(q, limit, device=device or None)
 
 
 @app.get("/api/search/semantic")
@@ -2716,8 +2731,11 @@ async def api_semantic_rebuild():
 
 
 @app.get("/api/conversations")
-async def api_conversations(gap: int = 300, limit: int = 400):
-    return index_db.conversations(gap, limit)
+async def api_conversations(gap: int = 300, limit: int = 400,
+                            device: str = ""):
+    """`device` is a recorder id, or "none" for the clips that name no
+    recorder."""
+    return index_db.conversations(gap, limit, device=device or None)
 
 
 @app.get("/api/export/{name}")

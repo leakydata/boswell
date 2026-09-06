@@ -112,6 +112,15 @@ def _ensure(c):
         backfill = True
     if backfill:
         _backfill_capture_times(c)
+    # Which recorder made the clip. Stored rather than read per request:
+    # filtering the list meant a sidecar read per clip, and the clip list is
+    # served from the index precisely because per-clip file reads did not
+    # scale past a few hundred.
+    if "device_id" not in have:
+        c.execute("ALTER TABLE clips ADD COLUMN device_id TEXT")
+        c.execute("CREATE INDEX IF NOT EXISTS clips_device ON clips(device_id)")
+        c.commit()
+        _backfill_device_ids(c)
     c.commit()
 
 
@@ -145,6 +154,19 @@ def _backfill_capture_times(c):
         started, known = _backfill_times_read(name)
         c.execute("UPDATE clips SET started=?, time_known=? WHERE name=?",
                   (started, known, name))
+    c.commit()
+
+
+def _backfill_device_ids(c):
+    """Fill device_id for rows indexed before the column existed.
+
+    NULL is a real answer here and not a gap to retry: it means the sidecar
+    names no recorder, which is every clip predating device ids. So this runs
+    once at migration over all rows, rather than repeatedly over the NULLs.
+    """
+    for (name,) in [(r["name"],) for r in c.execute("SELECT name FROM clips")]:
+        c.execute("UPDATE clips SET device_id=? WHERE name=?",
+                  (device_of(name), name))
     c.commit()
 
 
@@ -219,8 +241,8 @@ def upsert_clip(name, transcript_path=None, wav_path=None):
     c.execute("""INSERT INTO clips(name, seconds, modified, status, has_speech,
                                    edited, speakers, preview, indexed_at,
                                    voice_tag, sounds, sounds_strong, tagged,
-                                   started, time_known)
-                 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                                   started, time_known, device_id)
+                 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                  ON CONFLICT(name) DO UPDATE SET
                    seconds=excluded.seconds, modified=excluded.modified,
                    status=excluded.status, has_speech=excluded.has_speech,
@@ -231,10 +253,12 @@ def upsert_clip(name, transcript_path=None, wav_path=None):
                    sounds_strong=excluded.sounds_strong,
                    tagged=excluded.tagged,
                    started=excluded.started,
-                   time_known=excluded.time_known""",
+                   time_known=excluded.time_known,
+                   device_id=excluded.device_id""",
               (name, seconds, os.path.getmtime(wav), status, has_speech,
                edited, json.dumps(speakers), preview, time.time(), voice_tag,
-               sounds, sounds_strong, tagged, started, time_known))
+               sounds, sounds_strong, tagged, started, time_known,
+               device_of(name)))
     c.execute("DELETE FROM segments WHERE clip = ?", (name,))
     if segs:
         c.executemany(
@@ -348,9 +372,19 @@ def sync():
 
 # ---------------------------------------------------------------- reading
 
-def list_clips(limit=1000):
+def list_clips(limit=1000, device=None):
+    """`device` narrows to one recorder. The string "none" asks for the clips
+    with no recorder recorded, which is a real group -- everything from before
+    device ids existed -- and not the same as asking for everything."""
     c = _conn()
-    rows = c.execute("""SELECT * FROM clips ORDER BY modified DESC LIMIT ?""", (limit,))
+    if device == "none":
+        rows = c.execute("""SELECT * FROM clips WHERE device_id IS NULL
+                            ORDER BY modified DESC LIMIT ?""", (limit,))
+    elif device:
+        rows = c.execute("""SELECT * FROM clips WHERE device_id = ?
+                            ORDER BY modified DESC LIMIT ?""", (device, limit))
+    else:
+        rows = c.execute("""SELECT * FROM clips ORDER BY modified DESC LIMIT ?""", (limit,))
     return [{"name": r["name"], "seconds": r["seconds"], "modified": r["modified"],
              "status": r["status"],
              "has_speech": None if r["has_speech"] is None else bool(r["has_speech"]),
@@ -366,8 +400,24 @@ def list_clips(limit=1000):
              # whether it can be trusted at all. mtime is arrival; this is
              # when it happened. The interface sorts and groups on it.
              "started": r["started"],
-             "time_known": None if r["time_known"] is None else bool(r["time_known"])}
+             "time_known": None if r["time_known"] is None else bool(r["time_known"]),
+             "device_id": r["device_id"]}
             for r in rows]
+
+
+def unattributed():
+    """How many indexed clips name no recorder, and when they ran.
+
+    The devices list is built by walking the times records, so a clip with no
+    times record at all is invisible to it -- and "no sidecar" is exactly what
+    having no recorder means. Counted from the index instead, which is the
+    one place that knows about every clip.
+    """
+    r = _conn().execute("""SELECT COUNT(*) n, SUM(seconds) secs,
+                                  MIN(modified) first, MAX(modified) last
+                           FROM clips WHERE device_id IS NULL""").fetchone()
+    return {"clips": r["n"] or 0, "seconds": float(r["secs"] or 0.0),
+            "first": r["first"], "last": r["last"]}
 
 
 def clips_by_name(names):
@@ -415,23 +465,32 @@ def fts_query(query):
                     for w in query.split() if w)
 
 
-def search(query, limit=200):
-    """Full text over every segment, not just the preview."""
+def search(query, limit=200, device=None):
+    """Full text over every segment, not just the preview.
+
+    `device` narrows to one recorder, "none" to the clips with no recorder
+    recorded."""
     c = _conn()
     q = fts_query(query)
     if not q:
         return []
+    where, args = "", [q]
+    if device == "none":
+        where = "AND c.device_id IS NULL "
+    elif device:
+        where, args = "AND c.device_id = ? ", [q, device]
     rows = c.execute("""
         SELECT s.clip, s.start, s."end", s.speaker,
                snippet(segments, 4, '<mark>', '</mark>', '…', 12) AS snip,
-               c.modified, c.seconds
+               c.modified, c.seconds, c.device_id
         FROM segments s JOIN clips c ON c.name = s.clip
-        WHERE segments MATCH ?
-        ORDER BY rank LIMIT ?""", (q, limit))
+        WHERE segments MATCH ? """ + where + """
+        ORDER BY rank LIMIT ?""", args + [limit])
     out = {}
     for r in rows:
         e = out.setdefault(r["clip"], {"name": r["clip"], "modified": r["modified"],
-                                       "seconds": r["seconds"], "hits": []})
+                                       "seconds": r["seconds"],
+                                       "device_id": r["device_id"], "hits": []})
         e["hits"].append({"start": r["start"], "end": r["end"],
                           "speaker": r["speaker"], "snippet": r["snip"]})
     return sorted(out.values(),
@@ -439,7 +498,7 @@ def search(query, limit=200):
                   reverse=True)
 
 
-def conversations(gap_seconds=300, limit=400):
+def conversations(gap_seconds=300, limit=400, device=None):
     """Group clips into conversations.
 
     A 30-second clip is a storage unit, not a human one. What someone
@@ -459,7 +518,7 @@ def conversations(gap_seconds=300, limit=400):
     device, which is what they were -- everything predating device ids came
     from the only recorder there was.
     """
-    clips = list_clips(limit)
+    clips = list_clips(limit, device=device)
     # Order by when each clip STARTED, not when it finished.
     #
     # modified is the end of the audio, and clips are not all the same length:
@@ -483,10 +542,17 @@ def conversations(gap_seconds=300, limit=400):
     # walk below, then by time within it. Sorting by time alone and checking
     # the device per clip would end a conversation every time the two
     # recorders' clips interleaved, which is constantly.
-    clips.sort(key=lambda c: (device_of(c["name"]) or "", started_at(c)))
+    def recorder(c):
+        # The indexed column when it is there, the sidecar when it is not: a
+        # row written before the column existed still has to group correctly.
+        # Named apart from the `device` argument on purpose -- a def here
+        # rebinds that name for the whole function.
+        return c.get("device_id") or device_of(c["name"])
+
+    clips.sort(key=lambda c: (recorder(c) or "", started_at(c)))
     groups = []
     for c in clips:
-        dev = device_of(c["name"])
+        dev = recorder(c)
         # Grouping uses the same clock the sort does. Ordering by device time
         # while deciding conversation boundaries from file mtime meant a
         # recovered clip could be placed correctly in the sequence and still
