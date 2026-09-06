@@ -35,6 +35,7 @@ import atomicio
 import clipwriter
 import omi_capture
 import omi_sync
+import recorders
 
 # Where the daemon says what it is doing, for anything that wants to show it.
 # A file rather than a socket because the reader is a web server in another
@@ -160,6 +161,12 @@ async def one_session(address, quiet=False):
     # the device already has is still an instruction that completes -- the
     # interface is waiting to hear that it took, and "no change needed" looks
     # exactly like "never arrived" to whoever is watching the slider.
+    #
+    # Per session, deliberately. The request file is a standing wish rather
+    # than a one-shot, so the settings are asserted again on every
+    # reconnection -- which is what you want on a device that may have
+    # rebooted back to its defaults in between, and is how the other recorder
+    # already treats its own remembered preferences.
     applied = {"id": None}
 
     async def on_tick(client):
@@ -199,6 +206,28 @@ async def run(address=None, quiet=False):
     tries = 0
     while not stopping:
         addr = address
+        if not addr:
+            # A paired recorder is the one to talk to. Taking whichever Omi
+            # won the scan is fine with one in the house and wrong the moment
+            # there are two -- a neighbour's, or a second of your own -- and
+            # recording from the wrong device is not a mistake this would
+            # report; it would just quietly file somebody else's day.
+            want = recorders.first_of("omi")
+            if want and want.get("address"):
+                addr = want["address"]
+            elif recorders.of_kind("omi"):
+                # Paired, but by id only: still ours to look for by address.
+                addr = None
+            else:
+                # Nothing paired. Look, so that a first run has something to
+                # offer, but do not connect to it uninvited -- pairing is
+                # the person saying which device is theirs.
+                publish(state="looking")
+                found = await omi_capture.find_omi()
+                publish(state="not paired",
+                        detail=(f"found {found[0][0]}" if found else None))
+                await asyncio.sleep(10)
+                continue
         if not addr:
             publish(state="looking")
             found = await omi_capture.find_omi()

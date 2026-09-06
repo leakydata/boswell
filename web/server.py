@@ -62,11 +62,19 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 from ble_capture import (AUDIO_UUID, CTRL_UUID, INFO_UUID, DEVICE_NAME,
                          HEADER_LEN, decode_block, decode_frame,
                          payload_is_complete, describe_missing, find_device,
-                         wanted_device)
+                         is_our_name, wanted_device)
 from bleak import BleakClient
 
 import agent_runner
 import index_db
+import recorders
+
+# BlueZ runs one discovery at a time and refuses the second outright
+# ("Operation already in progress"). The reconnect loop below scans every
+# couple of seconds whenever its recorder is away, so a pairing scan asked
+# for from the interface landed on top of it and simply failed. One lock,
+# both callers.
+SCAN_LOCK = asyncio.Lock()
 import card_scan
 import pipeline
 
@@ -734,6 +742,14 @@ class Device:
             if not self._want:
                 await asyncio.sleep(0.4)
                 continue
+            # Nothing of this kind is paired, so there is nothing to look
+            # for. Somebody who owns an Omi and nothing else should not have
+            # a radio scanning for a handmade board every two seconds, nor a
+            # panel reporting that it cannot be found.
+            if not recorders.has("boswell"):
+                self.state.update(scanning=False, connected=False)
+                await asyncio.sleep(2)
+                continue
             try:
                 await self._session()
             except Exception as e:
@@ -753,7 +769,8 @@ class Device:
         self.state.update(scanning=True, error=None)
         self.publish()
         want = wanted_device()
-        dev, seen = await find_device(want, timeout=20.0)
+        async with SCAN_LOCK:
+            dev, seen = await find_device(want, timeout=20.0)
         self.state["scanning"] = False
         if dev is None:
             # What else was advertising, not just that this was not. With two
@@ -1882,6 +1899,153 @@ async def api_envelope(name: str):
                "peak": int(np.abs(audio).max())}
     atomicio.write_json(cache, out)
     return JSONResponse(out)
+
+
+def _omi_running():
+    """Whether the second recorder's daemon is alive. A daemon that stopped
+    writing is a daemon that is not running, whatever its last line said."""
+    try:
+        with open(os.path.join(DATA, "omi_status.json")) as f:
+            st = json.load(f)
+    except (OSError, ValueError):
+        return False
+    return (time.time() - st.get("at", 0)) <= 120 and st.get("state") != "stopped"
+
+
+def _omi_address():
+    try:
+        with open(os.path.join(DATA, "omi_status.json")) as f:
+            return json.load(f).get("address")
+    except (OSError, ValueError):
+        return None
+
+
+def _seed_recorders():
+    """What this install is evidently already using.
+
+    An archive with three thousand clips in it knows which recorders it has:
+    they are stamped on the clips. Asking that person to pair devices they
+    have been wearing for a month would be a worse first run than the one
+    this replaces, so the first read of the list is built from the archive
+    rather than from nothing.
+    """
+    omi = recorders.norm_id(_omi_address())
+    live = recorders.norm_id(device.state.get("device_address"))
+    rows = []
+    for d in index_db.device_counts():
+        ident = d["device_id"]
+        if not ident:
+            continue
+        kind = "omi" if ident == omi else "boswell"
+        rows.append({"id": ident, "kind": kind,
+                     "address": _omi_address() if ident == omi else None,
+                     "name": "Omi" if kind == "omi" else DEVICE_NAME,
+                     "added": d.get("first") or time.time()})
+    # A recorder connected right now but with nothing filed yet still counts.
+    for ident, kind, addr, name in ((omi, "omi", _omi_address(), "Omi"),
+                                    (live, "boswell",
+                                     device.state.get("device_address"),
+                                     device.state.get("device_name"))):
+        if ident and not any(r["id"] == ident for r in rows):
+            rows.append({"id": ident, "kind": kind, "address": addr,
+                         "name": name or None, "added": time.time()})
+    rows.sort(key=lambda r: r.get("added") or 0)
+    return rows
+
+
+def _recorder_rows(rows=None):
+    """The paired recorders with what each is doing right now.
+
+    Every endpoint that hands back the list goes through here. Pairing and
+    forgetting used to return the stored rows as they are, which carry no
+    connection state -- so the row for a recorder that was plainly recording
+    read "not here" until the next poll happened to correct it.
+    """
+    omi_addr = recorders.norm_id(_omi_address())
+    live = recorders.norm_id(device.state.get("device_address"))
+    out = []
+    for r in (recorders.load(seed=_seed_recorders) if rows is None else rows):
+        r = dict(r)
+        r["connected"] = bool(
+            (r["kind"] == "omi" and r["id"] == omi_addr and _omi_running())
+            or (r["kind"] == "boswell" and r["id"] == live
+                and device.state.get("connected")))
+        out.append(r)
+    return out
+
+
+@app.get("/api/recorders")
+async def api_recorders():
+    """The recorders this install has, and what each is doing."""
+    return {"recorders": _recorder_rows()}
+
+
+@app.post("/api/recorders/scan")
+async def api_recorders_scan(seconds: float = 6.0):
+    """What is advertising nearby that this program could record from.
+
+    Kind is decided by what the device says about itself -- an Omi by the
+    service it carries, a Boswell by the name its firmware advertises --
+    rather than by asking the person to know which is which.
+    """
+    from bleak import BleakScanner
+
+    paired = {r["id"] for r in recorders.load(seed=_seed_recorders)}
+    found = {}
+    try:
+        async with SCAN_LOCK:
+            seen = await BleakScanner.discover(
+                timeout=max(2.0, min(20.0, float(seconds))),
+                return_adv=True)
+    except Exception as e:
+        raise HTTPException(503, f"could not scan: {e}")
+
+    for dev, adv in seen.values():
+        name = (getattr(adv, "local_name", None) or getattr(dev, "name", None) or "")
+        uuids = [str(u).lower() for u in (getattr(adv, "service_uuids", None) or [])]
+        kind = None
+        if any(u.startswith("19b10000") for u in uuids):
+            kind = "omi"
+        elif is_our_name(name):
+            kind = "boswell"
+        if not kind:
+            continue
+        ident = recorders.norm_id(dev.address)
+        found[ident] = {"id": ident, "kind": kind, "address": dev.address,
+                        "name": name or ("Omi" if kind == "omi" else DEVICE_NAME),
+                        "rssi": getattr(adv, "rssi", None),
+                        "paired": ident in paired}
+    rows = sorted(found.values(), key=lambda r: -(r["rssi"] or -999))
+    return {"found": rows}
+
+
+@app.post("/api/recorders/pair")
+async def api_recorders_pair(body: dict):
+    kind, address = body.get("kind"), body.get("address")
+    if kind not in recorders.KINDS:
+        raise HTTPException(400, "kind must be one of " + ", ".join(recorders.KINDS))
+    if not address:
+        raise HTTPException(400, "no address given")
+    try:
+        rows = recorders.add(kind, address, body.get("name"))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    device.event("log", text=f"paired {body.get('name') or address} ({kind})")
+    return {"ok": True, "recorders": _recorder_rows(rows)}
+
+
+@app.post("/api/recorders/forget")
+async def api_recorders_forget(body: dict):
+    ident = body.get("id")
+    if not ident:
+        raise HTTPException(400, "no id given")
+    # The clips stay. Forgetting a recorder is saying "this is not one of my
+    # devices any more", not "throw away what it recorded" -- and the second
+    # is not a thing a person should be able to do by accident from a page
+    # about hardware.
+    rows = recorders.remove(ident)
+    device.event("log", text=f"forgot recorder {ident}")
+    return {"ok": True, "recorders": _recorder_rows(rows)}
 
 
 @app.get("/api/devices")

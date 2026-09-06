@@ -555,6 +555,17 @@ dialog.sheet .hint{font-family:var(--mono);font-size:12px;color:var(--muted);
 /* Both recorder panels carry their device's address, so which physical thing
    a panel is about is never a guess. */
 .addr{font-weight:normal;font-family:var(--mono);font-size:11px;color:var(--faint)}
+/* A paired recorder, or one just found by a scan. Its own rule rather than
+   .row, which is only ever styled as label.row -- a div carrying that class
+   got no layout at all and the button landed on top of the badge. */
+.prow{display:flex;align-items:center;gap:10px;padding:8px 0;
+  border-bottom:1px solid var(--rule)}
+.prow:last-child{border-bottom:0}
+/* Not .who -- that is already the speaker chip, and reusing it painted a
+   grey pill the width of the row. */
+.prow .pname{flex:1;min-width:0;display:flex;align-items:baseline;gap:8px;
+  flex-wrap:wrap}
+.prow button{flex:none}
 /* Which recorder a section of controls acts on. With one device "the device"
    was unambiguous; with two it is a question, and a setting applied to the
    wrong recorder is not a mistake the interface would show you afterwards. */
@@ -836,7 +847,7 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
        and lives behind a summary row so it stops competing with the answer. -->
   <div class="view" id="viewDev" role="tabpanel" aria-labelledby="tabDev" tabindex="0">
   <div class="grid">
-    <div class="card span2 hero">
+    <div class="card span2 hero" id="devcard">
       <h2><span id="devname">Device</span> <span id="devaddr" class="addr"></span></h2>
       <div class="status">
         <span class="dot off" id="dot"></span>
@@ -920,7 +931,7 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
          is a different device: it fails on its own, it is worn instead of
          rather than as well as, and conflating the two would mean neither
          status could be trusted. -->
-    <div class="card">
+    <div class="card" id="capcard">
       <h2>Capture <span class="owner" data-owner>Boswell</span></h2>
       <label class="row">Microphone gain
         <input type="range" id="gain" min="20" max="70" value="50" step="1" disabled>
@@ -982,7 +993,7 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
       </div>
     </div>
 
-    <div class="card span2">
+    <div class="card span2" id="setcard">
       <h2>Device settings <span class="owner" data-owner>Boswell</span></h2>
 
       <details>
@@ -1088,6 +1099,23 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
           </dl>
         </div>
       </details>
+    </div>
+
+    <!-- Which recorders this install has. A panel exists because a recorder
+         was paired, not because the code knows the make -- somebody who owns
+         an Omi and nothing else should not meet a page about a handmade
+         board they will never have. -->
+    <div class="card span2" id="paircard">
+      <h2>Recorders</h2>
+      <div id="pairlist"></div>
+      <div class="btns" style="margin-top:12px">
+        <button type="button" id="bScan">Look for recorders</button>
+      </div>
+      <div id="pairfound" hidden style="margin-top:12px"></div>
+      <p class="note" id="pairnote">Anything paired here gets its own panel
+        above. A recorder has to be advertising to be found: an Omi that is
+        already connected to something else will not appear, and neither will
+        a board that is switched off.</p>
     </div>
 
     <div class="card span2">
@@ -1780,6 +1808,128 @@ const recorders = {
             backlog: 0},
   omi:     {name: "Omi", connected: false, capturing: false, backlog: 0},
 };
+
+/* ---- which recorders this install has -------------------------------
+ *
+ * The Device tab used to draw a fixed pair of panels: one for a handmade
+ * board, one for an Omi, both always there. Right for the person who built
+ * both and wrong for everybody else -- an Omi owner met a large panel about
+ * hardware they will never have, with a Connect button that could not
+ * succeed. Panels now follow this list.
+ */
+let paired = [];
+
+function paintPairing(){
+  const have = k => paired.some(r => r.kind === k);
+  const boswell = have("boswell"), omi = have("omi");
+
+  // These are shown exactly when their recorder is paired: nothing else
+  // decides their visibility, so pairing one mid-session brings its panels
+  // straight up rather than waiting for a reload.
+  for (const [id, on] of [["devcard", boswell], ["capcard", boswell],
+                          ["setcard", boswell]]){
+    if ($(id)) $(id).hidden = !on;
+  }
+  // These have their own reasons to be hidden -- nothing on the card yet,
+  // nothing heard from the daemon. Pairing can take such a panel away but
+  // must not put back one its own state says should be gone.
+  for (const [id, on] of [["recrow", boswell], ["omicard", omi],
+                          ["omiset", omi]]){
+    if ($(id) && !on) $(id).hidden = true;
+  }
+
+  const list = $("pairlist");
+  list.innerHTML = "";
+  if (!paired.length){
+    list.innerHTML = '<p class="note">No recorders yet. Look for one below, '
+                   + 'with the device switched on and not connected to '
+                   + 'anything else.</p>';
+    return;
+  }
+  for (const r of paired){
+    const row = document.createElement("div");
+    row.className = "prow";
+    row.innerHTML =
+      `<span class="pname"><b>${esc(r.name || r.id)}</b>
+         <span class="addr">${esc(r.address || r.id)}</span></span>
+       <span class="lbl ${r.connected ? "all" : "unk"}">${
+          r.connected ? "connected" : "not here"}</span>`;
+    const b = document.createElement("button");
+    b.type = "button"; b.textContent = "Forget";
+    b.onclick = async () => {
+      // The clips stay. Forgetting is "this is not one of my devices any
+      // more", which is a different thing from throwing away what it heard.
+      b.disabled = true;
+      try{
+        const d = await (await fetch("/api/recorders/forget", {
+          method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({id: r.id})})).json();
+        paired = d.recorders || []; paintPairing();
+      }catch(e){ b.disabled = false; log("could not forget that recorder"); }
+    };
+    row.appendChild(b);
+    list.appendChild(row);
+  }
+}
+
+async function loadPaired(){
+  try{
+    const d = await (await fetch("/api/recorders")).json();
+    paired = d.recorders || [];
+  }catch(e){ return; }
+  paintPairing();
+}
+
+on("bScan", "click", async () => {
+  const b = $("bScan"), box = $("pairfound");
+  b.disabled = true; b.textContent = "Looking…";
+  box.hidden = false;
+  box.innerHTML = '<p class="note">Scanning for about eight seconds…</p>';
+  try{
+    const d = await (await fetch("/api/recorders/scan?seconds=8",
+                                 {method: "POST"})).json();
+    const rows = (d.found || []).filter(r => !r.paired);
+    box.innerHTML = "";
+    if (!(d.found || []).length){
+      box.innerHTML = '<p class="note">Nothing found. A recorder already '
+        + 'connected to a phone or to this computer is not advertising and '
+        + 'cannot be seen — disconnect it there first.</p>';
+    } else if (!rows.length){
+      box.innerHTML = '<p class="note">Everything nearby is already paired.</p>';
+    }
+    for (const r of rows){
+      const row = document.createElement("div");
+      row.className = "prow";
+      row.innerHTML =
+        `<span class="pname"><b>${esc(r.name || r.address)}</b>
+           <span class="addr">${esc(r.address)}${
+             r.rssi != null ? " · " + r.rssi + " dBm" : ""}</span></span>
+         <span class="lbl dev">${esc(r.kind)}</span>`;
+      const add = document.createElement("button");
+      add.type = "button"; add.className = "pri"; add.textContent = "Pair";
+      add.onclick = async () => {
+        add.disabled = true;
+        try{
+          const p = await (await fetch("/api/recorders/pair", {
+            method: "POST", headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({kind: r.kind, address: r.address,
+                                  name: r.name})})).json();
+          paired = p.recorders || []; paintPairing();
+          row.remove();
+        }catch(e){ add.disabled = false; log("could not pair that recorder"); }
+      };
+      row.appendChild(add);
+      box.appendChild(row);
+    }
+  }catch(e){
+    box.innerHTML = '<p class="note">The scan could not run. Another scan may '
+      + 'already be going; try again in a few seconds.</p>';
+  }
+  b.disabled = false; b.textContent = "Look for recorders";
+});
+
+loadPaired();
+setInterval(loadPaired, 10000);
 
 /* Recorder id -> the name to show on a row. Filled from the archive by
    fillDeviceFilter(), so a row and the filter above it always use the same
@@ -6574,7 +6724,10 @@ async function omiPoll(){
   try { s = await (await fetch("/api/omi")).json(); } catch(e){ return; }
 
   const known = s && (s.state || s.clips);
-  $("omicard").hidden = !known;
+  // Pairing decides whether this recorder has a panel at all; its own state
+  // decides whether that panel has anything to say yet.
+  const isPaired = paired.some(r => r.kind === "omi");
+  $("omicard").hidden = !known || !isPaired;
 
   // Told to the shared view of who is recording, so the header can name the
   // Omi when it is the one working -- which is the ordinary case whenever
@@ -6665,7 +6818,7 @@ async function omiPoll(){
      one that keeps showing what was asked for is not. Left alone while it is
      being dragged, and while a request is still outstanding. */
   const live = !!(s.running && s.state === "recording");
-  $("omiset").hidden = !known;
+  $("omiset").hidden = !known || !isPaired;
   omigain.disabled = omidim.disabled = !live;
   const landed = typeof st.applied_id === "number" && st.applied_id >= omiPending;
   // Fifteen seconds is far longer than the once-a-second apply takes. Past
@@ -6730,7 +6883,9 @@ async function omiPoll(){
           `${(s.frames || 0).toLocaleString()} frames`].join(" · "));
     return;
   }
-  const words = {looking: ["off", "Searching…", "not in range yet"],
+  const words = {"not paired": ["off", "Not paired",
+                                "pair it below and it will start on its own"],
+                 looking: ["off", "Searching…", "not in range yet"],
                  waiting: ["off", "Waiting to reconnect", "the link dropped"],
                  lost: ["off", "Lost the link", "it stopped answering"],
                  "not found": ["off", "Not in range", "nothing advertising"],

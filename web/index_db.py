@@ -405,6 +405,22 @@ def list_clips(limit=1000, device=None):
             for r in rows]
 
 
+def device_counts():
+    """Every recorder that has filed a clip, with how many and since when.
+
+    Read from the index rather than by walking the times records, because a
+    clip with no times record still belongs to whoever recorded it -- and
+    "no sidecar" was for three weeks the ordinary state of a whole recorder's
+    output.
+    """
+    rows = _conn().execute("""SELECT device_id, COUNT(*) n,
+                                     MIN(COALESCE(started, modified)) first,
+                                     MAX(COALESCE(started, modified)) last
+                              FROM clips GROUP BY device_id""")
+    return [{"device_id": r["device_id"], "clips": r["n"],
+             "first": r["first"], "last": r["last"]} for r in rows]
+
+
 def unattributed():
     """How many indexed clips name no recorder, and when they ran.
 
