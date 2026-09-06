@@ -327,3 +327,61 @@ def test_implausible_span_catches_a_stale_timestamp():
 
     # Unknown duration cannot be judged, so it is not rejected.
     assert not implausible_span(1000, 99999, 0)
+
+
+def test_two_recorders_running_at_once_stay_separate():
+    """Interleaved clips from two devices are two conversations, not one.
+
+    Wearing the Omi and the handmade recorder at the same time produces
+    clips that alternate in time. Grouped on the clock alone they merge into
+    a single conversation, and consolidating that pools voiceprints across
+    two different microphones -- so the split has to be on the device too.
+    """
+    tmp = tempfile.mkdtemp()
+    os.makedirs(os.path.join(tmp, "times"), exist_ok=True)
+
+    rows = []
+    for i in range(6):
+        dev = "aaaaaaaaaaaa" if i % 2 == 0 else "bbbbbbbbbbbb"
+        name = f"{dev[:3]}_{i}.wav"
+        start, secs = 1000.0 + i * 10.0, 10.0
+        rows.append({"name": name, "seconds": secs, "modified": start + secs})
+        json.dump({"name": name, "started": start, "ended": start + secs,
+                   "seconds": secs, "source": "live", "device_id": dev},
+                  open(os.path.join(tmp, "times", name + ".json"), "w"))
+
+    idx = _fake_index(tmp, rows)
+    convs = idx.conversations(300, 100)
+    assert len(convs) == 2, (
+        f"two recorders should make two conversations, got {len(convs)}")
+    for c in convs:
+        devs = {idx.device_of(n) for n in c["clips"]}
+        assert len(devs) == 1, f"conversation mixes recorders: {devs}"
+
+
+def test_conversations_are_newest_first_across_devices():
+    """Sorting by device then time must not leak into the listed order.
+
+    Three recorders, so that reversing the device-ordered walk and sorting by
+    time give different answers -- with only two they coincide, and the test
+    cannot fail.
+    """
+    tmp = tempfile.mkdtemp()
+    os.makedirs(os.path.join(tmp, "times"), exist_ok=True)
+
+    # Device order is a, m, z. Time order is m (newest), a, z (oldest).
+    rows = []
+    for dev, start in [("a" * 12, 50000.0),
+                       ("m" * 12, 90000.0),
+                       ("z" * 12, 1000.0)]:
+        name = dev[0] + ".wav"
+        rows.append({"name": name, "seconds": 10.0, "modified": start + 10})
+        json.dump({"name": name, "started": start, "ended": start + 10,
+                   "seconds": 10.0, "source": "live", "device_id": dev},
+                  open(os.path.join(tmp, "times", name + ".json"), "w"))
+
+    idx = _fake_index(tmp, rows)
+    convs = idx.conversations(300, 100)
+    assert [c["clips"][0] for c in convs] == ["m.wav", "a.wav", "z.wav"], (
+        "conversations listed in device order instead of newest first: "
+        + str([c["clips"][0] for c in convs]))

@@ -270,6 +270,23 @@ def implausible_span(started, ended, seconds):
     return (ended - started) > max(seconds * 4, seconds + 300)
 
 
+def device_of(name):
+    """Which recorder made this clip, from its sidecar. None if unattributed.
+
+    Cheap and uncached on purpose: it is read once per clip while grouping a
+    few hundred of them, and a cache here would go stale exactly when the
+    backfill that fills these in has just run.
+    """
+    p = os.path.join(DATA, "times", name + ".json")
+    if not os.path.exists(p):
+        return None
+    try:
+        with open(p) as f:
+            return json.load(f).get("device_id")
+    except Exception:
+        return None
+
+
 def device_times(name):
     """When the device says this recording started and ended, if it said.
 
@@ -428,6 +445,19 @@ def conversations(gap_seconds=300, limit=400):
     A 30-second clip is a storage unit, not a human one. What someone
     remembers is "the conversation with Blase this morning", so contiguous
     clips are grouped and a gap longer than `gap_seconds` starts a new one.
+
+    Contiguous **on one recorder**. With two devices running, grouping on time
+    alone interleaves them: clips from two microphones, possibly in two
+    different rooms, presented as one conversation. That is not a display
+    problem -- consolidation pools voiceprints across a conversation, so a
+    merged one pools a voice across two microphones with different frequency
+    responses and makes the reference worse than either device alone would
+    have. It was observed the first day a second recorder ran: a single
+    conversation holding both `recovered_*` and `omi_*` clips.
+
+    Clips with no recorder recorded are grouped together as one unknown
+    device, which is what they were -- everything predating device ids came
+    from the only recorder there was.
     """
     clips = list_clips(limit)
     # Order by when each clip STARTED, not when it finished.
@@ -449,19 +479,26 @@ def conversations(gap_seconds=300, limit=400):
         t = device_times(c["name"])
         return t[1] if t else c["modified"]
 
-    clips.sort(key=started_at)
+    # Sorted by device first so one recorder's clips are contiguous in the
+    # walk below, then by time within it. Sorting by time alone and checking
+    # the device per clip would end a conversation every time the two
+    # recorders' clips interleaved, which is constantly.
+    clips.sort(key=lambda c: (device_of(c["name"]) or "", started_at(c)))
     groups = []
     for c in clips:
+        dev = device_of(c["name"])
         # Grouping uses the same clock the sort does. Ordering by device time
         # while deciding conversation boundaries from file mtime meant a
         # recovered clip could be placed correctly in the sequence and still
         # fall into the wrong conversation.
         start = started_at(c)
-        if groups and start - groups[-1]["end"] <= gap_seconds:
+        if (groups and groups[-1]["device_id"] == dev
+                and start - groups[-1]["end"] <= gap_seconds):
             g = groups[-1]
         else:
             g = {"start": start, "end": start, "clips": [], "speakers": [],
-                 "seconds": 0.0, "preview": "", "with_speech": 0}
+                 "seconds": 0.0, "preview": "", "with_speech": 0,
+                 "device_id": dev}
             groups.append(g)
         g["end"] = max(g["end"], ended_at(c))
         g["clips"].append(c["name"])
@@ -476,7 +513,12 @@ def conversations(gap_seconds=300, limit=400):
     for g in groups:
         g["seconds"] = round(g["seconds"], 1)
         g["span"] = round(g["end"] - g["start"], 1)
-    return list(reversed(groups))
+    # Newest first, by when it happened. This used to be reversed(), which
+    # was the same thing while the walk above was in time order -- it is now
+    # in device order, so reversing would list one recorder's whole history
+    # before the other's.
+    groups.sort(key=lambda g: g["start"], reverse=True)
+    return groups
 
 
 def stats():

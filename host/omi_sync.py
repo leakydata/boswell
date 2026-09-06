@@ -3,7 +3,7 @@
 
     uv run host/omi_sync.py --info        # what is waiting
     uv run host/omi_sync.py               # bring it in
-    uv run host/omi_sync.py --keep        # ... without marking it read
+    uv run host/omi_sync.py --discard     # drop what is held, unread
 
 The device keeps a ring of raw packets on its card and hands them over on
 request. This is the counterpart to live capture: live is what it heard while
@@ -378,6 +378,8 @@ def main():
     ap.add_argument("--spool-only", action="store_true",
                     help="fetch the bytes but leave the decoding for later")
     ap.add_argument("--packets", type=int, help="stop after this many")
+    ap.add_argument("--discard", action="store_true",
+                    help="throw away what is held without reading it")
     args = ap.parse_args()
 
     addr = args.address or asyncio.run(find_omi())
@@ -400,6 +402,31 @@ def main():
                       f"{i['capacity']}, {i['dropped']} dropped")
         asyncio.run(show())
         return 0
+
+    if args.discard:
+        # Move the read pointer to the write head without asking for the
+        # bytes in between. The device frees them; nothing reaches the
+        # archive. This exists because audio recorded against a wrong device
+        # clock is worse than no audio -- it lands in the archive at a time
+        # it did not happen, and no later correction can find it again.
+        async def discard():
+            async with BleakClient(addr, timeout=30.0) as c:
+                link = Link(c)
+                await c.start_notify(CTRL, link.on_notify)
+                await asyncio.sleep(0.5)
+                i = await link.ring_info()
+                held = i["write_seq"] - i["read_seq"]
+                if held <= 0:
+                    print("  nothing held")
+                    return 0
+                print(f"  discarding {held} packet(s) "
+                      f"({held * i['packet_bytes'] / 1024 / 1024:.1f} MB)")
+                ack = await link.advance(i["write_seq"])
+                print(f"  device said {STATUS.get(ack, ack)}")
+                i = await link.ring_info()
+                print(f"  ring now {i['read_seq']} .. {i['write_seq']}")
+                return 0
+        return asyncio.run(discard())
 
     _, took = asyncio.run(sync(addr, limit_packets=args.packets))
     print(f"\n{took} packet(s) spooled")
