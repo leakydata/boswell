@@ -1048,7 +1048,22 @@ class Worker:
                 return False
             self._queued.add(clip)
         self.q.put(clip)
+        self._push_queue()
         return True
+
+    def _push_queue(self):
+        """Tell every open page how much transcription work is waiting.
+
+        The page used to poll /api/queue on a timer, so a clip that finished
+        stayed unacknowledged for up to eight seconds and anything pressed in
+        that window looked ignored. The worker knows the instant the depth
+        changes; say so.
+        """
+        with self._qlock:
+            depth = len(self._queued) + (1 if self.busy else 0)
+        notify = getattr(self, "notify", None)
+        if notify:
+            notify("queue", pending=depth)
 
     def is_pending(self, clip):
         with self._qlock:
@@ -1154,6 +1169,7 @@ class Worker:
                 self.notify("log", text=f"transcription failed: {str(e)[:120]}")
             finally:
                 self.busy = None
+                self._push_queue()
 
     def tag_sounds(self, audio, sr=16000):
         """What is audible in this clip, whether or not anyone spoke.

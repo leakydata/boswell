@@ -243,6 +243,11 @@ class ConversationAgent:
             now = time.time()
             self._first_at = self._first_at or now
             self._last_at = now
+        # A clip joining the review queue is the one change the Notes tab
+        # used to discover by polling every five seconds. The page still
+        # polls as a fallback, but the push makes the count move the moment
+        # the clip lands.
+        self.notify("agentstate", **self.status())
 
     def pending_chars(self):
         with self._lock:
@@ -312,6 +317,8 @@ class ConversationAgent:
                     self.notify("log", text=f"agent gave up on {len(batch)} clip(s) "
                                             f"after {self._failures} failures")
                     self._failures = 0
+            # Whatever happened, the queue is a different shape now.
+            self.notify("agentstate", **self.status())
 
     # ---- execution ----------------------------------------------------
     def _recall(self, text):

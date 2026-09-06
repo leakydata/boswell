@@ -2184,3 +2184,118 @@ class TestTheTimeAClipReallyHappened:
         assert "time unknown" in page
         # The date filter cannot hide what it cannot place.
         assert "if (modified == null) return true;" in page
+
+
+class TestSayingSoWithoutBeingAsked:
+    """Push instead of poll for the two counters worth watching.
+
+    The page used to learn that a clip finished transcribing by asking every
+    eight seconds, and that the agent had picked up work by asking every
+    five. A clip that finished two seconds into a poll cycle sat invisible,
+    and a control pressed in that window looked ignored. Both workers now
+    announce changes themselves; the polls stay as a fallback for a server
+    that predates the messages.
+    """
+
+    def test_the_worker_announces_the_queue_depth_when_it_changes(self):
+        import inspect, os, sys
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "web"))
+        import pipeline
+        src = inspect.getsource(pipeline.Worker.submit)
+        assert "self._push_queue()" in src
+        run_src = inspect.getsource(pipeline.Worker._run)
+        assert "_push_queue()" in run_src
+
+    def test_the_push_survives_a_worker_built_without_a_notifier(self):
+        import sys
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "web"))
+        import pipeline
+        # Tests build Workers with __new__ to avoid the model thread; the
+        # push must be a no-op there, not an AttributeError.
+        w = pipeline.Worker.__new__(pipeline.Worker)
+        w._queued = set()
+        w.busy = None
+        w._qlock = __import__("threading").Lock()
+        w._push_queue()          # must not raise
+
+    def test_a_clip_joining_the_review_queue_announces_itself(self):
+        import os, sys
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "web"))
+        import agent_runner
+        events = []
+        a = agent_runner.ConversationAgent(
+            notify=lambda kind, **kw: events.append((kind, kw)))
+        a.add("c.wav", [{"text": "hello"}], {})
+        kinds = [k for k, _ in events]
+        assert "agentstate" in kinds
+        state = [kw for k, kw in events if k == "agentstate"][0]
+        assert state["pending_clips"] == 1
+
+    def test_the_page_acts_on_the_pushes_it_receive(self):
+        page = self._page()
+        assert 'm.type === "queue"' in page
+        assert 'm.type === "agentstate"' in page
+
+    def _page(self):
+        import os
+        here = os.path.dirname(__file__)
+        with open(os.path.join(here, "..", "web", "static", "index.html"),
+                  encoding="utf-8") as f:
+            return f.read()
+
+
+class TestTheInterfaceAnswersForADay:
+    """The day strip, the address bar, the chained reader, the mini player
+    and the keyboard queue. Each exists because a daily question cost more
+    than the answer was worth: what happened on Thursday, show me that
+    search again, hearing a whole conversation, listening while browsing,
+    and naming the voices that turn up every day.
+    """
+
+    def _page(self):
+        import os
+        here = os.path.dirname(__file__)
+        with open(os.path.join(here, "..", "web", "static", "index.html"),
+                  encoding="utf-8") as f:
+            return f.read()
+
+    def test_the_day_strip_exists_and_filters_by_capture_day(self):
+        page = self._page()
+        assert 'id="dayStrip"' in page
+        assert "function dayKey" in page
+        assert "function matchesDay" in page
+        # A day picked by hand clears the coarse date filter rather than
+        # letting both apply -- two filters answering one question is how a
+        # list silently shows the wrong thing.
+        assert 'if (dayFilter){ dateFilter = "all"; $("fDate").value = "all"; }' in page
+
+    def test_search_fresh_and_selected_day_live_in_the_address_bar(self):
+        page = self._page()
+        assert "function parseHash" in page
+        assert "function syncHash" in page
+        assert 'params.set("q", query)' in page
+        assert 'params.set("day", dayFilter)' in page
+
+    def test_a_conversation_plays_as_one_recording(self):
+        page = self._page()
+        assert 'id="cvPlayAll"' in page
+        assert "async function cvAdvance" in page
+        # Crossing a clip edge changes the source and seeks; stopping at a
+        # line end must not strand the chain.
+        assert "loadedmetadata" in page
+
+    def test_playback_survives_going_back_to_the_list(self):
+        page = self._page()
+        assert 'id="mini"' in page
+        assert "function syncMini" in page
+        # Going back is the moment the controls used to disappear.
+        assert "syncMini();" in page
+        back = page[page.index("async function clipGoBack(){"):]
+        assert back.index('syncMini();') < back.index("loadClips")
+        assert back.index('$("detail").hidden = true;') < back.index('syncMini();')
+
+    def test_the_voice_queue_is_reachable_from_the_keyboard(self):
+        page = self._page()
+        assert "let voiceCards" in page
+        assert 'c.cands[+e.key - 1]' in page
+        assert 'id="voiceKbdHint"' in page

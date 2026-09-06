@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#0C1215">
 <title>Boswell</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2312697A'/%3E%3Crect x='14' y='7' width='4' height='11' rx='2' fill='white'/%3E%3Cpath d='M10 15v2a6 6 0 0 0 12 0v-2' stroke='white' stroke-width='2' fill='none' stroke-linecap='round'/%3E%3Crect x='15' y='23' width='2' height='3' fill='white'/%3E%3C/svg%3E">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%2312697A'/%3E%3Ccircle cx='11' cy='21' r='3.2' fill='white'/%3E%3Cpath d='M17 21 A6 6 0 0 0 11 15' stroke='white' stroke-width='2.4' fill='none' stroke-linecap='round'/%3E%3Cpath d='M22 21 A11 11 0 0 0 11 10' stroke='white' stroke-width='2.4' fill='none' stroke-linecap='round'/%3E%3C/svg%3E">
 <style>/* Fonts are served from this machine, not from Google.
  *
  * The page used to link Google's font CDN, which tells a third party the
@@ -71,8 +71,9 @@ main#main{grid-area:main;min-width:0}
   .wrap{display:block;padding:0 16px 40px}
   header{padding-top:20px}
 }
-h1{font-size:26px;font-weight:600;letter-spacing:-.03em;margin:0}
-h1 span{color:var(--accent)}
+.brand{display:flex;align-items:center;gap:11px}
+.mark{width:23px;height:23px;flex:none;border-radius:6px}
+h1{font-size:25px;font-weight:600;letter-spacing:-.02em;margin:0;line-height:1}
 .ver{font-family:var(--mono);font-size:11px;color:var(--faint)}
 .topstate{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
 .topstate .pill{font-family:var(--mono);font-size:11.5px;color:var(--muted);
@@ -538,18 +539,59 @@ details .inner{padding:2px 12px 12px}
 .themesel button:hover{border:none}
 .themesel button[aria-pressed=true]{background:var(--sunk);color:var(--ink)}
 
+/* ---- mini player ---- */
+#mini{position:fixed;left:50%;transform:translateX(-50%);bottom:14px;z-index:55;
+  display:flex;align-items:center;gap:12px;background:var(--surface);
+  border:1px solid var(--rule);border-radius:999px;padding:8px 10px 8px 8px;
+  box-shadow:0 4px 18px #0004;max-width:min(620px,94vw)}
+#mini[hidden]{display:none}
+#mini button{min-height:36px;min-width:36px;padding:0 9px;flex:none}
+#miniPlay{border-radius:50%;background:var(--accent);border-color:var(--accent);
+  color:#fff}
+#miniClose{border:none;background:none;color:var(--faint);font-size:16px}
+#miniClose:hover{color:var(--bad)}
+.minimeta{display:flex;flex-direction:column;gap:3px;min-width:0;flex:1}
+#miniTitle{font-family:var(--mono);font-size:11px;color:var(--muted);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#miniSeek{width:100%;min-width:170px;height:18px;accent-color:var(--accent);
+  padding:0;border:none;background:transparent}
+#mini .val{font-size:11px;flex:none;min-width:0}
+
+/* ---- day strip ---- */
+.daystrip{display:flex;gap:6px;overflow-x:auto;padding:2px 0 10px;
+  scrollbar-width:none;flex-wrap:nowrap}
+.daystrip::-webkit-scrollbar{display:none}
+.daystrip button{flex:0 0 auto;min-height:0;padding:5px 12px;font-size:12.5px;
+  border-radius:14px;font-family:var(--mono);color:var(--muted);
+  background:var(--sunk);border:1px solid transparent}
+.daystrip button b{color:var(--ink);font-weight:600}
+.daystrip button.on{border-color:var(--accent);color:var(--accent)}
+.daystrip button.on b{color:var(--accent)}
+
+/* ---- voice queue cards ----
+   Real cards rather than bare rows: the keyboard flow rests on "the top
+   card is the one being worked", and the target should look like one. */
+.kcard{border:1px solid var(--rule);border-radius:8px;padding:12px;
+  background:var(--surface)}
+.kcard.kbd-target{border-color:var(--accent)}
+
 /* ---- clips whose time nobody knows ---- */
 .lbl.unk{background:color-mix(in srgb,var(--warn) 16%,transparent);color:var(--warn)}
 /* The phone header is several rows tall; a day header pinned under it would
    sit behind the header's background and vanish. */
 @media(max-width:900px){.daygroup{position:static}}
+/* On a phone the mini player owns the bottom edge; toasts stack above it. */
+@media(max-width:700px){#toasts{bottom:78px}}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
 </style>
 </head>
 <body>
 <div class="wrap">
   <header>
-    <h1>Bos<span>well</span></h1>
+    <!-- The mark is a point that hears: the device on its lanyard, and the
+         arcs are everything it catches around it. Boswell, the diarist who
+         wrote down every conversation he stood in, is the namesake. -->
+    <div class="brand"><svg class="mark" viewBox="0 0 32 32" aria-hidden="true" focusable="false"><rect width="32" height="32" rx="9" fill="#12697A"/><circle cx="11" cy="21" r="3.2" fill="#fff"/><path d="M17 21 A6 6 0 0 0 11 15" stroke="#fff" stroke-width="2.4" fill="none" stroke-linecap="round"/><path d="M22 21 A11 11 0 0 0 11 10" stroke="#fff" stroke-width="2.4" fill="none" stroke-linecap="round"/></svg><h1>Boswell</h1></div>
     <!-- The top bar answers the standing question from anywhere in the page:
          is it recording, is anything running, and how much battery is left. -->
     <span class="topstate">
@@ -838,6 +880,9 @@ details .inner{padding:2px 12px 12px}
       <button type="button" id="bRefresh">Refresh</button>
       <span class="val" id="qdepth"></span>
     </div>
+    <!-- Recent capture days. One tap answers "what happened on Thursday"
+         without reading the date filter as prose. -->
+    <div id="dayStrip" class="daystrip" hidden aria-label="Jump to a capture day"></div>
     <div class="card" id="clipList" style="border:none;background:transparent;padding:0">
       <div class="empty">loading…</div>
     </div>
@@ -859,7 +904,8 @@ details .inner{padding:2px 12px 12px}
       <div id="cvSegs" aria-live="polite"></div>
       <div class="btns" style="margin-top:16px">
         <button type="button" id="cvBack">Back</button>
-        <button type="button" class="pri" id="cvExport">Export</button>
+        <button type="button" class="pri" id="cvPlayAll">Play conversation</button>
+        <button type="button" id="cvExport">Export</button>
         <button type="button" id="cvTranscribe">Transcribe missing</button>
         <button type="button" id="cvReview">Review with agent</button>
         <button type="button" id="cvConsolidate">Re-detect speakers</button>
@@ -943,6 +989,10 @@ details .inner{padding:2px 12px 12px}
         <span class="count" id="voiceNearCount"></span>
         <button type="button" id="bVoiceConfirmAll" hidden></button>
       </div>
+      <p class="note" id="voiceKbdHint" hidden>Keyboard, working down from
+        the first voice: <b>space</b> plays it, <b>1</b> and <b>2</b> confirm
+        the closest names, <b>n</b> types a name, <b>v</b> marks it as media,
+        <b>i</b> sets it aside.</p>
       <div id="voiceQueue"><div class="empty">loading…</div></div>
     </div>
 
@@ -1081,6 +1131,17 @@ details .inner{padding:2px 12px 12px}
   </main>
 </div>
 
+<div id="mini" hidden>
+  <button type="button" id="miniPlay" aria-label="Play or pause">▶</button>
+  <div class="minimeta">
+    <span id="miniTitle"></span>
+    <input type="range" id="miniSeek" min="0" max="100" value="0" step="0.1"
+           aria-label="Seek within this recording">
+  </div>
+  <span class="val" id="miniTime">0:00 / 0:00</span>
+  <button type="button" id="miniClose" aria-label="Stop and close the player">×</button>
+</div>
+
 <div id="toasts" aria-live="polite"></div>
 
 <!-- The editor and the namer are native dialogs: Escape, the backdrop and the
@@ -1116,6 +1177,9 @@ details .inner{padding:2px 12px 12px}
 </dialog>
 
 <script>
+
+
+
 
 const $ = id => document.getElementById(id);
 let ws, armed = false, connected = false, drainPeak = 0;
@@ -1225,7 +1289,7 @@ async function ensureAuth(){
 
 function showTokenGate(){
   document.querySelector(".wrap").innerHTML = `
-    <header><h1>Bos<span>well</span></h1></header>
+    <header><div class="brand"><svg class="mark" viewBox="0 0 32 32" aria-hidden="true" focusable="false"><rect width="32" height="32" rx="9" fill="#12697A"/><circle cx="11" cy="21" r="3.2" fill="#fff"/><path d="M17 21 A6 6 0 0 0 11 15" stroke="#fff" stroke-width="2.4" fill="none" stroke-linecap="round"/><path d="M22 21 A11 11 0 0 0 11 10" stroke="#fff" stroke-width="2.4" fill="none" stroke-linecap="round"/></svg><h1>Boswell</h1></div></header>
     <div class="card" style="margin-top:20px">
       <h2>Access token</h2>
       <p style="font-size:14.5px;color:var(--muted);margin:0 0 12px">
@@ -1436,6 +1500,17 @@ async function connect(){
         if (m.actions) toast(`Review done — ${m.actions} item(s) recorded`, "ok");
       }
       if (!$("viewNotes").hidden){ loadAgent(); loadItems(); }
+    }
+    else if (m.type === "queue"){
+      /* Pushed by the worker the moment the depth changes; the 8s poll
+         below stays as a fallback for servers that predate it. */
+      const n = m.pending || 0;
+      $("qdepth").textContent = n ? `${n} left…` : "";
+      if (n) jobStart("queue", `transcribing ${n}…`);
+      else jobEnd("queue");
+    }
+    else if (m.type === "agentstate"){
+      paintAgentState(m);
     }
     else if (m.type === "job"){
       log(`transcription ${m.status}: ${m.clip}` + (m.error ? " — " + m.error : ""));
@@ -1694,6 +1769,7 @@ on("bTidyDelete", "click", async () => {
 
 /* ---- tabs ---- */
 let current = null;
+let currentTab = "dev";
 function showTab(which){
   for (const [t, v, k] of [["tabDev","viewDev","dev"],["tabRec","viewRec","rec"],
                            ["tabPpl","viewPpl","ppl"],["tabNotes","viewNotes","notes"],
@@ -1712,22 +1788,54 @@ function showTab(which){
   if (which === "notes"){ loadAgent(); loadItems(); loadTopics(); loadDuplicates(); }
   if (which === "heard") loadHeard();
   if (which === "tidy") loadTidy();
-  /* The tab survives a refresh and is bookmarkable: the archive is where
-     "what did it catch" gets answered, and landing back on Device every time
-     cost a click forever. */
-  try{
-    history.replaceState(null, "", which === "dev" ? location.pathname
-                                                   : "#" + which);
-  }catch(e){}
+  currentTab = which;
+  syncHash();
+}
+
+/* ---- the address bar remembers what you are looking at ----
+   A search, a filter combination or a picked day used to die on refresh.
+   All of it lives in the hash now, so "show me that again" is a bookmark.
+   Only the values that differ from the page's own defaults are written,
+   which keeps the bar readable. */
+const HASH_SELECTS = ["fMode", "fGroup", "fContent", "fLabel", "fDate",
+                      "fPerPage", "fSound"];
+
+function selectDefault(id){
+  const def = $(id).querySelector("option[selected]");
+  return def ? def.value : $(id).options[0].value;
+}
+
+function syncHash(){
+  if (syncHashTimer) clearTimeout(syncHashTimer);
+  syncHashTimer = setTimeout(() => {
+    const params = new URLSearchParams();
+    if (query) params.set("q", query);
+    if (dayFilter) params.set("day", dayFilter);
+    for (const id of HASH_SELECTS){
+      const v = $(id).value;
+      if (v !== selectDefault(id)) params.set(id, v);
+    }
+    const qs = params.toString();
+    try{
+      lastHashWritten = location.pathname
+        + (currentTab === "dev" && !qs ? "" : "#" + currentTab + (qs ? "?" + qs : ""));
+      history.replaceState(null, "", lastHashWritten);
+    }catch(e){}
+  }, 250);
+}
+let syncHashTimer = null;
+
+function parseHash(){
+  const h = (location.hash + "").slice(1);
+  const qmark = h.indexOf("?");
+  const tab = qmark === -1 ? h : h.slice(0, qmark);
+  return {tab, params: new URLSearchParams(qmark === -1 ? "" : h.slice(qmark + 1))};
 }
 const TABS = [["tabDev","dev"],["tabRec","rec"],["tabPpl","ppl"],
               ["tabNotes","notes"],["tabHeard","heard"],["tabTidy","tidy"]];
 for (const [id, key] of TABS) $(id).onclick = () => showTab(key);
-/* Open on the tab the URL names, so a bookmark lands where it was made. */
-{
-  const want = (location.hash + "").slice(1);
-  if (["rec","ppl","notes","heard","tidy"].includes(want)) showTab(want);
-}
+/* The address bar is restored further down, after the variables it mirrors
+   exist -- a let is unreachable before its own declaration runs. */
 for (const [id] of TABS){
   $(id).addEventListener("keydown", e => {
     const i = TABS.findIndex(([t]) => t === id);
@@ -1854,18 +1962,23 @@ async function loadDuplicates(){
 on("dupThresh", "change", loadDuplicates);
 on("bDupRefresh", "click", loadDuplicates);
 
+/* One painter for the agent's queue, used by both the poll and the push. */
+function paintAgentState(a){
+  const waiting = a.pending_clips
+    ? `${a.pending_clips} clip(s) waiting` +
+      (a.seconds_idle != null
+        ? ` · reviewing after ${Math.max(0, Math.round(a.idle_seconds - a.seconds_idle))}s of quiet`
+        : "")
+    : "nothing waiting";
+  $("agentState").textContent = a.busy ? `reviewing ${a.busy}…` : waiting;
+  $("bAgentRun").disabled = !a.pending_clips || !!a.busy;
+}
+
 async function loadAgent(){
   try{
     const a = await (await fetch("/api/agent")).json();
     $("agentOn").setAttribute("aria-checked", !!a.enabled);
-    const waiting = a.pending_clips
-      ? `${a.pending_clips} clip(s) waiting` +
-        (a.seconds_idle != null
-          ? ` · reviewing after ${Math.max(0, Math.round(a.idle_seconds - a.seconds_idle))}s of quiet`
-          : "")
-      : "nothing waiting";
-    $("agentState").textContent = a.busy ? `reviewing ${a.busy}…` : waiting;
-    $("bAgentRun").disabled = !a.pending_clips || !!a.busy;
+    paintAgentState(a);
     const sel = $("agentModel");
     if (!sel.options.length){
       const m = await (await fetch("/api/models")).json();
@@ -2198,8 +2311,14 @@ function syncVoiceNear(){
   }
 }
 
+/* The queue's cards, most recent render first. The keyboard operates on the
+   first one, because the queue is worked top-down and every action that
+   settles a voice removes its card. */
+let voiceCards = [];
+
 async function loadVoices(){
   const el = $("voiceQueue");
+  voiceCards = [];
   try{
     const q = await (await fetch(
       `/api/voices/queue?limit=40&include_media=${showMedia}`
@@ -2242,7 +2361,7 @@ async function loadVoices(){
     el.innerHTML = "";
     for (const v of shown){
       const d = document.createElement("div");
-      d.className = "row";
+      d.className = "row kcard";
       d.style.cssText = "flex-direction:column;align-items:stretch;gap:8px";
 
       const head = document.createElement("div");
@@ -2295,6 +2414,7 @@ async function loadVoices(){
       au.controls = true; au.preload = "metadata";
       au.src = `/api/voices/${v.person_id}/audio`;
       d.appendChild(au);
+      const card = {au, input: null, media: null, skip: null, cands: []};
 
       const bar = document.createElement("div");
       bar.style.cssText = "display:flex;gap:8px;flex-wrap:wrap";
@@ -2384,11 +2504,16 @@ async function loadVoices(){
                 + (cand.kind === "media" ? " — tagged as media" : "");
         b.onclick = () => { input.value = cand.name; submit(); };
         bar.appendChild(b);
+        card.cands.push(b);
       }
       bar.appendChild(input); bar.appendChild(save); bar.appendChild(msg);
       d.appendChild(bar);
+      card.input = input; card.media = media; card.skip = skip;
+      voiceCards.push({el: d, card});
       el.appendChild(d);
     }
+    if (voiceCards.length) voiceCards[0].el.classList.add("kbd-target");
+    $("voiceKbdHint").hidden = !voiceCards.length;
   }catch(e){ el.innerHTML = '<div class="empty">could not load voices</div>'; }
 }
 
@@ -2428,6 +2553,36 @@ on("bVoiceConfirmAll", "click", async () => {
 });
 
 on("bVoiceRefresh", "click", loadVoices);
+
+/* ---- keyboard for the voice queue ----
+   Naming voices is the one task here that recurs daily, and it was
+   mouse-only: play, find the field, type. The keys act on the top card,
+   which is the one being worked; every settling action removes the card, so
+   the top card is always the next one. */
+addEventListener("keydown", e => {
+  if ($("viewPpl").hidden) return;
+  if ($("editor").open || $("namer").open) return;
+  const a = document.activeElement;
+  if (a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) return;
+  if (!voiceCards.length) return;
+  const c = voiceCards[0].card;
+  if (e.key === " "){
+    e.preventDefault();
+    c.au.paused ? c.au.play().catch(() => {}) : c.au.pause();
+  } else if (e.key === "1" || e.key === "2"){
+    const b = c.cands[+e.key - 1];
+    if (b){ e.preventDefault(); b.click(); }
+  } else if (e.key === "n"){
+    e.preventDefault();
+    c.input.focus();
+  } else if (e.key === "v"){
+    e.preventDefault();
+    c.media.click();
+  } else if (e.key === "i"){
+    e.preventDefault();
+    c.skip.click();
+  }
+});
 /* Every voiceprint in the store was pooled over at most thirty seconds of
    speech. The same voice pooled over minutes is a far better reference, so
    this is worth running once across the archive -- and it is where the
@@ -2685,7 +2840,9 @@ on("fPerPage", "change", () => {
 /* Every one of these changes what the list contains, so page 7 of the old one
    is meaningless in the new one -- and lands the reader on an empty page. */
 on("fDate",  "change", () => {
-  dateFilter = $("fDate").value; resetPages(); loadClips();
+  dateFilter = $("fDate").value;
+  if (dateFilter !== "all") dayFilter = "";
+  resetPages(); loadClips();
 });
 on("fGroup", "change", () => {
   groupMode = $("fGroup").value; resetPages(); loadClips();
@@ -2755,6 +2912,35 @@ on("fMode", "change", () => {
    run. Calling it earlier threw before the page finished loading. */
 applyViewPrefs();
 
+/* Restore everything the hash carries, then open on the tab it names. The
+   hash is the address bar's record of the search, the filters, the picked
+   day and the tab, so a refresh or a bookmark lands where it was made. */
+function applyHashState(){
+  const {tab, params} = parseHash();
+  const q0 = params.get("q");
+  $("q").value = q0 || "";
+  $("qClear").hidden = !q0;
+  query = (q0 || "").trim().toLowerCase();
+  const d0 = params.get("day");
+  dayFilter = (d0 && /^\d{4}-\d{2}-\d{2}$/.test(d0)) ? d0 : "";
+  for (const id of HASH_SELECTS){
+    const v = params.get(id);
+    if (v && [...$(id).options].some(o => o.value === v)) $(id).value = v;
+  }
+  /* Re-mirror the controls into the variables, exactly as applyViewPrefs
+     does: assigning a select does not fire change. */
+  searchMode = $("fMode").value;
+  groupMode = $("fGroup").value;
+  clipFilter = $("fContent").value;
+  labelFilter = $("fLabel").value;
+  dateFilter = $("fDate").value;
+  pageSize = parseInt($("fPerPage").value, 10) || 0;
+  if (["rec","ppl","notes","heard","tidy"].includes(tab)) showTab(tab);
+}
+/* applyHashState is called at the very end of the script, after every let
+   it mirrors exists. Its first placement ran before them and threw a
+   temporal-dead-zone error that silently killed the rest of setup. */
+
 function fmtClock(t){
   return new Date(t*1000).toLocaleTimeString([], {hour:"numeric", minute:"2-digit"});
 }
@@ -2782,14 +2968,86 @@ function capTime(c){
   return c.started || c.modified;
 }
 
+/* Which capture day a moment belongs to, in the page's own timezone. */
+function dayKey(t){
+  const d = new Date(t * 1000);
+  return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0")
+       + "-" + String(d.getDate()).padStart(2, "0");
+}
+
+/* A day picked from the strip. Empty means every day. Clips whose time
+   nobody knows join no day -- selecting a day shows that day. */
+let dayFilter = "";
+
+function matchesDay(t){
+  if (!dayFilter) return true;
+  return t != null && dayKey(t) === dayFilter;
+}
+
+function fmtDayShort(t){
+  const d = new Date(t * 1000), today = new Date();
+  const y = new Date(today); y.setDate(today.getDate() - 1);
+  const same = (a, b) => a.toDateString() === b.toDateString();
+  if (same(d, today)) return "Today";
+  if (same(d, y)) return "Yesterday";
+  return d.toLocaleDateString([], {weekday: "short", month: "short",
+                                   day: "numeric"});
+}
+
+/* The strip: recent capture days with something in them, one tap to a day.
+   Built from whatever list just loaded, so it always reflects the archive
+   rather than the current filters. */
+function renderDayStrip(items){
+  const el = $("dayStrip");
+  if (query){ el.hidden = true; return; }
+  const days = new Map();
+  for (const it of items){
+    if (it.t == null) continue;
+    const k = dayKey(it.t);
+    const d = days.get(k) || {k, t: it.t, seconds: 0, n: 0};
+    d.seconds += it.seconds || 0;
+    d.n += 1;
+    days.set(k, d);
+  }
+  const list = [...days.values()].sort((a, b) => b.k.localeCompare(a.k))
+                                 .slice(0, 14);
+  el.replaceChildren();
+  if (dayFilter){
+    const clear = document.createElement("button");
+    clear.type = "button";
+    clear.className = "on";
+    clear.textContent = "show every day ×";
+    clear.onclick = () => { dayFilter = ""; resetPages(); loadClips(); };
+    el.appendChild(clear);
+  }
+  el.hidden = !list.length && !dayFilter;
+  for (const d of list){
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = dayFilter === d.k ? "on" : "";
+    b.innerHTML = `<b>${esc(fmtDayShort(d.t))}</b> · ${fmtDur(d.seconds)}`
+                + ` · ${d.n} clip${d.n === 1 ? "" : "s"}`;
+    b.title = `Show only ${fmtDay(d.t)} — click again to show everything`;
+    b.onclick = () => {
+      dayFilter = dayFilter === d.k ? "" : d.k;
+      if (dayFilter){ dateFilter = "all"; $("fDate").value = "all"; }
+      resetPages();
+      loadClips();
+    };
+    el.appendChild(b);
+  }
+}
+
 async function loadConversations(el){
-  const all = (await (await fetch("/api/conversations")).json())
-    .filter(c => inDateRange(c.end));
+  const fetched = (await (await fetch("/api/conversations")).json());
+  renderDayStrip(fetched.map(c => ({t: c.start, seconds: c.seconds})));
+  const all = fetched.filter(c => inDateRange(c.end));
   /* The same filter as the clip list. A conversation's speaker list is the
      union of its clips', so "part named" here means somebody in the room is
      still unnamed somewhere in it -- which is the unit the work is actually
      done in. */
-  const convs = all.filter(c => matchesLabelFilter(c.speakers));
+  const convs = all.filter(c => matchesLabelFilter(c.speakers)
+                             && matchesDay(c.start));
   $("clipCount").textContent = convs.length === all.length
     ? `${convs.length} conversation${convs.length===1?"":"s"}`
     : `${convs.length} of ${all.length} conversations`;
@@ -3102,6 +3360,7 @@ async function loadSearch(el){
   const url = searchMode === "both"
     ? "/api/search/hybrid?limit=40&q=" + encodeURIComponent(query)
     : "/api/search?q=" + encodeURIComponent(query);
+  $("dayStrip").hidden = true;
   el.innerHTML = '<div class="empty">searching…</div>';
   let results;
   try{
@@ -3262,6 +3521,7 @@ $("bDelSel").onclick = async () => {
 
 async function loadClips(){
   const el = $("clipList");
+  syncHash();
   try{
     // With a query, the server searches every segment. Matching against the
     // 180-character preview here only ever found the opening sentence.
@@ -3277,6 +3537,7 @@ async function loadClips(){
        into the query rather than to raise this again. */
     const all = await (await fetch("/api/clips?limit=" + CLIP_FETCH_LIMIT)).json();
     loadSoundFilter();
+    renderDayStrip(all.map(c => ({t: capTime(c), seconds: c.seconds})));
     // has_speech is null until a clip is transcribed; an unknown clip is not
     // the same as a silent one, so it stays out of both filtered views.
     // "Silent, but a voice was heard": the sound tagger found a person
@@ -3292,6 +3553,7 @@ async function loadClips(){
                                      (c.voice_tag || 0) >= MISSED_VOICE_FLOOR)
         : c.has_speech === false)
       .filter(c => inDateRange(capTime(c)))
+      .filter(c => matchesDay(capTime(c)))
       .filter(c => matchesLabelFilter(c.speakers))
       .filter(c => !soundFilter || (c.sounds || []).includes(soundFilter));
     /* Arrival order is not capture order: a docked dump lands this evening
@@ -3411,6 +3673,7 @@ async function loadClips(){
 
 async function openClip(name){
   current = name;
+  miniDismissed = false;
   $("clipList").hidden = true;
   $("detail").hidden = false;
   $("dTitle").textContent = name;
@@ -3787,10 +4050,15 @@ async function openConversation(conv){
 const CV_TAIL = 0.4;
 let cvStopAt = null;
 let cvPlayingKey = null;
+/* Playing a whole conversation. Each clip stops at its own end, so
+   reviewing twenty-five minutes of talk meant pressing play fifty times;
+   the chain walks the lines instead, crossing clip edges on its own. */
+let cvChain = null;
 
 function cvPlayFrom(seg, lineEl){
   const p = $("cvPlayer");
   const key = `${seg.clip}|${seg.index}`;
+  cvChain = null;                  // one line takes over from the chain
 
   /* The control that started it stops it. Clicking the same timestamp again
      is the gesture people try first, and it is right where they already are.
@@ -3836,27 +4104,75 @@ function cvStopPlayback(){
   p.pause();
   cvStopAt = null;
   cvPlayingKey = null;
+  cvChain = null;
   $("cvNow").hidden = true;
   cvResetClocks();
+}
+
+/* Walk the conversation's lines in order, crossing clip boundaries without
+   stopping. Highlighting and scrolling follow the line being heard, so a
+   long review reads itself. */
+async function cvAdvance(i){
+  const lines = cvLines;
+  if (!lines || i >= lines.length){ cvStopPlayback(); return; }
+  const seg = lines[i].seg;
+  const p = $("cvPlayer");
+  cvChain = {i};
+  cvStopAt = (typeof seg.end === "number" && seg.end > seg.start)
+             ? seg.end + CV_TAIL : null;
+  cvPlayingKey = `${seg.clip}|${seg.index}`;
+  cvResetClocks();
+  const lineEl = lines[i].el;
+  lineEl.classList.add("playing");
+  const t = lineEl.querySelector(".cvt");
+  if (t){ t.textContent = "■"; t.title = "Stop"; }
+  $("cvNow").hidden = false;
+  $("cvNowLabel").textContent = `playing conversation · line ${i + 1} of `
+                              + `${lines.length}`;
+  /* "instant", not "smooth": a smooth scroll does not animate in a tab
+     that is not visible, so the line being listened for would stay below
+     the fold. See TestOfferingTheRestOfTheClip. */
+  lineEl.scrollIntoView({block: "center", behavior: "instant"});
+  /* Same pattern as cvPlayFrom: setting currentTime before the metadata
+     arrives is queued by the browser and applied once it does, so there is
+     nothing to wait for here. */
+  const needSrc = !p.src.endsWith(encodeURIComponent(seg.clip));
+  if (needSrc) p.src = "/api/audio/" + encodeURIComponent(seg.clip);
+  p.currentTime = seg.start;
+  p.play().catch(() => {});
 }
 
 /* Stops itself at the end of the line rather than running into the next
    thirty seconds of whatever else was in the clip. */
 $("cvPlayer").addEventListener("timeupdate", () => {
-  if (cvStopAt !== null && $("cvPlayer").currentTime >= cvStopAt) cvStopPlayback();
+  if (cvStopAt !== null && $("cvPlayer").currentTime >= cvStopAt){
+    /* In a chain the end of one line is the beginning of the next. */
+    if (cvChain) cvAdvance(cvChain.i + 1);
+    else cvStopPlayback();
+  }
 });
-$("cvPlayer").addEventListener("ended", cvStopPlayback);
+$("cvPlayer").addEventListener("ended", () => {
+  if (cvChain) cvAdvance(cvChain.i + 1);
+  else cvStopPlayback();
+});
 
 $("cvStop").onclick = cvStopPlayback;
 $("cvPlay").onclick = () => {
   const p = $("cvPlayer");
   if (p.paused){
-    /* Resuming from the bar means "keep going" -- the line limit is dropped,
-       so this is how to hear what comes after it. */
-    cvStopAt = null;
-    $("cvNowLabel").textContent = "playing on";
+    /* Resuming from the bar means "keep going". Mid-chain that is the rest
+       of the conversation; on a single line it drops the line limit. */
+    if (!cvChain){
+      cvStopAt = null;
+      $("cvNowLabel").textContent = "playing on";
+    }
     p.play().catch(() => {});
   } else p.pause();
+};
+
+$("cvPlayAll").onclick = () => {
+  if (cvChain){ cvStopPlayback(); return; }
+  cvAdvance(0);
 };
 $("cvPlayer").addEventListener("play",  () => { $("cvPlay").textContent = "❚❚"; });
 $("cvPlayer").addEventListener("pause", () => { $("cvPlay").textContent = "▶"; });
@@ -3992,6 +4308,48 @@ $("cvTranscribe").onclick = async () => {
   $("cvMsg").textContent = "queued — this page refreshes when they finish";
 };
 
+/* ---- mini player ----
+   Going back to the list used to strand the audio: it kept playing with no
+   control anywhere on screen, so the choice was silence or hunting for the
+   clip again. This bar follows the one audio element the clip view drives,
+   so browsing the archive never costs the thread you were listening to. */
+let miniDismissed = false;
+
+function syncMini(){
+  const p = $("player");
+  const bar = $("mini");
+  /* Visible while the clip view is closed and there is something to
+     control: part-heard, or still playing. */
+  const wanted = !!current && !!p.src && $("detail").hidden
+                 && (p.currentTime > 0.3 || !p.paused);
+  bar.hidden = !wanted || miniDismissed;
+  if (bar.hidden) return;
+  $("miniTitle").textContent = current;
+  $("miniPlay").textContent = p.paused ? "▶" : "❚❚";
+  $("miniTime").textContent = fmt(p.currentTime) + " / "
+                            + fmt(p.duration || waveDur || 0);
+  const seek = $("miniSeek");
+  if (document.activeElement !== seek && p.duration){
+    seek.max = Math.round(p.duration);
+    if (seek.max > 0) seek.value = Math.round(p.currentTime);
+  }
+}
+
+$("miniPlay").onclick = () => {
+  const p = $("player");
+  if (p.paused) p.play().catch(() => {});
+  else p.pause();
+};
+$("miniSeek").oninput = () => {
+  const p = $("player");
+  if (p.duration) p.currentTime = +$("miniSeek").value;
+};
+$("miniClose").onclick = () => {
+  $("player").pause();
+  miniDismissed = true;
+  syncMini();
+};
+
 /* ---- waveform ---- */
 let waveData = null, waveSegs = [], waveDur = 0, spkColors = {};
 
@@ -4101,6 +4459,7 @@ function syncTransport(){
   }
   $("tDur").textContent = " / " + fmt(waveDur || p.duration || 0);
   drawWave();
+  syncMini();
 }
 
 $("play").onclick = () => {
@@ -4869,6 +5228,7 @@ $("bSplit").onclick = async () => {
 
 async function clipGoBack(){
   $("detail").hidden = true;
+  syncMini();
   /* A clip opened from inside a conversation goes back to the conversation,
      not to the top of the list the reader had already scrolled past. */
   if (cvCurrent){ openConversation(cvCurrent); return; }
@@ -5204,6 +5564,25 @@ function toggleBl(){
 blmode.onclick = toggleBl;
 blmode.onkeydown = e => { if (e.key === " " || e.key === "Enter"){ e.preventDefault(); toggleBl(); } };
 vad.onkeydown = e => { if (e.key === " " || e.key === "Enter") { e.preventDefault(); toggleVad(); } };
+
+/* ---- startup: the address bar ----
+   Runs last, because it mirrors variables declared throughout the script:
+   the search, the filters, the picked day. A hash typed by hand, or a
+   bookmark opened in place, re-applies without a reload; edits the page
+   writes itself are ignored -- lastHashWritten tells the difference, so the
+   listener cannot loop against syncHash. */
+let lastHashWritten = location.hash;
+addEventListener("hashchange", () => {
+  if (location.hash === lastHashWritten) return;
+  lastHashWritten = location.hash;
+  applyHashState();
+  if (currentTab === "rec" && !$("detail").hidden) return;
+  if (currentTab === "rec") loadClips();
+});
+applyHashState();
+
+
+
 
 </script>
 </body>
