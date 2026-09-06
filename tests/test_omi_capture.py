@@ -264,3 +264,68 @@ def test_stopping_reaches_the_capture_loop():
 
 def test_the_unit_allows_time_to_finish_the_clip():
     assert "TimeoutStopSec" in read_file("host/omid.service")
+
+
+# ------------------------------------------------ what changes while it runs
+def test_the_battery_is_re_read_while_it_records():
+    """A reading taken once a session is not a reading.
+
+    read_stats() runs when the link opens and the same dict is republished
+    for as long as the link holds, so the panel showed 100% for hours while
+    the cell drained. Anything that changes has to be asked again.
+    """
+    import asyncio
+
+    class FakeClient:
+        """Answers the three volatile characteristics and nothing else."""
+        def __init__(self, pct):
+            self.pct, self.reads = pct, []
+
+        async def read_gatt_char(self, uuid):
+            self.reads.append(uuid)
+            if uuid == oc.BATTERY:
+                return bytes([self.pct])
+            if uuid == oc.OMI_CHARGING:
+                return bytes([0])
+            if uuid == oc.OMI_TIME_READ:
+                return (1788700000).to_bytes(4, "little")
+            raise RuntimeError("not a volatile characteristic")
+
+    c = FakeClient(61)
+    out = asyncio.run(oc.read_volatile(c))
+    assert out["battery"] == 61
+    assert out["charging"] is False
+    assert out["device_epoch"] == 1788700000
+    # Stamped, so a reader comparing the clock measures drift and not the age
+    # of the reading.
+    assert "read_at" in out
+
+    # Deliberately short: every read competes with the audio notifications on
+    # the same radio, so the static fields are not asked again.
+    assert oc.MODEL not in c.reads and oc.FIRMWARE not in c.reads
+
+
+def test_a_failed_stats_read_is_not_an_error():
+    # It must never be the reason a recording stops.
+    import asyncio
+
+    class Broken:
+        async def read_gatt_char(self, uuid):
+            raise RuntimeError("device went away")
+
+    assert asyncio.run(oc.read_volatile(Broken())) == {}
+
+
+def test_the_recorder_offers_the_fresh_readings_to_its_caller():
+    # The radio is exclusive: the streaming loop is the only thing holding
+    # the device, so it is the only thing that can ask it anything.
+    import inspect
+    sig = inspect.signature(oc.capture)
+    assert "on_stats" in sig.parameters
+    assert sig.parameters["stats_every"].default > 0
+
+
+def test_the_daemon_keeps_its_published_battery_current():
+    # Otherwise the fresh reading is taken and then thrown away.
+    src = read_file("host/omid.py")
+    assert "on_stats=stats.update" in src

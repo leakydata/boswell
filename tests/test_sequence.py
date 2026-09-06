@@ -385,3 +385,66 @@ def test_conversations_are_newest_first_across_devices():
     assert [c["clips"][0] for c in convs] == ["m.wav", "a.wav", "z.wav"], (
         "conversations listed in device order instead of newest first: "
         + str([c["clips"][0] for c in convs]))
+
+
+# -------------------------------------------- a clip always says who heard it
+def _times_writer(tmp, anchored):
+    """The real _write_times, on an object carrying only what it touches."""
+    import server
+
+    class Fake:
+        state = {"device_address": "D9:66:CF:BB:58:A4", "boot_id": 7}
+
+        def _wall(self, t_ms):
+            # The anchor comes from the first LIVE frame; a drain that starts
+            # before one arrives has none, which is the case under test.
+            if t_ms is None or not anchored:
+                return None
+            return 1788700000.0 + t_ms / 1000.0
+
+    Fake._write_times = server.Device._write_times
+    server.TIMES = os.path.join(tmp, "times")
+    return Fake()
+
+
+def test_a_recovered_clip_is_attributed_even_with_no_clock_anchor():
+    """Writing nothing threw away the recorder, not just the timestamp.
+
+    The device-clock anchor is taken from the first live frame, so a device
+    that reconnects holding a backlog and drains it before sending one has no
+    anchor -- and with catch-up playback off that is every clip of the drain.
+    _write_times returned early, so 51 clips in two hours reached the archive
+    with no times record at all: no capture time, and no recorder either.
+    Which device heard it is not a guess and must survive.
+    """
+    tmp = tempfile.mkdtemp()
+    dev = _times_writer(tmp, anchored=False)
+    path = os.path.join(tmp, "recovered_1788723638.wav")
+    open(path, "wb").close()
+
+    dev._write_times(path, None, None, "flash", 30.0, fallback_end=1788723668.0)
+
+    rec = json.load(open(os.path.join(tmp, "times",
+                                      "recovered_1788723638.wav.json")))
+    assert rec["device_id"] == "d966cfbb58a4", "the recorder was lost"
+    assert rec["source"] == "flash"
+    # Placed by arrival, and said to be a placement rather than a fact.
+    assert rec["time_known"] is False
+    assert rec["ended"] == 1788723668.0
+    assert abs(rec["started"] - (1788723668.0 - 30.0)) < 0.01
+
+
+def test_a_clip_with_a_clock_anchor_still_dates_itself_from_the_device():
+    # The fallback must not swallow the case it was added beside.
+    tmp = tempfile.mkdtemp()
+    dev = _times_writer(tmp, anchored=True)
+    path = os.path.join(tmp, "clip_1788700100.wav")
+    open(path, "wb").close()
+
+    dev._write_times(path, 100_000, 130_000, "live", 30.0)
+
+    rec = json.load(open(os.path.join(tmp, "times", "clip_1788700100.wav.json")))
+    assert rec["time_known"] is True
+    assert rec["started"] == 1788700100.0
+    assert rec["ended"] == 1788700130.0
+    assert rec["device_id"] == "d966cfbb58a4"

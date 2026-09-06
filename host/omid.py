@@ -143,7 +143,13 @@ async def one_session(address, quiet=False):
     try:
         clipper = await omi_capture.capture(address, quiet=quiet,
                                             on_progress=beat.update,
-                                            should_stop=lambda: stopping)
+                                            should_stop=lambda: stopping,
+                                            # Merged into the dict the
+                                            # heartbeat already publishes, so
+                                            # the next beat carries the new
+                                            # battery without another path
+                                            # through the status file.
+                                            on_stats=stats.update)
     finally:
         stop.set()
         await pulse

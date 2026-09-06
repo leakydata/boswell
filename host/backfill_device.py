@@ -3,6 +3,7 @@
 
     uv run host/backfill_device.py --device d966cfbb58a4          # dry run
     uv run host/backfill_device.py --device d966cfbb58a4 --write
+    uv run host/backfill_device.py --device d966cfbb58a4 --missing --write
 
 Clips written before times records carried a device id have none, and
 de-duplication reads a missing id as "could be any recorder". That was the
@@ -15,6 +16,13 @@ field is the point. A recorder that stamped its own name into a file is not
 the same kind of fact as a person concluding afterwards which device it must
 have been, and an archive that cannot tell those apart has quietly lost the
 ability to say how it knows anything.
+
+`--missing` handles the worse case: a clip with no times record at all. The
+device-clock anchor is taken from the first live frame, so a recorder that
+reconnected holding a backlog and drained it before sending one had no
+anchor, and the writer returned without writing anything -- losing which
+device heard the audio along with when. Those clips can only be placed by
+when they reached the disk, which is what `time_known: false` says.
 
 It matters here specifically: the board this project runs on was replaced
 partway through, so some of these clips came from a different physical device
@@ -45,6 +53,72 @@ def load(path):
         return None
 
 
+def write_missing(args, times):
+    """Create a record for every clip that has none.
+
+    Placed by the file's mtime, which for every path in this project is the
+    end of the audio, so the start is derived back from the duration. That is
+    a placement and not a date, and `time_known: false` is how the archive
+    says so -- the same word it uses for a clip recorded before anything told
+    the device the time.
+    """
+    import soundfile as sf
+
+    todo = []
+    for f in sorted(os.listdir(clipwriter.DATA)):
+        if not f.endswith(".wav"):
+            continue
+        if os.path.exists(os.path.join(times, f + ".json")):
+            continue
+        todo.append(f)
+
+    print(f"{len(todo)} clip(s) with no times record at all")
+    if not todo:
+        return 0
+    if not args.write:
+        print("\ndry run -- pass --write to make the change")
+        for f in todo[:5]:
+            print(f"  would write a record for {f}")
+        if len(todo) > 5:
+            print(f"  ... and {len(todo) - 5} more")
+        return 0
+
+    done = failed = 0
+    for f in todo:
+        wav = os.path.join(clipwriter.DATA, f)
+        try:
+            seconds = round(sf.info(wav).duration, 3)
+            ended = os.path.getmtime(wav)
+        except Exception as e:
+            print(f"  {f}: {e}")
+            failed += 1
+            continue
+        rec = {
+            "name": f,
+            "started": round(ended - seconds, 3),
+            "ended": round(ended, 3),
+            "seconds": seconds,
+            # How it reached the archive, from the name the writer gave it.
+            "source": "flash" if f.startswith("recovered_") else "live",
+            "device_ms": [None, None],
+            "boot_id": None,
+            "device_id": args.device,
+            # Concluded afterwards, not stamped by the recorder.
+            "device_id_inferred": True,
+            # Placed by arrival. Nothing here dates the audio.
+            "time_known": False,
+        }
+        try:
+            atomicio.write_json(os.path.join(times, f + ".json"), rec)
+            done += 1
+        except Exception as e:
+            print(f"  {f}: {e}")
+            failed += 1
+
+    print(f"{done} record(s) written for {args.device}, {failed} failed")
+    return 1 if failed else 0
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--device", required=True,
@@ -53,12 +127,17 @@ def main():
                     help="actually change the records")
     ap.add_argument("--before", type=float,
                     help="only clips started before this epoch")
+    ap.add_argument("--missing", action="store_true",
+                    help="write records for clips that have none at all")
     args = ap.parse_args()
 
     times = clipwriter.TIMES
     if not os.path.isdir(times):
         print("no times records to work on")
         return 1
+
+    if args.missing:
+        return write_missing(args, times)
 
     todo, skipped = [], 0
     for name in sorted(os.listdir(times)):

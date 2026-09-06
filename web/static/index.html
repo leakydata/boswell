@@ -768,6 +768,10 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
 
 /* ---- clips whose time nobody knows ---- */
 .lbl.unk{background:color-mix(in srgb,var(--warn) 16%,transparent);color:var(--warn)}
+/* Which recorder a row came from. The filename prefix says how the audio
+   arrived -- live, recovered, off the card -- which is not the same question
+   and made every Boswell clip look alike. */
+.lbl.dev{background:var(--sunk);color:var(--muted);border:1px solid var(--rule)}
 /* The phone header is several rows tall; a day header pinned under it would
    sit behind the header's background and vanish. */
 @media(max-width:900px){.daygroup{position:static}}
@@ -1225,6 +1229,7 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
         <button type="button" id="dConv" class="convjump" hidden>Open conversation</button>
       </div>
       <h2 id="dTitle">Transcript</h2>
+      <div class="addr" id="dFile"></div>
       <audio id="player" preload="metadata"></audio>
       <div class="wave">
         <canvas id="wcanvas" tabindex="0" role="slider" aria-label="Seek within recording"
@@ -1755,6 +1760,21 @@ const recorders = {
             backlog: 0},
   omi:     {name: "Omi", connected: false, capturing: false, backlog: 0},
 };
+
+/* Recorder id -> the name to show on a row. Filled from the archive by
+   fillDeviceFilter(), so a row and the filter above it always use the same
+   word for the same device. */
+const deviceNames = {};
+
+/* The chip a row wears to say which recorder made it. Empty when there is
+   nothing to say: a clip with no recorder recorded is not a fault, it is
+   everything from before device ids existed, and marking thousands of rows
+   "unknown" would be noise rather than information. */
+function deviceChip(id){
+  if (!id) return "";
+  const name = deviceNames[id] || id;
+  return `<span class="lbl dev" title="recorded by ${esc(name)}">${esc(name)}</span>`;
+}
 
 /* The recorder filter as a query fragment, empty when nothing is selected.
    One place, so a new call site cannot quietly ignore the filter. */
@@ -3532,6 +3552,7 @@ async function fillDeviceFilter(){
   };
   add("", "Any recorder");
   for (const r of rows){
+    if (r.device_id) deviceNames[r.device_id] = r.name || r.device_id;
     // The archive already reports the clips that name no recorder as a row
     // of their own; "none" is what the API calls that group.
     add(r.device_id || "none", `${r.name || r.device_id} · ${r.clips}`);
@@ -3908,7 +3929,8 @@ async function loadConversations(el){
          <span class="cw">${fmtClock(c.start)}–${fmtClock(c.end)}${people.length ? " · " + esc(people.join(", ")) : ""}</span>
          <span class="cmeta"><span class="cm">${fmtDur(c.seconds)} · ${n} clip${n===1?"":"s"}${
              typeof c.with_speech === "number" && c.with_speech < n
-               ? ` · ${n - c.with_speech} silent` : ""}</span>${labelBadge(c.speakers)}</span>
+               ? ` · ${n - c.with_speech} silent` : ""}</span>${
+             deviceChip(c.device_id)}${labelBadge(c.speakers)}</span>
        </div>` +
       (c.preview ? `<div class="cpv">${esc(c.preview)}</div>` : "") +
       `<div class="convacts"></div><div class="parts" hidden></div>`;
@@ -4535,7 +4557,7 @@ async function loadClips(){
         ${c.has_speech === false && (c.voice_tag || 0) >= MISSED_VOICE_FLOOR
           ? `<span class="cd" title="how sure the sound tagger was that somebody was audible">voice ${c.voice_tag.toFixed(2)}</span>`
           : ""}
-        ${labelBadge(c.speakers)}${c.time_known === false
+        ${deviceChip(c.device_id)}${labelBadge(c.speakers)}${c.time_known === false
           ? `<span class="lbl unk" title="Recorded before the device knew `
             + `what time it was. Placed by when it reached the computer, not `
             + `when it happened.">time unknown</span>`
@@ -4572,8 +4594,28 @@ async function openClip(name){
   miniDismissed = false;
   $("clipList").hidden = true;
   $("detail").hidden = false;
+  /* Titled by when it was recorded and which recorder heard it, not by the
+     filename. A filename's prefix says how the audio arrived -- live,
+     recovered, off the card -- which is a different question, and it made
+     every clip from one device look like every other. The filename is still
+     there, in the line under it, because it is what you need when something
+     has to be found on disk. */
   $("dTitle").textContent = name;
   $("dTitleTop").textContent = name;
+  $("dFile").textContent = name;
+  try{
+    const m = await (await fetch("/api/clip/" + encodeURIComponent(name) + "/meta")).json();
+    const when = m.time_known === false || !m.started
+        ? new Date(m.modified * 1000).toLocaleString() + " — time unknown"
+        : new Date(m.started * 1000).toLocaleString();
+    // Recorder first, then when, then any caveat about the when -- so the
+    // qualifier sits next to the thing it qualifies instead of trailing the
+    // whole title.
+    const who = m.device_id ? (deviceNames[m.device_id] || m.device_id) : "";
+    const title = who ? `${who} · ${when}` : when;
+    $("dTitle").textContent = title;
+    $("dTitleTop").textContent = title;
+  }catch(e){ /* the filename is a fine title when the row cannot be read */ }
   const pl = $("player");
   pl.pause();
   pl.src = "/api/audio/" + encodeURIComponent(name);

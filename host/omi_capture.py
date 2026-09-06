@@ -113,6 +113,38 @@ async def read_stats(client):
     return out
 
 
+async def read_volatile(client):
+    """The facts about an Omi that change while it is running.
+
+    read_stats() is a one-pass read of everything, and most of what it
+    returns -- model, firmware, maker -- is the same on the last day of the
+    device's life as on the first. Battery is not: it is read once when a
+    session opens and then shown unchanged for as long as the link holds,
+    which is how the panel came to say 100% for hours while the cell drained.
+
+    So this is the short list worth asking again, and it is deliberately
+    short: every read competes with the audio notifications on the same
+    radio.
+    """
+    out = {}
+
+    async def get(uuid, name, fn):
+        try:
+            out[name] = fn(await client.read_gatt_char(uuid))
+        except Exception:
+            pass                 # never the reason a recording stops
+
+    await get(BATTERY,       "battery",      lambda v: v[0] if v else None)
+    await get(OMI_CHARGING,  "charging",     lambda v: bool(v[0]) if v else None)
+    await get(OMI_TIME_READ, "device_epoch",
+              lambda v: int.from_bytes(v[:4], "little") if len(v) >= 4 else None)
+    if out:
+        # When this reading was taken, so a reader comparing the device clock
+        # against something measures drift rather than the age of the reading.
+        out["read_at"] = time.time()
+    return out
+
+
 async def set_clock(client, epoch=None):
     """Tell it the time.
 
@@ -238,8 +270,13 @@ async def find_omi(timeout=15.0):
 
 
 async def capture(address, seconds=None, quiet=False, on_progress=None,
-                  should_stop=None):
-    """Stream from one Omi until interrupted, filing clips as it goes."""
+                  should_stop=None, on_stats=None, stats_every=60):
+    """Stream from one Omi until interrupted, filing clips as it goes.
+
+    `on_stats` is handed the readings that change while it runs -- battery
+    above all -- every `stats_every` seconds, because the radio is exclusive
+    and this loop is the only thing holding the device.
+    """
     device_id = norm_id(address)
     clipper = Clipper(device_id)
     reboots = [0]
@@ -283,6 +320,7 @@ async def capture(address, seconds=None, quiet=False, on_progress=None,
             print(f"recording from {address} -- ctrl-c to stop")
 
         started = time.time()
+        last_stats = 0.0
         try:
             while client.is_connected:
                 await asyncio.sleep(1.0)
@@ -300,6 +338,14 @@ async def capture(address, seconds=None, quiet=False, on_progress=None,
                     # rather than only that it once began.
                     on_progress({"clips": clipper.clips,
                                  "frames": clipper.frames})
+                if on_stats and time.time() - last_stats >= stats_every:
+                    last_stats = time.time()
+                    try:
+                        fresh = await read_volatile(client)
+                    except Exception:
+                        fresh = {}   # a stats read never stops a recording
+                    if fresh:
+                        on_stats(fresh)
                 if not quiet and clipper.frames and clipper.frames % 500 == 0:
                     print(f"  {clipper.frames} frames, {clipper.clips} clip(s)")
         finally:

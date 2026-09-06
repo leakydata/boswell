@@ -516,8 +516,11 @@ class Device:
             os.utime(path, (end, end))
         except OSError:
             pass
+        # `end` is what this path already stamped on the file, so a clip with
+        # no clock anchor keeps one arrival time rather than two that differ
+        # by however long the write took.
         self._write_times(path, self._rec_tms_first, self._rec_tms_last,
-                          "flash", secs)
+                          "flash", secs, fallback_end=end)
         self._rec_tms_first = self._rec_tms_last = None
         return path
 
@@ -643,7 +646,8 @@ class Device:
             return None
         return self._clock_host - (self._clock_dev - t_ms) / 1000.0
 
-    def _write_times(self, path, first_ms, last_ms, source, seconds):
+    def _write_times(self, path, first_ms, last_ms, source, seconds,
+                     fallback_end=None):
         """Record when the audio happened, according to the device.
 
         Written beside the clip so ordering never has to be reconstructed
@@ -652,8 +656,22 @@ class Device:
         """
         started = self._wall(first_ms)
         ended = self._wall(last_ms)
-        if started is None:
-            return
+        time_known = started is not None
+        if not time_known:
+            # No anchor between the device's counter and ours yet. The anchor
+            # is taken from the first LIVE frame, so a device that reconnects
+            # holding a backlog and drains it before sending one has no
+            # anchor -- and with catch-up playback off, that is every clip of
+            # the drain. Fifty-one clips in two hours came out this way.
+            #
+            # This used to return without writing anything at all, which threw
+            # away the device id and the source along with the timestamp: the
+            # audio landed in the archive attributed to no recorder, which is
+            # not a thing any later pass can work out. Placement by arrival is
+            # a guess and is marked as one; which recorder heard it is not a
+            # guess and is recorded either way.
+            ended = fallback_end if fallback_end is not None else time.time()
+            started = ended - seconds
         if ended is None or ended < started:
             ended = started + seconds
         # A stale device counter on one frame can claim a span the audio
@@ -678,7 +696,10 @@ class Device:
                # Which recorder this came from. Free on the live path -- it is
                # the address we connected to -- and the reason the card file
                # carries it too, since a docked card cannot say.
-               "device_id": _norm_device_id(self.state.get("device_address"))}
+               "device_id": _norm_device_id(self.state.get("device_address")),
+               # False when the device's counter was never tied to our clock,
+               # so the figures above place the clip rather than date it.
+               "time_known": bool(time_known)}
         try:
             atomicio.write_json(os.path.join(TIMES, os.path.basename(path) + ".json"), rec)
         except Exception:
@@ -2839,6 +2860,21 @@ async def api_transcribe(name: str, force: bool = False):
         # diarization pass and can overwrite an edit with a re-run.
         return {"queued": name, "already_queued": True}
     return {"queued": name}
+
+
+@app.get("/api/clip/{name}/meta")
+async def api_clip_meta(name: str):
+    """One clip's index row: which recorder, when, how long.
+
+    The detail view had only the filename to title itself with, and a
+    filename says how the audio arrived -- live, recovered, off the card --
+    which is not the same question as which device recorded it. Every clip
+    from one recorder looked alike.
+    """
+    rows = index_db.clips_by_name([name])
+    if name not in rows:
+        raise HTTPException(404, "no such clip")
+    return rows[name]
 
 
 @app.get("/api/transcript/{name}")

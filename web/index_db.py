@@ -448,7 +448,8 @@ def clips_by_name(names):
                 "speakers": json.loads(r["speakers"] or "[]"),
                 "preview": r["preview"] or "",
                 "started": r["started"],
-                "time_known": None if r["time_known"] is None else bool(r["time_known"])}
+                "time_known": None if r["time_known"] is None else bool(r["time_known"]),
+                "device_id": r["device_id"]}
     return out
 
 
