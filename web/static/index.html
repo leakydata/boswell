@@ -627,6 +627,39 @@ details .inner{padding:2px 12px 12px}
   background:var(--surface)}
 .kcard.kbd-target{border-color:var(--accent)}
 
+/* ---- playback speed ---- */
+select.speed{min-height:0;padding:5px 26px 5px 9px;font-size:12.5px;
+  font-family:var(--mono);flex:0 0 auto;border-radius:6px;
+  background-image:none;appearance:auto;-webkit-appearance:auto}
+
+/* ---- hover time on the waveform ---- */
+.wavetip{position:absolute;top:6px;transform:translateX(-50%);
+  background:var(--surface);border:1px solid var(--rule);border-radius:5px;
+  font-family:var(--mono);font-size:11px;color:var(--ink);padding:2px 7px;
+  pointer-events:none;white-space:nowrap}
+.wavetip[hidden]{display:none}
+
+/* ---- the line being heard ---- */
+.seg.nowline{background:color-mix(in srgb,var(--accent) 8%,transparent);
+  border-radius:6px;transition:background .4s}
+.seg.nowline .txt{border-bottom-color:transparent}
+
+/* ---- the pulse ---- */
+.pulsecard{margin-bottom:12px}
+.pulsecard > summary{padding:12px 16px;font-size:14.5px}
+.pulsecard .inner{padding:2px 16px 14px}
+.pulsesum{font-family:var(--mono);font-size:12px;color:var(--muted);margin-bottom:10px}
+.pulsechart{position:relative;background:var(--sunk);border:1px solid var(--rule);
+  border-radius:8px;padding:6px 4px 2px}
+.pulsechart canvas{width:100%;height:120px;display:block;cursor:pointer}
+.pulselab{margin-top:12px}
+.labbar{display:flex;gap:2px;height:10px;border-radius:5px;overflow:hidden;
+  background:var(--sunk);margin-bottom:6px}
+.labbar i{display:block;height:100%;min-width:2px}
+.labbar .ok{background:color-mix(in srgb,var(--ok) 70%,transparent)}
+.labbar .warn{background:color-mix(in srgb,var(--warn) 70%,transparent)}
+.labbar .none{background:color-mix(in srgb,var(--accent) 60%,transparent)}
+
 /* ---- battery sparkline ---- */
 .battspark{margin:10px 0 0}
 .battspark[hidden]{display:none}
@@ -986,6 +1019,21 @@ details .inner{padding:2px 12px 12px}
       <button type="button" id="bRefresh">Refresh</button>
       <span class="val" id="qdepth"></span>
     </div>
+    <!-- The pulse: the archive's shape, and the work left in it. Bars are
+           capture days; click one to live in it. -->
+    <details class="card pulsecard" id="pulseCard">
+      <summary>Pulse — the last 30 days</summary>
+      <div class="inner">
+        <div class="pulsesum" id="pulseSum"></div>
+        <div class="pulsechart">
+          <canvas id="pulseCanvas" height="120" aria-label="Hours recorded per day, last 30 days"
+                  role="img"></canvas>
+          <div id="pulseTip" class="wavetip" hidden></div>
+        </div>
+        <div class="pulselab" id="pulseLab"></div>
+      </div>
+    </details>
+
     <!-- Recent capture days. One tap answers "what happened on Thursday"
          without reading the date filter as prose. -->
     <div id="dayStrip" class="daystrip" hidden aria-label="Jump to a capture day"></div>
@@ -1043,9 +1091,17 @@ details .inner{padding:2px 12px 12px}
       <div class="wave">
         <canvas id="wcanvas" tabindex="0" role="slider" aria-label="Seek within recording"
                 aria-valuemin="0" aria-valuenow="0"></canvas>
+        <div id="waveTip" class="wavetip" hidden></div>
         <div class="transport">
           <button type="button" id="play" aria-label="Play"><svg id="playIcon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M8 5v14l11-7z"/></svg></button>
           <div class="time"><b id="tNow">0:00</b><span id="tDur"> / 0:00</span></div>
+          <select class="speed" id="speedSel" aria-label="Playback speed">
+            <option value="0.75">0.75×</option>
+            <option value="1" selected>1×</option>
+            <option value="1.25">1.25×</option>
+            <option value="1.5">1.5×</option>
+            <option value="2">2×</option>
+          </select>
           <div class="legend">
             <span><i style="background:var(--accent)"></i><span id="legVoice">speech</span></span>
             <span><i style="background:var(--faint)"></i>not voice</span>
@@ -1318,6 +1374,8 @@ details .inner{padding:2px 12px 12px}
 
 
 
+
+
 const $ = id => document.getElementById(id);
 let ws, armed = false, connected = false, drainPeak = 0;
 
@@ -1463,6 +1521,10 @@ function showTokenGate(){
 
 function paint(s){
   connected = s.connected; armed = s.armed;
+  /* The tab title carries the standing question: among eleven open tabs,
+     which one is the recorder and is it doing its job. */
+  document.title = !s.connected ? (s.scanning ? "… Boswell" : "Boswell")
+                 : s.armed ? "● Boswell" : "○ Boswell";
   const dot = $("dot");
   /* One predicate for "there is a backlog", used by the dot, the status line
      and the meter below.
@@ -1931,7 +1993,7 @@ function showTab(which){
     $(t).tabIndex = on ? 0 : -1;
     $(v).hidden = !on;
   }
-  if (which === "rec") loadClips();
+  if (which === "rec"){ loadClips(); loadPulse(); if ($("pulseCard").open) drawPulse(); }
   if (which === "dev") loadBattery();
   if (which === "ppl"){ loadPeople(); loadVocab(); loadVoices(); pollBulk(); }
   if (which === "notes"){ loadAgent(); loadItems(); loadTopics(); loadDuplicates(); }
@@ -2715,6 +2777,168 @@ addEventListener("keydown", e => {
   if (a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) return;
   e.preventDefault();
   $("q").focus();
+});
+
+/* ---- the pulse ----
+   An archive you cannot see the shape of feels like a hoard. This is one
+   canvas of the last thirty days, drawn from the same index the list uses,
+   where every bar is a day you can click into, and one bar of remaining
+   work shows how much of the archive still needs a name. */
+let pulseClips = null, pulseAt = 0, pulseBars = [];
+
+function pulseWanted(){
+  try{ return (localStorage.getItem("boswell_pulse") ?? "open") === "open"; }
+  catch(e){ return true; }
+}
+
+async function loadPulse(force){
+  if (!pulseWanted()) return;
+  const now = Date.now();
+  if (!force && pulseClips && now - pulseAt < 60000) return;
+  let all;
+  try{ all = await (await fetch("/api/clips?limit=" + CLIP_FETCH_LIMIT)).json(); }
+  catch(e){ return; }
+  pulseClips = all;
+  pulseAt = now;
+  drawPulse();
+}
+
+function drawPulse(){
+  const cv = $("pulseCanvas");
+  if (!cv || !pulseClips) return;
+  const dpr = window.devicePixelRatio || 1;
+  const w = cv.clientWidth || 600, h = cv.clientHeight || 120;
+  cv.width = w * dpr; cv.height = h * dpr;
+  const g = cv.getContext("2d");
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, w, h);
+
+  /* One bucket per capture day, oldest thirty on the left. A day with no
+     recording is drawn as a baseline tick, not skipped: the gaps are part
+     of the shape. */
+  const days = new Map();
+  for (const c of pulseClips){
+    const t = capTime(c);
+    if (t == null) continue;
+    const k = dayKey(t);
+    const d = days.get(k) || {k, t, secs: 0};
+    d.secs += c.seconds || 0;
+    days.set(k, d);
+  }
+  /* Thirty columns, always: a day the device was off is drawn as a tick
+     at the baseline, not skipped -- the gaps are part of the shape. */
+  const list = [];
+  for (let i = 29; i >= 0; i--){
+    const dt = new Date(); dt.setDate(dt.getDate() - i);
+    const k = dt.getFullYear() + "-" + String(dt.getMonth() + 1).padStart(2, "0")
+            + "-" + String(dt.getDate()).padStart(2, "0");
+    list.push(days.get(k) || {k, t: dt.getTime() / 1000, secs: 0});
+  }
+  pulseBars = list;
+  const max = Math.max(0.05, ...list.map(d => d.secs));
+  const bw = w / 30, gap = Math.min(4, bw * 0.25);
+  const base = h - 18;
+  g.font = "10px " + cssVar("--mono").split(",")[0].replace(/"/g, "");
+  list.forEach((d, i) => {
+    const x = i * bw + (bw - Math.min(bw - 2, 26)) / 2;
+    const bwidth = Math.min(bw - 2, 26);
+    const bh = Math.max(2, (d.secs / max) * (base - 8));
+    const isToday = d.k === dayKey(Date.now() / 1000);
+    g.fillStyle = isToday ? cssVar("--accent") : "color-mix(in srgb, " + cssVar("--accent") + " 55%, transparent)";
+    g.beginPath();
+    const r = Math.min(3, bwidth / 2);
+    g.roundRect(x, base - bh, bwidth, bh, [r, r, 0, 0]);
+    g.fill();
+    if (i % 5 === 0 || i === list.length - 1){
+      g.fillStyle = cssVar("--faint");
+      g.textAlign = "center";
+      const lab = new Date(d.t * 1000).toLocaleDateString([], {day: "numeric", month: "short"});
+      g.fillText(lab, x + bwidth / 2, h - 4);
+    }
+  });
+  /* The hour gridline: what a full day of the device being on looks like. */
+  g.strokeStyle = cssVar("--rule");
+  g.setLineDash([3, 4]);
+  g.beginPath(); g.moveTo(0, base); g.lineTo(w, base); g.stroke();
+  g.setLineDash([]);
+
+  const total = list.reduce((a, d) => a + d.secs, 0);
+  const active = list.filter(d => d.secs > 60).length;
+  $("pulseSum").textContent =
+    `${fmtDur(total)} captured across ${active} of the last 30 days · `
+    + `peak day ${fmtDur(Math.max(...list.map(d => d.secs)))}`;
+
+  /* The work left, as one bar with three colours and the counts beside it. */
+  let named = 0, some = 0, none = 0;
+  for (const c of pulseClips){
+    const st = labelState(c.speakers);
+    if (st === "all") named++;
+    else if (st === "some") some++;
+    else if (st === "none") none++;
+  }
+  const work = named + some + none;
+  const lab = $("pulseLab");
+  lab.replaceChildren();
+  if (!work){
+    const s = document.createElement("span");
+    s.className = "ssub";
+    s.textContent = "Nothing with a voice in it yet — labelling starts with the first conversation.";
+    lab.appendChild(s);
+    return;
+  }
+  const bar = document.createElement("div");
+  bar.className = "labbar";
+  bar.title = `${named} fully named · ${some} part named · ${none} untouched`;
+  const seg = (cls, n) => {
+    const i = document.createElement("i");
+    i.className = cls;
+    i.style.flex = String(n);
+    return i;
+  };
+  if (named) bar.appendChild(seg("ok", named));
+  if (some) bar.appendChild(seg("warn", some));
+  if (none) bar.appendChild(seg("none", none));
+  const txt = document.createElement("span");
+  txt.className = "ssub";
+  txt.textContent = `labelling: ${named} named · ${some} part · ${none} untouched of ${work}`;
+  lab.append(bar, txt);
+}
+
+/* Bars are days; clicking one is the same gesture as picking it from the
+   strip, and the hover says which day you are over. */
+function pulseHit(e){
+  const cv = $("pulseCanvas");
+  const r = cv.getBoundingClientRect();
+  if (r.width < 10) return -1;             // hidden tab: no geometry to hit
+  const i = Math.floor((e.clientX - r.left) / (r.width / 30));
+  return Number.isFinite(i) && i >= 0 && i < pulseBars.length ? i : -1;
+}
+on("pulseCanvas", "mousemove", e => {
+  const tip = $("pulseTip");
+  const i = pulseHit(e);
+  if (i < 0 || i >= pulseBars.length){ tip.hidden = true; return; }
+  const d = pulseBars[i];
+  tip.hidden = false;
+  tip.style.left = (e.clientX - e.currentTarget.getBoundingClientRect().left) + "px";
+  tip.textContent = `${fmtDay(d.t)} · ${fmtDur(d.secs)}`;
+});
+on("pulseCanvas", "mouseleave", () => { $("pulseTip").hidden = true; });
+on("pulseCanvas", "click", e => {
+  const i = pulseHit(e);
+  if (i < 0 || i >= pulseBars.length) return;
+  const d = pulseBars[i];
+  dayFilter = dayFilter === d.k ? "" : d.k;
+  if (dayFilter){ dateFilter = "all"; $("fDate").value = "all"; }
+  resetPages();
+  loadClips();
+});
+on("pulseCard", "toggle", () => {
+  try{ localStorage.setItem("boswell_pulse",
+    $("pulseCard").open ? "open" : "closed"); }catch(e){}
+  if ($("pulseCard").open){
+    loadPulse();
+    setTimeout(() => drawPulse(), 60);   // the canvas has its width only once shown
+  }
 });
 
 /* ---- keyboard for the voice queue ----
@@ -3955,6 +4179,7 @@ async function convOf(name){
 
 async function openClip(name){
   current = name;
+  followIdx = -1;
   miniDismissed = false;
   $("clipList").hidden = true;
   $("detail").hidden = false;
@@ -4431,6 +4656,7 @@ async function cvAdvance(i){
      nothing to wait for here. */
   const needSrc = !p.src.endsWith(encodeURIComponent(seg.clip));
   if (needSrc) p.src = "/api/audio/" + encodeURIComponent(seg.clip);
+  p.playbackRate = parseFloat($("speedSel").value) || 1;
   p.currentTime = seg.start;
   p.play().catch(() => {});
 }
@@ -4601,6 +4827,29 @@ $("cvTranscribe").onclick = async () => {
   $("cvMsg").textContent = "queued — this page refreshes when they finish";
 };
 
+/* ---- the transcript follows the audio ----
+   A four-hundred-line transcript read alongside playback loses its place
+   the moment you look away. The line being heard marks itself and holds
+   the centre. */
+let followIdx = -1;
+function followTranscript(){
+  const p = $("player");
+  if ($("detail").hidden || p.paused || !waveSegs.length){ return; }
+  const t = p.currentTime;
+  let idx = -1;
+  for (let i = 0; i < waveSegs.length; i++){
+    if (t >= waveSegs[i].start) idx = i;
+    else break;
+  }
+  if (idx === followIdx) return;
+  followIdx = idx;
+  const segs = $("dSegs").children;
+  if (idx < 0 || idx >= segs.length) return;
+  for (const el of segs) el.classList.remove("nowline");
+  segs[idx].classList.add("nowline");
+  segs[idx].scrollIntoView({block: "center", behavior: "instant"});
+}
+
 /* ---- mini player ----
    Going back to the list used to strand the audio: it kept playing with no
    control anywhere on screen, so the choice was silence or hunting for the
@@ -4753,7 +5002,24 @@ function syncTransport(){
   $("tDur").textContent = " / " + fmt(waveDur || p.duration || 0);
   drawWave();
   syncMini();
+  followTranscript();
 }
+
+/* Playback speed. Reviewing a transcribed archive is a listening task,
+   and 1.5x is the difference between twenty minutes and thirty. Applies to
+   both players, remembered between visits. */
+function applySpeed(){
+  let v = 1;
+  try{ v = parseFloat(localStorage.getItem("boswell_rate")) || 1; }catch(e){}
+  $("speedSel").value = String(v);
+  for (const p of [$("player"), $("cvPlayer")]) p.playbackRate = v;
+}
+on("speedSel", "change", () => {
+  const v = parseFloat($("speedSel").value) || 1;
+  try{ localStorage.setItem("boswell_rate", String(v)); }catch(e){}
+  for (const p of [$("player"), $("cvPlayer")]) p.playbackRate = v;
+});
+applySpeed();
 
 $("play").onclick = () => {
   const p = $("player");
@@ -4770,6 +5036,18 @@ $("wcanvas").onclick = e => {
   if (p.paused) p.play().catch(() => {});
   syncTransport();
 };
+
+/* Hover says where you are before you commit to a click. */
+$("wcanvas").addEventListener("mousemove", e => {
+  const tip = $("waveTip");
+  if (!waveDur){ tip.hidden = true; return; }
+  const r = $("wcanvas").getBoundingClientRect();
+  const frac = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
+  tip.hidden = false;
+  tip.style.left = (e.clientX - r.left) + "px";
+  tip.textContent = fmt(frac * waveDur);
+});
+$("wcanvas").addEventListener("mouseleave", () => { $("waveTip").hidden = true; });
 
 /* Arrow keys scrub, space toggles -- the waveform is the only seek control,
    so it cannot be pointer-only. */
@@ -5600,6 +5878,7 @@ let lastStateAt = 0;
 
 function linkLost(why){
   lastStateAt = 0;
+  document.title = "− Boswell";
   const cap = $("capState");
   cap.hidden = false;
   cap.querySelector("i").style.background = "var(--faint)";
@@ -5918,6 +6197,11 @@ applyHashState();
 syncFilterToggle();
 loadArchiveFoot();
 loadBattery();
+$("pulseCard").open = pulseWanted();
+if (pulseWanted()) loadPulse();
+addEventListener("resize", () => { if ($("pulseCard").open) drawPulse(); });
+
+
 
 
 
