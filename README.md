@@ -4,6 +4,43 @@
 
 No cloud. No account. No audio ever leaves your machine.
 
+**You do not have to build the hardware.** An [Omi](https://github.com/BasedHardware/omi)
+CV 1 works as a Boswell recorder on its own — pair it on the Device page and
+it records into the same archive, with the same transcription, the same
+speaker identity and the same search. See
+[Using an Omi](#using-an-omi-as-a-recorder). What this project builds is a
+recorder you can also make yourself; it is not a thing you must make first.
+
+Before anything else, check [what it runs on](#what-it-runs-on) — the
+transcription stack needs an NVIDIA GPU, and that is the real gate.
+
+---
+
+## What it runs on
+
+Measured on 2026-09-06, with `whisperx large-v3` at float16, the alignment
+model, pyannote diarization and the AST sound tagger all resident:
+
+| | |
+|---|---|
+| GPU | **NVIDIA, required.** `"cuda"` is hardcoded; there is no CPU or MPS path |
+| VRAM held | **7,460 MiB** by the server process |
+| Comfortable on | 12 GB and up |
+| Tight on | **8 GB** — an 8,192 MiB card has no room left once the desktop takes its share |
+| Will not run on | a Mac, or any box without a discrete NVIDIA card |
+
+To fit a smaller card, change the model in `web/pipeline.py`: `distil-large-v3`
+or `medium` instead of `large-v3`, and `compute_type="int8_float16"` instead of
+`"float16"`. Both cost some accuracy and neither has been measured here yet.
+
+One trap worth naming: a **GTX 1080 and other Pascal cards run fp16 at a
+fraction of fp32 speed**, so `float16` there is slow even where it fits. That
+is a compute limit, not a memory one, and no smaller model fixes it.
+
+If you have no NVIDIA GPU, the recorder still works — the firmware, the BLE
+capture and the archive have nothing to do with CUDA. It is transcription,
+diarization and sound tagging that stop.
+
 ---
 
 ## Why "Boswell"
@@ -113,7 +150,7 @@ with real conversations.
 | 6-axis IMU | LSM6DS3TR-C, on-board |
 | 2 MB QSPI flash | P25Q16H, on-board |
 | Charger | BQ25101 — **50 mA fast charge**, see notes |
-| Host | Any Linux box with a CUDA GPU |
+| Host | Linux with an NVIDIA GPU — see [what it runs on](#what-it-runs-on) |
 | BLE adapter | Bluetooth 4.0 is sufficient (see measurements) |
 
 Firmware uses **14% of flash and 10% of RAM**, so there is ample room for the
@@ -620,9 +657,31 @@ A local service that owns the Bluetooth link and serves the interface. It
 connects to the board on startup, so a restart resumes capture without
 intervention.
 
-**Device** — connection and capture state, input level, and the device's flash
-backlog with drain progress. Microphone gain and VAD are adjustable live over
-GATT, no reflash.
+**Device** — one panel per **paired recorder**, each with the same shape: a
+state, a battery, what it has heard. A panel exists because a recorder was
+paired, not because the code knows the make, so an Omi owner does not meet a
+page about a handmade board they will never have.
+
+*Recorders → Look for recorders* scans and pairs. The kind is worked out from
+what the device says about itself — an Omi by the service it carries, a
+Boswell by the name its firmware advertises — so you do not have to know which
+is which. **Forget** removes a recorder from the list and keeps every
+recording it made. The list seeds itself from the archive on first run, so an
+existing install already knows what it has.
+
+Everything that acts on one recorder says which: *Capture*, *Recordings on the
+device* and *Device settings* each carry the device's name. For the Boswell,
+microphone gain and VAD are adjustable live over GATT, no reflash; for the
+Omi, microphone gain and status-light brightness are written on the connection
+the daemon already holds, and the figure shown is read back off the device
+rather than assumed.
+
+The two differ in what they can offer for stored audio, and the interface says
+so rather than hiding it. A Boswell's storage card can be listed and one
+recording fetched. The Omi's storage is a ring of packets with no filenames,
+and reading advances the device's own read pointer, so it reports how much is
+waiting, how much it holds and how much was lost to overflow — and collects
+the lot automatically on reconnect.
 
 **Recordings** — grouped into conversations by default, because a 30-second
 clip is a storage unit and not a human one. Contiguous clips are gathered and a
@@ -1108,17 +1167,25 @@ Naming works at two levels, because misattribution has two different causes:
   diarized cluster, so enrolling from one misattributed line would teach the
   wrong voice.
 
-## Using an Omi as a second recorder
+## Using an Omi as a recorder
 
 An [Omi](https://github.com/BasedHardware/omi) CV 1 works as a Boswell
-recorder, alongside or instead of the device this project builds. It
+recorder — **on its own, or alongside the device this project builds**. If you
+own one already, that is the whole hardware requirement. It
 connects with no pairing and no authentication, its GATT table matches their
 open-source firmware, and its Opus is byte-identical to this project's -- 20
 ms frames, 16 kHz, 32 kbps, CELT restricted low delay -- so the audio needs
 no translation. Their codec 21 means Opus at 20 ms; 20 is the devkit's 10 ms.
 
+Pair it on the **Device** page: *Recorders → Look for recorders → Pair*. The
+device has to be advertising, so disconnect it from the Omi phone app first —
+only one connection exists at a time. Everything after that is automatic.
+
+From a terminal, if you prefer:
+
     uv run host/omi_capture.py --scan       # find one
     uv run host/omi_sync.py --info          # what it has stored
+    uv run host/omi_sync.py --discard       # drop what it holds, unread
     uv run host/omid.py                     # sync, then stream, and keep going
 
 `omid` is the daemon, and `host/omid.service` runs it. It catches up on
