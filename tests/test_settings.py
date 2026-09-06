@@ -198,3 +198,74 @@ def test_the_tab_title_is_the_app_not_the_device():
     fn = html[html.index("function paintPrimary()"):]
     fn = fn[:fn.index('$("ver")')]
     assert '"● Boswell"' in fn and '"○ Boswell"' in fn
+
+
+# ------------------------------------------------------------- API keys
+def test_a_key_never_comes_back_out():
+    """The interface needs to know a key exists, not what it is. A page that
+    can read a key back is a page that can leak one."""
+    import os, sys
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "web"))
+    import secrets_store, tempfile
+    secrets_store.PATH = os.path.join(tempfile.mkdtemp(), "secrets.json")
+
+    secrets_store.set_key("DEEPGRAM_API_KEY", "sk-verysecretvalue1234")
+    rows = {r["name"]: r for r in secrets_store.status()}
+    blob = repr(rows)
+    assert "verysecretvalue" not in blob, "the value is being reported"
+    assert rows["DEEPGRAM_API_KEY"]["set"] is True
+    assert rows["DEEPGRAM_API_KEY"]["hint"] == "…1234"
+    assert rows["DEEPGRAM_API_KEY"]["source"] == "saved"
+
+
+def test_the_environment_wins_and_says_so():
+    # A stale line in .env silently beating what somebody just typed is the
+    # confusion this field exists to prevent.
+    import os, sys, tempfile
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "web"))
+    import secrets_store
+    secrets_store.PATH = os.path.join(tempfile.mkdtemp(), "secrets.json")
+
+    secrets_store.set_key("DEEPGRAM_API_KEY", "typed-into-the-page")
+    os.environ["DEEPGRAM_API_KEY"] = "from-the-environment"
+    try:
+        assert secrets_store.get("DEEPGRAM_API_KEY") == "from-the-environment"
+        row = {r["name"]: r for r in secrets_store.status()}["DEEPGRAM_API_KEY"]
+        assert row["source"] == "environment"
+        assert row["also_saved"] is True, "the page cannot say both exist"
+    finally:
+        del os.environ["DEEPGRAM_API_KEY"]
+
+
+def test_only_known_keys_can_be_written():
+    # Otherwise a stray POST turns this into a general-purpose file writer.
+    import os, sys, tempfile
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "web"))
+    import secrets_store
+    secrets_store.PATH = os.path.join(tempfile.mkdtemp(), "secrets.json")
+    try:
+        secrets_store.set_key("../../etc/passwd", "x")
+    except ValueError:
+        return
+    raise AssertionError("wrote a key that is not ours")
+
+
+def test_an_empty_value_forgets_the_key():
+    import os, sys, tempfile
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "web"))
+    import secrets_store
+    secrets_store.PATH = os.path.join(tempfile.mkdtemp(), "secrets.json")
+    secrets_store.set_key("OPENAI_API_KEY", "sk-something")
+    assert secrets_store.set_key("OPENAI_API_KEY", "") is False
+    assert secrets_store.get("OPENAI_API_KEY") in (None,
+                                                   os.environ.get("OPENAI_API_KEY"))
+
+
+def test_the_key_file_is_not_world_readable():
+    import os, stat, sys, tempfile
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "web"))
+    import secrets_store
+    secrets_store.PATH = os.path.join(tempfile.mkdtemp(), "secrets.json")
+    secrets_store.set_key("OPENAI_API_KEY", "sk-something")
+    mode = stat.S_IMODE(os.stat(secrets_store.PATH).st_mode)
+    assert not (mode & (stat.S_IRGRP | stat.S_IROTH)), f"mode {oct(mode)}"

@@ -32,6 +32,22 @@ model, pyannote diarization and the AST sound tagger all resident:
 The device is chosen for you: CUDA, else Apple MPS, else the CPU. Override with
 `BOSWELL_TORCH_DEVICE`, `BOSWELL_ASR_MODEL`, `BOSWELL_COMPUTE_TYPE`.
 
+### API keys
+
+**Settings → API keys.** Entered in the interface and kept in
+`data/secrets.json`, owner-readable only. A key goes in and never comes back
+out: the page is told that a key exists, where it came from and its last four
+characters, and nothing else.
+
+Only one is used today — a Hugging Face token, without which every recording
+is transcribed with nobody in it and no voice can be named. The others
+(OpenAI, Deepgram, OpenRouter) are listed ready for cloud transcription and
+tagging, and say so rather than pretending to work.
+
+`.env` still works and takes precedence: a key exported there is what the
+process is actually using, and the interface says so instead of letting a
+value typed on a web page silently lose to a stale dotfile.
+
 ### How slow is the CPU?
 
 One 30-second clip, Xeon E5-2630 v4 (20 cores, 2.2 GHz), nothing else running:

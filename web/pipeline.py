@@ -19,6 +19,7 @@ import time
 import numpy as np
 
 import compute
+import secrets_store
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.abspath(os.path.join(HERE, "..", "data"))
@@ -1136,7 +1137,10 @@ class Worker:
             vad_options={"vad_onset": 0.200, "vad_offset": 0.150})
         self._align = whisperx.load_align_model(language_code="en",
                                                 device=compute.ASR_DEVICE)
-        token = os.environ.get("HF_TOKEN")
+        # The environment first, then whatever was entered in Settings, so a
+        # key typed into the interface works without editing a dotfile -- and
+        # an existing .env keeps working unchanged.
+        token = secrets_store.get("HF_TOKEN")
         if token:
             try:
                 self._diar = whisperx.diarize.DiarizationPipeline(
@@ -1148,8 +1152,9 @@ class Worker:
             # Say so. Without a token every transcript comes out with nobody
             # in it, which reads as a diarization that found one speaker
             # rather than as a feature that never ran.
-            self.notify("log", text="NO HF_TOKEN — transcribing without "
-                                    "speaker labels; nobody can be named")
+            self.notify("log", text="no Hugging Face key — transcribing "
+                                    "without speaker labels; nobody can be "
+                                    "named. Settings → API keys")
         # Small enough to keep resident beside the others: 0.4 GB against the
         # card's 25, and 0.04 s a clip against transcription's ten.
         try:

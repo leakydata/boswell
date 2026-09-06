@@ -566,6 +566,19 @@ dialog.sheet .hint{font-family:var(--mono);font-size:12px;color:var(--muted);
 .prow .pname{flex:1;min-width:0;display:flex;align-items:baseline;gap:8px;
   flex-wrap:wrap}
 .prow button{flex:none}
+/* One API key: what it is for, whether it is set, and a box to change it. */
+.keyrow{padding:12px 0;border-bottom:1px solid var(--rule)}
+.keyrow:last-child{border-bottom:0}
+.keyrow .top{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+.keyrow .top b{font-size:14px}
+.keyrow .entry{display:flex;gap:8px;margin-top:8px;align-items:stretch}
+/* The base button rule stretches; a Save that is four times the width of
+   the box it saves reads as the main event on the page, and it is not. */
+.keyrow .entry button{flex:0 0 auto;width:auto;min-width:96px}
+.keyrow input{flex:1;min-width:0;font-family:var(--mono);font-size:12px;
+  padding:7px 9px;border:1px solid var(--rule);border-radius:6px;
+  background:var(--sunk);color:var(--fg)}
+.keyrow .note{margin-top:6px}
 /* Which recorder a section of controls acts on. With one device "the device"
    was unambiguous; with two it is a question, and a setting applied to the
    wrong recorder is not a mistake the interface would show you afterwards. */
@@ -1524,6 +1537,17 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
         because a boot id is sixteen random bits and two of them collide
         sooner than feels possible.</p>
       <div id="setdevices" style="margin-top:10px">
+        <p class="note">loading…</p>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>API keys</h2>
+      <p class="note">Kept on this machine, in <code>data/secrets.json</code>,
+        readable only by you. A key entered here is never sent back to this
+        page afterwards — the last four characters are shown so you can tell
+        two apart, and nothing else.</p>
+      <div id="setkeys" style="margin-top:12px">
         <p class="note">loading…</p>
       </div>
     </div>
@@ -6683,7 +6707,97 @@ function hours(sec){
   return `${(sec / 3600).toFixed(1)} h`;
 }
 
+/* The API keys panel.
+ *
+ * A value goes in and never comes back out: the box is always empty on load,
+ * and the only thing this page is ever told about a saved key is that it
+ * exists, where it came from and its last four characters. A page that can
+ * read a key back is a page that can leak one.
+ */
+async function loadKeys(){
+  const el = $("setkeys");
+  let keys;
+  try{ keys = (await (await fetch("/api/secrets")).json()).keys || []; }
+  catch(e){ el.innerHTML = "<p class=note>could not read the key list</p>"; return; }
+
+  el.innerHTML = "";
+  for (const k of keys){
+    const row = document.createElement("div");
+    row.className = "keyrow";
+
+    const top = document.createElement("div");
+    top.className = "top";
+    const chip = k.set
+        ? `<span class="lbl all">set${k.hint ? " " + esc(k.hint) : ""}</span>`
+        : `<span class="lbl unk">not set</span>`;
+    top.innerHTML = `<b>${esc(k.label)}</b>${chip}` +
+      (k.url ? ` <a class="addr" href="${esc(k.url)}" target="_blank"
+                    rel="noopener noreferrer">get one</a>` : "");
+    row.appendChild(top);
+
+    const help = document.createElement("p");
+    help.className = "note";
+    /* Where a key comes from is not trivia. A stale line in .env silently
+       beating the value somebody just typed here is exactly the confusion
+       worth spending a sentence on. */
+    help.textContent = k.help + (k.source === "environment"
+        ? "  In force from the environment (.env or the service file); a value"
+          + " saved here will not be used until that one is removed."
+        : "");
+    row.appendChild(help);
+
+    const entry = document.createElement("div");
+    entry.className = "entry";
+    const box = document.createElement("input");
+    // Always empty. Never prefilled, not even with a placeholder that looks
+    // like a value.
+    box.type = "password";
+    box.value = "";
+    box.autocomplete = "off";
+    box.spellcheck = false;
+    box.placeholder = k.set ? "replace this key" : "paste the key";
+    box.setAttribute("aria-label", k.label + " API key");
+
+    const save = document.createElement("button");
+    save.type = "button"; save.className = "pri"; save.textContent = "Save";
+    const send = async (value) => {
+      save.disabled = true;
+      try{
+        await fetch("/api/secrets", {method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({name: k.name, value})});
+        box.value = "";
+        await loadKeys();
+      }catch(e){ log("could not save that key"); save.disabled = false; }
+    };
+    save.onclick = () => { if (box.value.trim()) send(box.value); };
+    box.onkeydown = (e) => {
+      if (e.key === "Enter" && box.value.trim()) send(box.value);
+    };
+    entry.append(box, save);
+
+    if (k.source === "saved"){
+      const clear = document.createElement("button");
+      clear.type = "button"; clear.textContent = "Forget";
+      clear.onclick = () => send("");
+      entry.appendChild(clear);
+    }
+    row.appendChild(entry);
+    el.appendChild(row);
+  }
+
+  const foot = document.createElement("p");
+  foot.className = "note";
+  foot.style.marginTop = "12px";
+  foot.textContent = "Changing a key takes effect the next time the models "
+    + "load. Restart the capture service to apply one now.";
+  el.appendChild(foot);
+}
+
 async function loadSettings(){
+  // First, and not behind the fetch below: the archive failing to load is no
+  // reason to leave somebody unable to enter the key that would fix it.
+  loadKeys();
   let d;
   try { d = await (await fetch("/api/devices")).json(); }
   catch(e){ $("setdevices").innerHTML = "<p class=note>could not read the archive</p>"; return; }

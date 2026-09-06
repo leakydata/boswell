@@ -68,6 +68,7 @@ from bleak import BleakClient
 import agent_runner
 import index_db
 import recorders
+import secrets_store
 
 # BlueZ runs one discovery at a time and refuses the second outright
 # ("Operation already in progress"). The reconnect loop below scans every
@@ -1972,6 +1973,30 @@ def _recorder_rows(rows=None):
                 and device.state.get("connected")))
         out.append(r)
     return out
+
+
+@app.get("/api/secrets")
+async def api_secrets():
+    """Which API keys are set, and where each came from.
+
+    Never the values. The interface needs to know a key exists, not what it
+    is, and a page that can read a key back is a page that can leak one.
+    """
+    return {"keys": secrets_store.status()}
+
+
+@app.post("/api/secrets")
+async def api_set_secret(body: dict):
+    """Save one key, or clear it with an empty value."""
+    name = (body.get("name") or "").strip()
+    try:
+        was_set = secrets_store.set_key(name, body.get("value"))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    # The name, never the value -- this line goes to a log and to the
+    # Activity panel, both of which somebody may screenshot.
+    device.event("log", text=f"{name} {'saved' if was_set else 'cleared'}")
+    return {"ok": True, "keys": secrets_store.status()}
 
 
 @app.get("/api/recorders")
