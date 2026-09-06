@@ -122,7 +122,23 @@ def test_the_device_panel_names_the_device_it_is_connected_to():
     # moment there are two.
     html = read_file("web/static/index.html")
     assert '$("ver").textContent = s.connected ? "XIAO-MIC"' not in html
-    assert "s.device_name || s.device_address" in html
+    # What the device calls itself comes first, whatever else follows it.
+    assert "s.device_name ||" in html
+
+
+def test_the_panel_still_names_its_recorder_while_it_is_switched_off():
+    """A recorder that is off is still the recorder the panel is about.
+
+    device_name is only known once something answers, so a page loaded while
+    the recorder is off labelled the panel "Device" and its settings "this
+    recorder" -- and that vagueness lands exactly when the other recorder is
+    the one still running and telling them apart matters most.
+    """
+    html = read_file("web/static/index.html")
+    assert "s.device_wanted" in html, "no fallback to the name we look for"
+    assert 'el.textContent = boswellName' in html, "the badges do not use it"
+    src = read_file("web/server.py")
+    assert '"device_wanted": DEVICE_NAME' in src, "the server never sends it"
 
 
 def test_the_server_publishes_what_the_device_calls_itself():

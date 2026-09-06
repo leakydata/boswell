@@ -354,6 +354,13 @@ class Device:
             # Which board this is, so a two-board bench can tell them apart
             # without reading the journal. None until something connects.
             "device_address": None,
+            # The name this panel is about even when nothing is answering.
+            # Without it, a page loaded while the recorder is off labels its
+            # panel "Device" and its settings "this recorder" -- vaguer than
+            # the truth, and the vagueness lands exactly when a second
+            # recorder is the one still running and telling them apart
+            # matters most.
+            "device_wanted": DEVICE_NAME,
             "recovered_seconds": 0.0, "recovered_frames": 0,
             "backlog_mode": 1,
             "steps": 0, "tilt": False, "moving": False, "tap_enabled": True,

@@ -1857,11 +1857,21 @@ function paintPrimary(){
   cap.querySelector("i").style.background = st[1];
   cap.querySelector("b").textContent = st[0];
   cap.style.color = st[1];
-  // Each recorder by name and state, for when the summary is not enough.
-  // The panels on the Device tab are the full answer; this is the glance.
+  /* Each recorder by name and state, for when the summary is not enough.
+     The panels on the Device tab are the full answer; this is the glance.
+
+     Every recorder we know a name for, including the ones that are not
+     answering. Listing only the connected ones meant a device that dropped
+     vanished from the tooltip rather than being reported as offline -- which
+     is the same failure the pill below was built to avoid: an absence the
+     reader has to notice, instead of a state that is stated. */
+  const stateOf = (r) => r.capturing ? "recording"
+                       : r.connected ? "paused"
+                       : r.scanning ? "searching for it"
+                       : "not connected";
   cap.title = [recorders.boswell, recorders.omi]
-      .filter(r => r.connected || r.capturing)
-      .map(r => `${r.name || "recorder"} — ${r.capturing ? "recording" : "paused"}`)
+      .filter(r => r.name)
+      .map(r => `${r.name} — ${stateOf(r)}`)
       .join("\n") || "no recorder connected";
 }
 
@@ -1871,17 +1881,21 @@ function paint(s){
      which one is the recorder and is it doing its job. */
   // The panel heading names the thing rather than its category, matching the
   // recorder below it: two panels, both saying which box they are about.
-  $("devname").textContent = s.device_name || "Device";
+  // The name it gives while connected; the name we are looking for when it
+  // is not. A recorder that is switched off is still the recorder this panel
+  // is about.
+  const boswellName = s.device_name || s.device_wanted || "Device";
+  $("devname").textContent = boswellName;
   $("devaddr").textContent = s.device_address || "";
   /* Every section of controls that acts on this recorder says so, using the
      name the device gives, so the badge and the panel heading cannot drift
      apart. The Omi's own panel is titled for itself; nothing unlabelled here
      acts on it. */
   for (const el of document.querySelectorAll("[data-owner]")){
-    el.textContent = s.device_name || "this recorder";
+    el.textContent = boswellName;
   }
   recorders.boswell = {
-    name: s.device_name || s.device_address || "connected",
+    name: s.device_name || s.device_wanted || s.device_address || null,
     connected: !!s.connected, capturing: !!(s.connected && s.armed),
     scanning: !!s.scanning, backlog: s.backlog_bytes || 0,
   };
