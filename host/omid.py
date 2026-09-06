@@ -70,12 +70,33 @@ async def one_session(address, quiet=False):
     except Exception as e:
         print(f"spool: {type(e).__name__}: {e}", flush=True)
 
-    publish(state="syncing", address=address)
+    # Read once per session, on the connection the sync is about to use.
+    # There is no second reader -- the radio is exclusive -- so whatever
+    # holds the device is the only thing that can ask it anything.
+    stats = {}
+    try:
+        from bleak import BleakClient
+        async with BleakClient(address, timeout=25.0) as c:
+            stats = await omi_capture.read_stats(c)
+            # Its own clock is what stamps the packets it stores, and those
+            # stamps are the only thing that makes offloaded audio placeable.
+            # A device whose clock has drifted files real conversations under
+            # the wrong hour and nothing downstream can tell.
+            drift = abs((stats.get("device_epoch") or 0) - time.time())
+            if stats.get("device_epoch") is None or drift > 120:
+                stats["clock_set_to"] = await omi_capture.set_clock(c)
+                print(f"set the device clock (was off by {drift:.0f}s)",
+                      flush=True)
+    except Exception as e:
+        print(f"stats: {type(e).__name__}: {e}", flush=True)
+
+    publish(state="syncing", address=address, stats=stats)
     try:
         spool, took = await omi_sync.sync(
             address, quiet=quiet,
             progress=lambda done, total: publish(
-                state="syncing", address=address, done=done, total=total))
+                state="syncing", address=address, stats=stats,
+                done=done, total=total))
         if took:
             sink = omi_sync.drain_spool(device_id, quiet=True)
             n = sink.clips if sink else 0
@@ -98,7 +119,7 @@ async def one_session(address, quiet=False):
 
     async def heartbeat():
         while not stop.is_set():
-            publish(state="recording", address=address,
+            publish(state="recording", address=address, stats=stats,
                     clips=beat["clips"], frames=beat["frames"])
             try:
                 await asyncio.wait_for(stop.wait(), timeout=20)
@@ -109,7 +130,8 @@ async def one_session(address, quiet=False):
     pulse = asyncio.create_task(heartbeat())
     try:
         clipper = await omi_capture.capture(address, quiet=quiet,
-                                            on_progress=beat.update)
+                                            on_progress=beat.update,
+                                            should_stop=lambda: stopping)
     finally:
         stop.set()
         await pulse
@@ -156,7 +178,10 @@ def main():
     def stop(*_):
         global stopping
         stopping = True
-        print("stopping after this session", flush=True)
+        # The capture loop checks this every second, so the flush that saves
+        # the half-finished clip actually happens. It used to be checked only
+        # between sessions, which meant never while recording.
+        print("stopping; finishing the clip in hand", flush=True)
 
     signal.signal(signal.SIGINT, stop)
     signal.signal(signal.SIGTERM, stop)

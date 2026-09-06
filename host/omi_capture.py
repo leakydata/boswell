@@ -52,6 +52,81 @@ OMI_SERVICE = "19b10000-e8f2-537e-4f6c-d104768a1214"
 OMI_AUDIO   = "19b10001-e8f2-537e-4f6c-d104768a1214"
 OMI_CODEC   = "19b10002-e8f2-537e-4f6c-d104768a1214"
 
+# Everything else the device will tell you about itself. Named from their
+# firmware rather than guessed from the numbers -- omi/src/lib/core/
+# transport.c declares a settings service, a features service and a time
+# service, and without those names this is a list of hex strings.
+OMI_DIM_RATIO  = "19b10011-e8f2-537e-4f6c-d104768a1214"   # LED brightness, rw
+OMI_MIC_GAIN   = "19b10012-e8f2-537e-4f6c-d104768a1214"   # microphone gain, rw
+OMI_CHARGING   = "19b10013-e8f2-537e-4f6c-d104768a1214"   # 1 while charging
+OMI_FEATURES   = "19b10021-e8f2-537e-4f6c-d104768a1214"   # capability bits
+OMI_TIME_READ  = "19b10032-e8f2-537e-4f6c-d104768a1214"   # its clock, epoch
+OMI_TIME_WRITE = "19b10031-e8f2-537e-4f6c-d104768a1214"   # set its clock
+
+BATTERY   = "00002a19-0000-1000-8000-00805f9b34fb"
+MODEL     = "00002a24-0000-1000-8000-00805f9b34fb"
+FIRMWARE  = "00002a26-0000-1000-8000-00805f9b34fb"
+HARDWARE  = "00002a27-0000-1000-8000-00805f9b34fb"
+MAKER     = "00002a29-0000-1000-8000-00805f9b34fb"
+
+
+async def read_stats(client):
+    """Everything the device will say about itself, in one pass.
+
+    Read on a connection somebody else already has, because the radio is
+    exclusive: there is no second reader, so whatever holds the device is the
+    only thing that can ask. Every field is optional -- a firmware that does
+    not offer one is not an error, and a stats read must never be the reason
+    a recording stops.
+    """
+    out = {}
+
+    async def get(uuid, name, fn):
+        try:
+            out[name] = fn(await client.read_gatt_char(uuid))
+        except Exception:
+            pass
+
+    def text(v):
+        return v.decode("utf-8", "replace").strip("\x00").strip()
+
+    def u8(v):
+        return v[0] if v else None
+
+    def le32(v):
+        return int.from_bytes(v[:4], "little") if len(v) >= 4 else None
+
+    await get(BATTERY,      "battery",   u8)
+    await get(OMI_CHARGING, "charging",  lambda v: bool(u8(v)))
+    await get(OMI_MIC_GAIN, "mic_gain",  u8)
+    await get(OMI_DIM_RATIO, "dim_ratio", u8)
+    await get(OMI_FEATURES, "features",  le32)
+    await get(OMI_CODEC,    "codec",     u8)
+    await get(OMI_TIME_READ, "device_epoch", le32)
+    await get(MODEL,        "model",     text)
+    await get(FIRMWARE,     "firmware",  text)
+    await get(HARDWARE,     "hardware",  text)
+    await get(MAKER,        "maker",     text)
+
+    if out.get("codec") in CODEC_FRAMES:
+        out["codec_name"] = f"Opus {CODEC_FRAMES[out['codec']] * 1000 // RATE} ms"
+    return out
+
+
+async def set_clock(client, epoch=None):
+    """Tell it the time.
+
+    Worth doing because the packets it stores are stamped with its own clock,
+    and those stamps are what make offloaded audio placeable at all. A device
+    whose clock has drifted or reset files real conversations under the wrong
+    hour, and nothing downstream can tell.
+    """
+    import time as _t
+    epoch = int(epoch if epoch is not None else _t.time())
+    await client.write_gatt_char(OMI_TIME_WRITE,
+                                 epoch.to_bytes(4, "little"), response=True)
+    return epoch
+
 # Their numbering, which is by frame length rather than by codec: 20 is Opus
 # at 10 ms (the devkit), 21 is Opus at 20 ms (the CV 1). Boswell's own
 # PROTO_CODEC_OPUS is also 20 and means 20 ms -- the collision is in the
@@ -162,7 +237,8 @@ async def find_omi(timeout=15.0):
     return sorted(out, key=lambda t: -t[2])
 
 
-async def capture(address, seconds=None, quiet=False, on_progress=None):
+async def capture(address, seconds=None, quiet=False, on_progress=None,
+                  should_stop=None):
     """Stream from one Omi until interrupted, filing clips as it goes."""
     device_id = norm_id(address)
     clipper = Clipper(device_id)
@@ -210,6 +286,13 @@ async def capture(address, seconds=None, quiet=False, on_progress=None):
         try:
             while client.is_connected:
                 await asyncio.sleep(1.0)
+                # Asked to stop, by a signal or a service restart. Without
+                # this the loop only ends when the device goes away, so a
+                # `systemctl restart` waited out its timeout and the process
+                # was SIGKILLed -- taking whatever was held in the clipper
+                # with it, which is the one thing stopping cleanly is for.
+                if should_stop and should_stop():
+                    break
                 if seconds and time.time() - started >= seconds:
                     break
                 if on_progress:

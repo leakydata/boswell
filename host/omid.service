@@ -36,6 +36,9 @@ SuccessExitStatus=143 SIGTERM
 # The daemon backs off on its own between attempts, so this is only for the
 # case where it dies outright.
 RestartSec=15
+# It finishes the clip it is holding before it exits, which takes a second or
+# two. Long enough for that; short enough that a restart is not a wait.
+TimeoutStopSec=20
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 
 [Install]

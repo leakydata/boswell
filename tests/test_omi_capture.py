@@ -203,3 +203,59 @@ def test_the_interface_says_what_it_has_heard():
     html = read_file("web/static/index.html")
     assert "clip` \n" not in html
     assert "this session" in html
+
+
+# ------------------------------------------------------ what it says about itself
+def test_the_stats_are_read_on_a_connection_somebody_already_has():
+    # The radio is exclusive: whatever holds the device is the only thing
+    # that can ask it anything.
+    src = read_file("host/omi_capture.py")
+    assert "async def read_stats(client)" in src
+
+
+def test_every_stat_is_optional():
+    # A firmware that does not offer one is not an error, and a stats read
+    # must never be the reason a recording stops.
+    src = read_file("host/omi_capture.py")
+    fn = src[src.index("async def read_stats("):src.index("async def set_clock(")]
+    assert "except Exception:" in fn and "pass" in fn
+
+
+def test_the_characteristics_are_named_from_their_firmware():
+    # Guessed from the numbers these are a list of hex strings.
+    src = read_file("host/omi_capture.py")
+    for name in ("OMI_MIC_GAIN", "OMI_CHARGING", "OMI_FEATURES",
+                 "OMI_TIME_READ", "OMI_TIME_WRITE", "OMI_DIM_RATIO"):
+        assert name in src
+
+
+def test_the_clock_is_read_little_endian():
+    # memcpy(&epoch_s, buf, sizeof(epoch_s)) on little-endian ARM, so the
+    # wire format is little-endian -- not the big-endian their stored packets
+    # and storage protocol use.
+    src = read_file("host/omi_capture.py")
+    fn = src[src.index("async def read_stats("):src.index("async def set_clock(")]
+    assert '"little"' in fn
+
+
+def test_a_drifted_clock_is_corrected():
+    # It stamps the packets it stores, and those stamps are the only thing
+    # that places offloaded audio. A device whose clock is wrong files real
+    # conversations under the wrong hour and nothing downstream can tell.
+    src = read_file("host/omid.py")
+    assert "set_clock" in src
+    assert "drift > 120" in src
+
+
+def test_stopping_reaches_the_capture_loop():
+    # The flag was only checked between sessions, which is never while
+    # recording, so systemctl restart waited out its timeout and the process
+    # was SIGKILLed -- taking the clip in hand with it.
+    src = read_file("host/omi_capture.py")
+    fn = src[src.index("async def capture("):]
+    assert "should_stop" in fn
+    assert "if should_stop and should_stop():" in fn
+
+
+def test_the_unit_allows_time_to_finish_the_clip():
+    assert "TimeoutStopSec" in read_file("host/omid.service")

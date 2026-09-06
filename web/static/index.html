@@ -906,6 +906,8 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
         <div id="omibarfill" style="height:100%;width:0;background:var(--accent);
              transition:width .4s"></div>
       </div>
+      <div id="omistats" hidden style="margin-top:10px;display:grid;
+           grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px 14px"></div>
       <p class="note" id="omenote">Recording into the same archive, alongside
         the device above. It catches up on whatever it stored while away
         before it starts streaming, so a long sync after a day out is the
@@ -6313,6 +6315,46 @@ async function omiPoll(){
 
   const clips = s.clips || 0;
   $("omiclips").textContent = clips ? `${clips} clip${clips===1?"":"s"}` : "";
+
+  // Whatever the device said about itself last time something held it. Kept
+  // on screen while it is away rather than blanked: "the battery was 24% an
+  // hour ago" is the most useful thing to know about a device that has just
+  // stopped answering, and blanking it is how you lose that.
+  const st = s.stats || {};
+  const cells = [];
+  const add = (k, v) => { if (v !== undefined && v !== null && v !== "") cells.push([k, v]); };
+  add("battery", st.battery != null
+      ? `${st.battery}%${st.charging ? " · charging" : ""}` : null);
+  add("codec", st.codec_name || (st.codec != null ? `id ${st.codec}` : null));
+  add("mic gain", st.mic_gain);
+  add("led", st.dim_ratio != null ? `${st.dim_ratio}%` : null);
+  add("model", st.model);
+  add("firmware", st.firmware);
+  add("hardware", st.hardware);
+  add("maker", st.maker);
+  if (st.device_epoch){
+    const off = Math.round(Math.abs(st.device_epoch - Date.now() / 1000));
+    // A device clock is not trivia here: it stamps the packets it stores,
+    // and those stamps are the only thing that places offloaded audio.
+    add("its clock", off > 120
+        ? `${new Date(st.device_epoch * 1000).toLocaleString()} — off by `
+          + `${off > 86400 ? (off / 86400).toFixed(1) + " days" : Math.round(off / 60) + " min"}`
+        : "correct");
+  }
+  if (st.clock_set_to) add("clock", "set by this host");
+
+  const box = $("omistats");
+  box.hidden = !cells.length;
+  box.innerHTML = "";
+  for (const [k, v] of cells){
+    const cell = document.createElement("div");
+    const lab = document.createElement("div");
+    lab.className = "note"; lab.textContent = k;
+    const val = document.createElement("div");
+    val.textContent = v;
+    cell.append(lab, val);
+    box.appendChild(cell);
+  }
   // Its address, so which physical thing this panel is about is never a
   // guess -- the same reason the panel above stopped saying XIAO-MIC.
   $("omiaddr").textContent = s.address || "";
