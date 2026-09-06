@@ -72,6 +72,7 @@ import secrets_store
 import asr_openai
 import asr_deepgram
 import compute
+import llm
 
 # BlueZ runs one discovery at a time and refuses the second outright
 # ("Operation already in progress"). The reconnect loop below scans every
@@ -145,7 +146,7 @@ PREF_KEYS = ("armed", "vad", "backlog_mode", "gain", "led_level", "led_mode",
         "tap_enabled", "tap_thresh",
              "fast_charge", "mic_power_save", "rate16",
              "agent_enabled", "agent_model", "agent_idle_seconds",
-             "transcriber")
+             "agent_backend", "transcriber")
 
 
 def load_prefs():
@@ -1402,6 +1403,8 @@ if "agent_enabled" in PREFS:
     agent.enabled = bool(PREFS["agent_enabled"])
 if PREFS.get("agent_model"):
     agent.model = str(PREFS["agent_model"])
+if PREFS.get("agent_backend"):
+    agent.backend = str(PREFS["agent_backend"])
 if "agent_idle_seconds" in PREFS:
     agent.idle_seconds = max(10.0, float(PREFS["agent_idle_seconds"]))
 worker = pipeline.Worker(
@@ -3657,11 +3660,20 @@ async def api_agent_config(body: dict):
         device.event("log", text=f"agent {'on' if agent.enabled else 'off'}")
     if "model" in body and body["model"]:
         agent.model = str(body["model"])
+    if "backend" in body:
+        want = str(body["backend"])
+        if want not in ("local",) + tuple(llm.ENDPOINTS):
+            raise HTTPException(400, "unknown backend " + want)
+        if not llm.available(want):
+            raise HTTPException(400, f"no key for {want} — Settings → API keys")
+        agent.backend = want
+        device.event("log", text=f"agent thinking with {want}")
     if "idle_seconds" in body:
         agent.idle_seconds = max(10.0, float(body["idle_seconds"]))
     # Turning the agent off and finding it back on after a restart is the
     # kind of surprise that matters: it decides what gets read by a model.
     PREFS.update(agent_enabled=agent.enabled, agent_model=agent.model,
+                 agent_backend=agent.backend,
                  agent_idle_seconds=agent.idle_seconds)
     save_prefs(PREFS)
     return agent.status()

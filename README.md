@@ -76,6 +76,34 @@ local models rather than being lost. Audio is only sent when one of these is
 switched on; it is the one part of this project where anything leaves the
 machine.
 
+### Who does the thinking
+
+The agent that writes facts, tasks, events, notes and topics can run in three
+places, and the writing side is the same in all of them.
+
+**On this machine (Ollama).** The default, and it stays the default: free,
+private, nothing leaves. It wants a GPU to be quick and a model on disk.
+
+**An API — OpenAI or OpenRouter.** For the machines that have neither.
+OpenRouter speaks OpenAI's protocol, so it is one adapter for both. Transcripts
+are sent to be read, which is the trade.
+
+**Claude or Codex, over MCP.** `host/boswell_mcp.py` is already an MCP server
+and already writes: `record_fact`, `record_task`, `record_event`,
+`record_note`, `tag_conversation`, `merge_recorded`, `delete_recorded`,
+`mark_reviewed` — alongside `search`, `search_by_meaning`,
+`get_conversation`, `get_clip`, `list_people` and `unidentified_voices` for
+reading. Every writer takes the clips the item came from, and refuses without
+them: an item that cannot be traced back to what was said is how the store
+once ended up with 74 facts nobody could check.
+
+It reads the archive's databases directly rather than over HTTP, so an agent
+running on this machine needs no tunnel and no token.
+
+Whichever is chosen, a model that cannot be reached is never fatal. The
+conversation is already transcribed and searchable; what is missed is a round
+of notes, and the next conversation tries again.
+
 ### API keys
 
 **Settings → API keys.** Entered in the interface and kept in

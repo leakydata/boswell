@@ -1444,9 +1444,17 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
       <label class="row" style="margin-top:0">Review conversations automatically
         <button type="button" class="switch" id="agentOn" role="switch" aria-checked="true"></button>
       </label>
+      <label class="row">Thinking with
+        <select class="filter" id="agentBackend" aria-label="Where the agent runs">
+          <option value="local">On this machine (Ollama)</option>
+          <option value="openai">OpenAI</option>
+          <option value="openrouter">OpenRouter</option>
+        </select>
+      </label>
       <label class="row">Model
         <select class="filter" id="agentModel" aria-label="Agent model"></select>
       </label>
+      <p class="note" id="agentBackendNote"></p>
     </div>
     <div class="card" id="topicsCard">
       <h2>Topics</h2>
@@ -2788,16 +2796,31 @@ async function loadAgent(){
     const a = await (await fetch("/api/agent")).json();
     $("agentOn").setAttribute("aria-checked", !!a.enabled);
     paintAgentState(a);
+    $("agentBackend").value = a.backend || "local";
+    /* The model list comes from Ollama, so it is only the right list when
+       Ollama is the one answering. Offering local model names to a hosted
+       provider would be a list of things that cannot work. */
     const sel = $("agentModel");
-    if (!sel.options.length){
-      const m = await (await fetch("/api/models")).json();
-      for (const name of (m.models || [])){
-        const o = document.createElement("option");
-        o.value = o.textContent = name;
-        sel.appendChild(o);
+    const isLocal = (a.backend || "local") === "local";
+    sel.hidden = !isLocal;
+    if (isLocal){
+      if (!sel.options.length){
+        const m = await (await fetch("/api/models")).json();
+        for (const name of (m.models || [])){
+          const o = document.createElement("option");
+          o.value = o.textContent = name;
+          sel.appendChild(o);
+        }
       }
+      sel.value = a.model;
     }
-    sel.value = a.model;
+    $("agentBackendNote").textContent = isLocal
+      ? "Nothing leaves the machine. Needs Ollama running, and a card to be "
+        + "quick about it."
+      : (a.backend_ready
+          ? `Transcripts are sent to ${a.backend} to be read. Set the model `
+            + `name below.`
+          : `No key for ${a.backend} — Settings → API keys.`);
   }catch(e){}
 }
 
@@ -2806,6 +2829,16 @@ $("agentOn").onclick = async () => {
   $("agentOn").setAttribute("aria-checked", on);
   await fetch("/api/agent", {method:"POST", headers:{"Content-Type":"application/json"},
                              body: JSON.stringify({enabled:on})});
+};
+$("agentBackend").onchange = async () => {
+  const want = $("agentBackend").value;
+  const r = await fetch("/api/agent", {method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({backend: want})});
+  if (!r.ok){
+    log((await r.json()).detail || "could not switch");
+  }
+  loadAgent();
 };
 $("agentModel").onchange = async () => {
   await fetch("/api/agent", {method:"POST", headers:{"Content-Type":"application/json"},

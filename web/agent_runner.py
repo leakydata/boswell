@@ -10,6 +10,7 @@ real exchange rather than sixty disconnected ones.
 """
 
 import json
+import llm
 import os
 import threading
 import time
@@ -101,7 +102,7 @@ def reviewed_clips():
     return out
 
 
-OLLAMA = "http://localhost:11434/api/chat"
+OLLAMA = llm.OLLAMA
 
 # gpt-oss:20b is ~13 GB and fits beside Whisper's ~9 GB on a 24 GB card.
 # glm-4.7-flash is the stronger MoE but at 19 GB the two do not coexist.
@@ -221,6 +222,11 @@ class ConversationAgent:
     def __init__(self, notify=None):
         self.notify = notify or (lambda *a, **k: None)
         self.model = DEFAULT_MODEL
+        # Where the thinking happens. "local" is Ollama on this machine and
+        # stays the default: free, private, and nothing leaves. The others
+        # exist for the machines that have neither the card nor a 20B model
+        # on disk.
+        self.backend = "local"
         self.enabled = True
         self.idle_seconds = IDLE_SECONDS
         # Reentrant: status() holds the lock and calls pending_chars(), which
@@ -258,6 +264,8 @@ class ConversationAgent:
             return {
                 "enabled": self.enabled,
                 "model": self.model,
+                "backend": self.backend,
+                "backend_ready": llm.available(self.backend),
                 "pending_clips": len(self._pending),
                 "pending_chars": self.pending_chars(),
                 "seconds_idle": round(time.time() - self._last_at, 1) if self._last_at else None,
@@ -461,13 +469,18 @@ class ConversationAgent:
         actions, said = [], ""
         try:
             for _ in range(6):
-                r = requests.post(OLLAMA, json={
-                    "model": self.model, "messages": messages,
-                    "tools": SCHEMAS, "stream": False,
-                    "options": {"temperature": 0.2},
-                }, timeout=600)
-                r.raise_for_status()
-                msg = r.json().get("message", {})
+                # Whichever model is answering. The loop below is unchanged:
+                # llm.chat returns Ollama's message shape whatever replied,
+                # because this loop has been correct for months and is not
+                # worth rewriting to suit a second provider.
+                try:
+                    msg = llm.chat(self.backend, self.model, messages, SCHEMAS)
+                except llm.Unavailable as e:
+                    # Never fatal. The conversation is already transcribed and
+                    # searchable; what is missed is a round of notes, and the
+                    # next conversation tries again.
+                    self.notify("log", text=f"agent ({self.backend}): {e}")
+                    break
                 messages.append(msg)
                 said = msg.get("content") or said
                 calls = msg.get("tool_calls") or []
