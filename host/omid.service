@@ -1,0 +1,36 @@
+# Keep an Omi recording into the archive.
+#
+# The counterpart to boswell.service, and separate from it on purpose: they
+# are two recorders, they fail independently, and a fault in one must not
+# take the other's audio with it. The archive is where they meet.
+#
+# Install:
+#   cp host/omid.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now omid
+#
+# Status and logs:
+#   systemctl --user status omid
+#   journalctl --user -u omid -f
+
+[Unit]
+Description=Omi capture into the Boswell archive
+After=network.target bluetooth.target
+Wants=bluetooth.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Documents/electronics/nRF52840
+ExecStart=%h/.local/bin/uv run host/omid.py
+Restart=always
+# A normal "systemctl stop" SIGTERMs the process, which exits 143. Without
+# this the unit sits in state=failed after every ordinary stop, and nothing
+# watching can tell that apart from a real crash.
+SuccessExitStatus=143 SIGTERM
+# The daemon backs off on its own between attempts, so this is only for the
+# case where it dies outright.
+RestartSec=15
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=default.target

@@ -889,6 +889,28 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
          arrived: docked over USB, or over the radio. Two importing-shaped
          buttons a few rows apart, one of them usually invisible, was how "I
          clicked Import and I'm not sure anything happened" happened. -->
+    <!-- The second recorder. Separate from the device panel above because it
+         is a different device: it fails on its own, it is worn instead of
+         rather than as well as, and conflating the two would mean neither
+         status could be trusted. -->
+    <div class="card" id="omicard" hidden>
+      <h2>Omi <span id="omiaddr" class="note"
+          style="font-weight:normal;font-family:var(--mono);font-size:11px"></span></h2>
+      <div class="row" style="align-items:center">
+        <span class="val" id="omistate" style="flex:1;text-align:left;min-width:0">—</span>
+        <span class="val" id="omiclips" style="flex:none"></span>
+      </div>
+      <div id="omibar" hidden style="margin-top:8px;height:4px;border-radius:2px;
+           background:var(--rule);overflow:hidden">
+        <div id="omibarfill" style="height:100%;width:0;background:var(--accent);
+             transition:width .4s"></div>
+      </div>
+      <p class="note" id="omenote">Recording into the same archive, alongside
+        the device above. It catches up on whatever it stored while away
+        before it starts streaming, so a long sync after a day out is the
+        normal shape of things rather than a fault.</p>
+    </div>
+
     <div class="card" id="recrow" hidden>
       <h2>Recordings on the device</h2>
       <div class="row" style="align-items:center">
@@ -1694,7 +1716,13 @@ function paint(s){
                           ? "asked to stop and still capturing; retrying — audio "
                             + "arriving now is being saved"
                           : `${s.rate/1000} kHz · ${s.codec_name || "ADPCM"} · ${s.frames} frames`;
-  $("ver").textContent = s.connected ? "XIAO-MIC" : "disconnected";
+  // What the device calls itself, not what this file assumed it was called.
+  // "XIAO-MIC" was hardcoded here, so the panel said it whatever was on the
+  // other end -- fine while there was only ever one recorder, and a label
+  // that lies the moment there are two.
+  $("ver").textContent = s.connected
+    ? (s.device_name || s.device_address || "connected")
+    : "disconnected";
   lastStateAt = Date.now();
 
   /* Live state in the top bar, in the same words and the same colours the
@@ -6123,6 +6151,48 @@ function toggleVad(){
   send({cmd:"vad", on});
 }
 vad.onclick = toggleVad;
+
+// The second recorder. Polled rather than pushed: it is another process
+// entirely, reporting through a file, and the websocket carries the device
+// this server is connected to -- not this one.
+async function omiPoll(){
+  let s;
+  try { s = await (await fetch("/api/omi")).json(); } catch(e){ return; }
+
+  const known = s && (s.state || s.clips);
+  $("omicard").hidden = !known;
+  if (!known) return;
+
+  const clips = s.clips || 0;
+  $("omiclips").textContent = clips ? `${clips} clip${clips===1?"":"s"}` : "";
+  // Its address, so which physical thing this panel is about is never a
+  // guess -- the same reason the panel above stopped saying XIAO-MIC.
+  $("omiaddr").textContent = s.address || "";
+
+  if (!s.running){
+    // Said plainly. A recorder that has stopped looking like one that is
+    // merely quiet is the failure this whole project keeps finding.
+    $("omistate").textContent = "not running";
+    $("omibar").hidden = true;
+    return;
+  }
+
+  if (s.state === "syncing" && s.total){
+    const pct = Math.round(100 * (s.done || 0) / s.total);
+    $("omistate").textContent =
+      `catching up — ${(s.done||0).toLocaleString()} of ${s.total.toLocaleString()} (${pct}%)`;
+    $("omibar").hidden = false;
+    $("omibarfill").style.width = pct + "%";
+  } else {
+    const words = {recording:"recording", looking:"looking for the device",
+                   waiting:"waiting to reconnect", lost:"lost the link",
+                   "not found":"not in range", "catching up":"catching up"};
+    $("omistate").textContent = words[s.state] || s.state || "—";
+    $("omibar").hidden = true;
+  }
+}
+setInterval(omiPoll, 4000);
+omiPoll();
 
 // Recordings on the device, by whichever route is available.
 //

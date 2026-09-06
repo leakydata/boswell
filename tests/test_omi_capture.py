@@ -108,3 +108,65 @@ def test_clips_from_two_recorders_are_not_confused():
                                   device_id="d966cfbb58a4")
     assert dedup.is_duplicate(500, (10000, 40000), [omi],
                               device_id="c4b3fd7f1e91")
+
+
+# ---------------------------------------------------- two recorders, two panels
+def read_file(p):
+    with open(os.path.join(HERE, "..", p)) as f:
+        return f.read()
+
+
+def test_the_device_panel_names_the_device_it_is_connected_to():
+    # "XIAO-MIC" was hardcoded, so the panel said it whatever was on the
+    # other end. Fine while there was one recorder; a label that lies the
+    # moment there are two.
+    html = read_file("web/static/index.html")
+    assert '$("ver").textContent = s.connected ? "XIAO-MIC"' not in html
+    assert "s.device_name || s.device_address" in html
+
+
+def test_the_server_publishes_what_the_device_calls_itself():
+    assert 'self.state["device_name"]' in read_file("web/server.py")
+
+
+def test_the_omi_panel_says_which_omi():
+    html = read_file("web/static/index.html")
+    assert 'id="omiaddr"' in html
+    assert '$("omiaddr").textContent = s.address' in html
+
+
+def test_the_omi_status_is_read_from_a_file_not_the_radio():
+    # The radio is exclusive. A status query that took the connection would
+    # interrupt the recording it was reporting on.
+    src = read_file("web/server.py")
+    fn = src[src.index("async def api_omi("):]
+    fn = fn[:fn.index("\n@app.")]
+    assert "omi_status.json" in fn
+    assert "BleakClient" not in fn
+
+
+def test_a_daemon_that_stopped_writing_is_not_running():
+    # Whatever its last line claimed.
+    src = read_file("web/server.py")
+    fn = src[src.index("async def api_omi("):]
+    fn = fn[:fn.index("\n@app.")]
+    assert "stale" in fn
+
+
+def test_the_daemon_syncs_before_it_streams():
+    # Streaming first leaves hours of stored audio behind every time somebody
+    # walks back into range.
+    src = read_file("host/omid.py")
+    fn = src[src.index("async def one_session("):]
+    fn = fn[:fn.index("\nasync def run(")]
+    assert fn.index("omi_sync.sync") < fn.index("omi_capture.capture")
+
+
+def test_a_failed_sync_does_not_skip_the_live_stream():
+    # The backlog will still be there next time; the conversation happening
+    # now will not.
+    src = read_file("host/omid.py")
+    fn = src[src.index("async def one_session("):]
+    fn = fn[:fn.index("\nasync def run(")]
+    sync_block = fn[fn.index("omi_sync.sync"):fn.index("omi_capture.capture")]
+    assert "except Exception" in sync_block

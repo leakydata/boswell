@@ -737,6 +737,10 @@ class Device:
             await asyncio.sleep(2)
             return
         self.state["device_address"] = dev.address
+        # What it calls itself, rather than what the code assumes it is
+        # called. With a second recorder in the house the label on a panel
+        # has to come from the device on that panel.
+        self.state["device_name"] = getattr(dev, "name", None) or None
 
         async with BleakClient(dev, timeout=30.0) as c:
             self.client = c
@@ -1809,6 +1813,44 @@ async def api_envelope(name: str):
                "peak": int(np.abs(audio).max())}
     atomicio.write_json(cache, out)
     return JSONResponse(out)
+
+
+@app.get("/api/omi")
+async def api_omi():
+    """What the second recorder is doing.
+
+    Read from a file the daemon writes rather than asked over Bluetooth: the
+    radio is exclusive, and a status query that had to take the connection
+    would interrupt the recording it was reporting on. The file also outlives
+    both processes, so a restarted server still knows what was happening.
+    """
+    path = os.path.join(DATA, "omi_status.json")
+    try:
+        with open(path) as f:
+            st = json.load(f)
+    except (OSError, ValueError):
+        return {"running": False}
+
+    # A daemon that stopped writing is a daemon that is not running, whatever
+    # its last line claimed. Two minutes is longer than any step it takes.
+    stale = (time.time() - st.get("at", 0)) > 120
+    st["running"] = not stale and st.get("state") != "stopped"
+
+    clips = 0
+    latest = None
+    try:
+        for n in os.listdir(DATA):
+            if n.startswith("omi_") and n.endswith(".wav"):
+                clips += 1
+                p2 = os.path.join(DATA, n)
+                m = os.path.getmtime(p2)
+                if latest is None or m > latest:
+                    latest = m
+    except OSError:
+        pass
+    st["clips"] = clips
+    st["latest"] = latest
+    return st
 
 
 @app.get("/api/recordings")
