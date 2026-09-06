@@ -7029,11 +7029,23 @@ async function recPoll(ask){
   try {
     const r = await (await fetch("/api/recordings" + (ask ? "?ask=1" : ""))).json();
     recRoute = r.route;
-    $("recrow").hidden = !r.route;
+    /* The card stays on screen for a paired recorder even when there is no
+       way to reach it, and says why.
+
+       It used to disappear whole. With the recorder switched off that is an
+       absence the reader has to notice and correctly interpret -- and the
+       reading everybody actually arrives at is "the feature is gone", which
+       is how "I can't seem to locate the Look area" happens. */
+    const havePaired = paired.some(x => x.kind === "boswell");
+    $("recrow").hidden = !havePaired;
     $("recnote").hidden = !r.route;
+    $("recbtn").hidden = !r.route;
 
     if (!r.route){
       $("reclist").hidden = true;
+      $("recv").textContent = connected
+          ? "this device has no storage card"
+          : "the recorder is not connected — switch it on to look";
     } else if (r.error){
       // "the device did not answer" and "the card is empty" look identical
       // from here unless they are told apart on purpose, and telling somebody
