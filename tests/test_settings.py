@@ -111,3 +111,50 @@ def test_the_count_reaches_the_interface():
     assert '"inferred"' in read("web/server.py")
     html = read("web/static/index.html")
     assert "attributed `" in html and "not recorded at the time" in html
+
+
+# ------------------------------------------------ clips nobody queued
+#
+# The live path queues its own clips as it finalises them, which was enough
+# while every clip came from this process. It stopped being enough the moment
+# a second recorder appeared: omid is a separate program writing into the same
+# archive, with no worker to submit to. 665 Omi clips sat indexed, searchable
+# by name and silent -- never transcribed, never sound-tagged.
+
+def test_a_sweep_queues_whatever_has_no_transcript():
+    src = read("web/server.py")
+    assert "async def transcriber_sweep(" in src
+    fn = src[src.index("async def transcriber_sweep("):]
+    fn = fn[:fn.index("\n@asynccontextmanager")]
+    assert "pipeline.transcript_path(f)" in fn
+    assert "worker.submit(f)" in fn
+
+
+def test_the_sweep_is_actually_started():
+    # A background task defined and never created is worse than none: it
+    # reads as solved.
+    assert "asyncio.create_task(transcriber_sweep())" in read("web/server.py")
+
+
+def test_the_sweep_yields_to_the_live_transcriber():
+    src = read("web/server.py")
+    fn = src[src.index("async def transcriber_sweep("):]
+    fn = fn[:fn.index("\n@asynccontextmanager")]
+    assert "worker.busy" in fn
+    assert "worker.q.qsize()" in fn
+
+
+def test_the_sweep_is_bounded_per_pass():
+    # One sweep must not fill the queue with a thousand clips nobody can see
+    # the end of.
+    src = read("web/server.py")
+    fn = src[src.index("async def transcriber_sweep("):]
+    fn = fn[:fn.index("\n@asynccontextmanager")]
+    assert "queued >= 8" in fn
+
+
+def test_the_backlog_comes_in_the_order_it_happened():
+    src = read("web/server.py")
+    fn = src[src.index("async def transcriber_sweep("):]
+    fn = fn[:fn.index("\n@asynccontextmanager")]
+    assert "sorted(os.listdir(DATA))" in fn

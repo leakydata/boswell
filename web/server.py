@@ -1566,6 +1566,46 @@ async def _consolidate_settled():
         return                  # one conversation per pass, to stay responsive
 
 
+async def transcriber_sweep():
+    """Queue any clip on disk that has no transcript yet.
+
+    The live path queues its own clips as it finalises them, which was enough
+    while every clip came from this process. It stopped being enough the
+    moment a second recorder appeared: `omid` is a separate program, it writes
+    into the same archive through clipwriter, and it has no worker to submit
+    to. 665 Omi clips were sitting indexed, searchable by name, and silent --
+    never transcribed, never tagged, because nothing had told anything they
+    existed.
+
+    The fix belongs here rather than in each producer. Asking every writer to
+    remember to queue is a rule that holds until somebody adds a writer, and
+    the archive already knows perfectly well which clips lack transcripts.
+    """
+    while True:
+        await asyncio.sleep(60)
+        if not auto_transcribe or worker.busy or worker.q.qsize() > 8:
+            continue
+        try:
+            queued = 0
+            # Oldest first: a backlog should come in the order it happened,
+            # and a bound keeps one sweep from filling the queue with a
+            # thousand clips nobody can see the end of.
+            for f in sorted(os.listdir(DATA)):
+                if not f.endswith(".wav"):
+                    continue
+                if os.path.exists(pipeline.transcript_path(f)):
+                    continue
+                if worker.submit(f):
+                    queued += 1
+                if queued >= 8:
+                    break
+            if queued:
+                print(f"sweep: queued {queued} untranscribed clip(s)",
+                      flush=True)
+        except Exception as e:
+            print(f"sweep: {type(e).__name__}: {e}", flush=True)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     try:
@@ -1576,7 +1616,8 @@ async def lifespan(app: FastAPI):
     device.want(True)          # start looking for the board immediately
     tasks = [asyncio.create_task(device.run()), asyncio.create_task(rotator()),
              asyncio.create_task(auto_consolidator()),
-             asyncio.create_task(backer_upper())]
+             asyncio.create_task(backer_upper()),
+             asyncio.create_task(transcriber_sweep())]
     yield
     for t in tasks:
         t.cancel()
