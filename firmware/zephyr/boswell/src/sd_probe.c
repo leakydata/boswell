@@ -87,6 +87,22 @@ static struct k_work    mount_work;
 static struct k_work    release_work;
 static bool             released;
 
+/* Does a USB host currently hold the card?
+ *
+ * Separate from `released`, and set without touching the work queue, because
+ * the two facts happen at different times and the earlier one arrives first.
+ * usb_enable() runs before sd_probe_init(), so on a board that boots with the
+ * cable already in, USB_DC_CONFIGURED fires while sd_wq does not yet exist --
+ * the handover was submitted to an unstarted queue and silently dropped, and
+ * the card then mounted normally. That left the firmware holding a volume the
+ * host also had as a block device, which is the one state this whole
+ * mechanism exists to prevent.
+ *
+ * An atomic rather than a bool: it is written from the USB callback and read
+ * on the card thread.
+ */
+static atomic_t host_holds_card;
+
 static int do_mount(void)
 {
     if (mounted) {
@@ -175,6 +191,20 @@ static void release_work_fn(struct k_work *w)
 static void mount_work_fn(struct k_work *w)
 {
     ARG_UNUSED(w);
+
+    if (atomic_get(&host_holds_card)) {
+        /* Asked to mount a volume the host is using. Refusing is the whole
+         * point: mounting anyway is how both ends end up writing to one FAT
+         * volume, and FATFS would be caching a free count and directory
+         * entries the host is editing underneath it. */
+        k_mutex_lock(&sd_lock, K_FOREVER);
+        released = true;
+        cached.mounted = false;
+        k_mutex_unlock(&sd_lock);
+        LOG_INF("not mounting: a USB host has the card");
+        return;
+    }
+
     k_mutex_lock(&sd_lock, K_FOREVER);
     if (do_mount() == 0) {
         released = false;
@@ -190,6 +220,11 @@ void sd_probe_init(void)
     k_thread_name_set(&sd_wq.thread, "sd");
     k_work_init(&mount_work, mount_work_fn);
     k_work_init(&release_work, release_work_fn);
+
+    /* mount_work_fn() checks the flag itself, so this is the right thing to
+     * submit either way: with a host attached it records the handover and
+     * mounts nothing, and without one it mounts. Submitting release_work here
+     * instead would try to unmount a volume that was never mounted. */
     k_work_submit_to_queue(&sd_wq, &mount_work);
 }
 
@@ -331,16 +366,24 @@ int sd_probe(const struct shell *sh)
 
 void sd_release(void)
 {
+    /* Recorded first and unconditionally. Whether the work can be queued yet
+     * is a separate question -- at boot it cannot -- and the answer to "does
+     * the host have the card" must survive that. */
+    atomic_set(&host_holds_card, 1);
+
     if (released) {
         return;
     }
     /* Not done inline: this flushes and unmounts, and it is called from a USB
-     * callback. */
+     * callback. Harmless before the queue exists; the flag above is what
+     * sd_probe_init() and mount_work_fn() actually read. */
     k_work_submit_to_queue(&sd_wq, &release_work);
 }
 
 void sd_reclaim(void)
 {
+    atomic_set(&host_holds_card, 0);
+
     if (!released) {
         return;
     }

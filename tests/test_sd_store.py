@@ -143,3 +143,37 @@ def test_the_files_can_be_listed_and_checked():
     assert "SD_FILE_MAGIC" in fn and "bad magic" in fn
     # listing has to include what is still in RAM or the newest file reads short
     assert "flush_batch()" in fn
+
+
+# ------------------------------------------------- who holds the card at boot
+#
+# usb_enable() runs before sd_probe_init(), so a board that boots with the
+# cable already in fires USB_DC_CONFIGURED while the card's work queue does
+# not yet exist. The handover was submitted to an unstarted queue and silently
+# dropped, and the card then mounted normally -- leaving the firmware holding
+# a volume the host also had as a block device, which is the one state the
+# release mechanism exists to prevent.
+
+SD_PROBE = os.path.join(FW, "src", "sd_probe.c")
+
+
+def test_the_handover_is_recorded_without_the_work_queue():
+    src = read(SD_PROBE)
+    fn = body(src, "void sd_release(void)")
+    # Set before the early return, so a second call while already released
+    # still records it, and before the submit, which may go nowhere yet.
+    assert fn.index("host_holds_card") < fn.index("if (released)")
+
+
+def test_mounting_is_refused_while_a_host_holds_the_card():
+    src = read(SD_PROBE)
+    fn = body(src, "static void mount_work_fn(struct k_work *w)")
+    assert "atomic_get(&host_holds_card)" in fn
+    assert fn.index("host_holds_card") < fn.index("do_mount()"), \
+        "the check has to come before the mount, not after it"
+
+
+def test_reclaiming_clears_the_flag():
+    src = read(SD_PROBE)
+    fn = body(src, "void sd_reclaim(void)")
+    assert "atomic_set(&host_holds_card, 0)" in fn
