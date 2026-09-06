@@ -18,6 +18,8 @@ import time
 
 import numpy as np
 
+import compute
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.abspath(os.path.join(HERE, "..", "data"))
 TRANSCRIPTS = os.path.join(DATA, "transcripts")
@@ -1122,17 +1124,24 @@ class Worker:
         # The false-positive rate does not move, and the one case is a two-word
         # stock phrase the silence filter already catches. So the trade is not
         # a trade.
-        self._asr = whisperx.load_model("large-v3", "cuda",
-                                        compute_type="float16", language="en",
-                                        vad_options={"vad_onset": 0.200,
-                                                     "vad_offset": 0.150})
-        self._align = whisperx.load_align_model(language_code="en", device="cuda")
+        # Which device, and therefore which model, is decided in one place
+        # (web/compute.py) rather than written into each call. On a machine
+        # with no NVIDIA card this used to raise on the first clip and never
+        # record a word.
+        self.notify("log", text=f"models on {compute.describe()}")
+        self._asr = whisperx.load_model(
+            compute.ASR_MODEL, compute.ASR_DEVICE,
+            compute_type=compute.COMPUTE_TYPE, language="en",
+            threads=compute.threads(),
+            vad_options={"vad_onset": 0.200, "vad_offset": 0.150})
+        self._align = whisperx.load_align_model(language_code="en",
+                                                device=compute.ASR_DEVICE)
         token = os.environ.get("HF_TOKEN")
         if token:
             try:
                 self._diar = whisperx.diarize.DiarizationPipeline(
                     model_name="pyannote/speaker-diarization-3.1",
-                    token=token, device="cuda")
+                    token=token, device=compute.DEVICE)
             except Exception as e:
                 self.notify("log", text=f"diarization unavailable: {str(e)[:80]}")
         else:
@@ -1148,7 +1157,7 @@ class Worker:
                                       AutoModelForAudioClassification)
             fe = AutoFeatureExtractor.from_pretrained(SOUND_MODEL)
             sm = AutoModelForAudioClassification.from_pretrained(SOUND_MODEL)
-            sm = sm.to("cuda").eval()
+            sm = sm.to(compute.DEVICE).eval()
             self._sound = (fe, sm, sm.config.id2label)
         except Exception as e:
             self.notify("log", text=f"sound tagging unavailable: {str(e)[:80]}")
@@ -1205,7 +1214,7 @@ class Worker:
 
         def look(seg):
             with torch.no_grad():
-                x = fe(seg, sampling_rate=sr, return_tensors="pt").to("cuda")
+                x = fe(seg, sampling_rate=sr, return_tensors="pt").to(compute.DEVICE)
                 return torch.sigmoid(model(**x).logits[0]).cpu().numpy()
 
         try:
@@ -1276,7 +1285,8 @@ class Worker:
 
         res = self._asr.transcribe(audio, batch_size=16)
         model_a, meta = self._align
-        res = whisperx.align(res["segments"], model_a, meta, audio, "cuda")
+        res = whisperx.align(res["segments"], model_a, meta, audio,
+                             compute.ASR_DEVICE)
 
         names, embeddings = {}, {}
         if self._diar is not None:
@@ -1701,7 +1711,8 @@ class Worker:
                                  f"{len(audio) / 16000 / 60:.0f} min, in one pass"))
         res = self._asr.transcribe(audio, batch_size=16)
         model_a, meta = self._align
-        res = whisperx.align(res["segments"], model_a, meta, audio, "cuda")
+        res = whisperx.align(res["segments"], model_a, meta, audio,
+                             compute.ASR_DEVICE)
 
         terms = load_vocabulary()
         lines = []

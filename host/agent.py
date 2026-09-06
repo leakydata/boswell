@@ -166,7 +166,8 @@ def main():
     ap.add_argument("--model", default="glm-4.7-flash:latest")
     ap.add_argument("--asr-model", default="large-v3")
     ap.add_argument("--diar-model", default="pyannote/speaker-diarization-3.1")
-    ap.add_argument("--device", default="cuda")
+    ap.add_argument("--device", default=None,
+                    help="cuda, mps or cpu. Chosen for you if not given.")
     ap.add_argument("--compute-type", default="float16")
     ap.add_argument("--hf-token", default=os.environ.get("HF_TOKEN"))
     ap.add_argument("--chunk-seconds", type=float, default=180.0)

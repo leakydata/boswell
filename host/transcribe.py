@@ -22,7 +22,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("wav")
     ap.add_argument("--model", default="large-v3")
-    ap.add_argument("--device", default="cuda")
+    ap.add_argument("--device", default=None,
+                    help="cuda, mps or cpu. Chosen for you if not given.")
     ap.add_argument("--compute-type", default="float16")
     ap.add_argument("--language", default="en")
     ap.add_argument("--diarize", action="store_true")

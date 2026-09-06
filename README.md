@@ -23,15 +23,41 @@ model, pyannote diarization and the AST sound tagger all resident:
 
 | | |
 |---|---|
-| GPU | **NVIDIA, required.** `"cuda"` is hardcoded; there is no CPU or MPS path |
-| VRAM held | **7,460 MiB** by the server process |
+| GPU | NVIDIA for full speed; **it runs without one**, slowly |
+| VRAM held | **7,460 MiB** by the server process on the GPU path |
 | Comfortable on | 12 GB and up |
 | Tight on | **8 GB** — an 8,192 MiB card has no room left once the desktop takes its share |
-| Will not run on | a Mac, or any box without a discrete NVIDIA card |
+| Without a GPU | works, at roughly **0.4× realtime** — see below |
 
-To fit a smaller card, change the model in `web/pipeline.py`: `distil-large-v3`
-or `medium` instead of `large-v3`, and `compute_type="int8_float16"` instead of
-`"float16"`. Both cost some accuracy and neither has been measured here yet.
+The device is chosen for you: CUDA, else Apple MPS, else the CPU. Override with
+`BOSWELL_TORCH_DEVICE`, `BOSWELL_ASR_MODEL`, `BOSWELL_COMPUTE_TYPE`.
+
+### How slow is the CPU?
+
+One 30-second clip, Xeon E5-2630 v4 (20 cores, 2.2 GHz), nothing else running:
+
+| | GPU (RTX 4090) | CPU |
+|---|---|---|
+| whisper large-v3 | **29.2×** realtime | 0.79× |
+| whisper distil-large-v3 | — | 2.64× |
+| pyannote diarization | 32.0× | **0.47×** |
+| AST sound tagger | 95.1× | 19.0× |
+
+**Whisper is not the bottleneck — diarization is.** Working out who spoke in
+30 seconds of audio takes 63.7 s on this CPU, more than every other stage put
+together. The whole pipeline lands near **0.4× realtime**, so a recorder worn
+all day produces audio about two and a half times faster than the machine can
+process it, and the backlog never closes.
+
+That is a real limit, not a reason to refuse. Without a GPU this is for
+catching up on a few hours overnight, or a machine that records for part of a
+day. A 2026 laptop CPU is several times this 2016 server part per core, so the
+ratio will be better there — and still nothing like a GPU. The CPU default is
+`distil-large-v3` rather than `large-v3` for exactly this reason.
+
+To fit a small GPU instead, set `BOSWELL_ASR_MODEL=distil-large-v3` and
+`BOSWELL_COMPUTE_TYPE=int8_float16`. Both cost some accuracy; neither has been
+measured here yet.
 
 One trap worth naming: a **GTX 1080 and other Pascal cards run fp16 at a
 fraction of fp32 speed**, so `float16` there is slow even where it fits. That

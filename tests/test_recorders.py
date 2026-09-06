@@ -101,3 +101,50 @@ def test_one_scan_at_a_time():
     src = open(os.path.join(os.path.dirname(__file__), "..",
                             "web", "server.py")).read()
     assert src.count("async with SCAN_LOCK:") >= 2
+
+
+# ------------------------------------------------------ where models run
+def test_the_device_is_decided_in_one_place():
+    """`"cuda"` was written into seven calls in the pipeline, so a machine
+    without an NVIDIA card did not degrade -- it raised on the first clip and
+    never recorded a word."""
+    src = open(os.path.join(os.path.dirname(__file__), "..",
+                            "web", "pipeline.py")).read()
+    assert '"cuda"' not in src, "a hardcoded device is back in the pipeline"
+    assert "import compute" in src
+
+
+def test_the_cpu_path_does_not_default_to_the_slowest_model():
+    # large-v3 on this CPU is 0.79x realtime: below 1x a continuous recorder
+    # outruns the machine and the backlog never comes back.
+    import importlib
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "web"))
+    os.environ["BOSWELL_TORCH_DEVICE"] = "cpu"
+    try:
+        import compute
+        importlib.reload(compute)
+        assert compute.DEVICE == "cpu"
+        assert compute.ASR_MODEL == "distil-large-v3"
+        assert compute.COMPUTE_TYPE == "int8"
+        assert compute.threads() > 4
+    finally:
+        del os.environ["BOSWELL_TORCH_DEVICE"]
+        import compute
+        importlib.reload(compute)
+
+
+def test_whisper_falls_off_mps_because_ctranslate2_has_no_backend():
+    # Otherwise a Mac gets a stack trace from inside a library rather than a
+    # working transcriber on the CPU.
+    import importlib
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "web"))
+    os.environ["BOSWELL_TORCH_DEVICE"] = "mps"
+    try:
+        import compute
+        importlib.reload(compute)
+        assert compute.DEVICE == "mps"
+        assert compute.ASR_DEVICE == "cpu"
+    finally:
+        del os.environ["BOSWELL_TORCH_DEVICE"]
+        import compute
+        importlib.reload(compute)
