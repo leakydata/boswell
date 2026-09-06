@@ -1848,6 +1848,13 @@ async def api_recordings_import(request: Request):
     so a recording collected either way is ingested once. That is the whole
     reason for merging these: two importing-shaped controls a few rows apart
     were two chances to build two sets of rules.
+
+    A bulk import runs in the background and reports progress, because the
+    realistic case is not two files. A device worn for a fortnight comes back
+    with a hundred and forty of them and 143 MB to verify and decode -- work
+    measured in minutes, not in the moment a request can be held open for.
+    Holding it open was fine when the card had two files on it and would have
+    quietly timed out on a real one.
     """
     body = await request.json()
     import sys
@@ -1855,48 +1862,129 @@ async def api_recordings_import(request: Request):
     import ingest_card
 
     cards = card_scan.find_cards()
-    lines = []
 
-    if cards:
-        path = cards[0]
-        wanted = body.get("index")
+    # One file, either route: quick enough to answer inline.
+    if body.get("index") is not None:
+        if cards:
+            path = cards[0]
+            wanted = int(body["index"])
 
-        def run():
-            ledger = ingest_card.load_ledger()
-            held = ingest_card.held_records()
-            out = []
-            for i, f in enumerate(card_scan.recordings(path)):
-                if wanted is not None and i != int(wanted):
-                    continue
-                out.append(ingest_card.ingest_file(f, held, ledger, write=True))
-            ingest_card.save_ledger(ledger)
-            return out
+            def one():
+                ledger = ingest_card.load_ledger()
+                held = ingest_card.held_records()
+                files = card_scan.recordings(path)
+                if wanted >= len(files):
+                    return None
+                line = ingest_card.ingest_file(files[wanted], held, ledger,
+                                               write=True)
+                ingest_card.save_ledger(ledger)
+                return line
 
-        lines = await asyncio.to_thread(run)
-    else:
-        if body.get("index") is None:
-            return {"ok": False,
-                    "error": "over Bluetooth, fetch one recording at a time"}
-        r = await api_device_files_pull_inner(int(body["index"]),
-                                              body.get("name"),
-                                              int(body.get("size") or 0))
-        if not r.get("ok"):
-            return r
-        lines = [r["line"]]
+            line = await asyncio.to_thread(one)
+            if line is None:
+                return {"ok": False, "error": "no such recording"}
+            lines = [line]
+        else:
+            r = await api_device_files_pull_inner(int(body["index"]),
+                                                  body.get("name"),
+                                                  int(body.get("size") or 0))
+            if not r.get("ok"):
+                return r
+            lines = [r["line"]]
 
-    for line in lines:
-        device.event("log", text=line)
+        for line in lines:
+            device.event("log", text=line)
+        queued = _queue_card_clips()
+        return {"ok": True, "files": len(lines), "queued": queued,
+                "lines": lines}
 
+    # Everything. Only over the cable: at the radio's five kilobytes a second
+    # a full card is eight hours, and offering that as a button would be
+    # offering somebody a mistake.
+    if not cards:
+        return {"ok": False,
+                "error": "plug the device in to import everything -- over "
+                         "Bluetooth a full card would take hours"}
+
+    if import_job.get("running"):
+        return {"ok": False, "error": "an import is already running"}
+
+    asyncio.create_task(_run_bulk_import(cards[0]))
+    return {"ok": True, "started": True}
+
+
+# Progress for the bulk import, kept here rather than in device.state because
+# it is about the archive rather than the device, and it outlives a
+# disconnection.
+import_job = {"running": False, "done": 0, "total": 0, "file": None,
+              "new": 0, "failed": 0, "finished_at": None}
+
+
+def _queue_card_clips():
+    """Card clips are clips. The pipeline does not notice them on its own."""
     queued = 0
     for f in sorted(os.listdir(DATA)):
         if f.startswith("card_") and f.endswith(".wav"):
             if not os.path.exists(pipeline.transcript_path(f)):
                 if worker.submit(f):
                     queued += 1
-    if queued:
-        device.event("log", text=f"queued {queued} clip(s) for transcription")
+    return queued
 
-    return {"ok": True, "files": len(lines), "queued": queued, "lines": lines}
+
+async def _run_bulk_import(path):
+    """Import a whole card, one file at a time, saying where it has got to.
+
+    The ledger is saved after every file rather than at the end. An import
+    that is interrupted -- the cable pulled, the server restarted, the laptop
+    asleep -- then resumes where it stopped instead of starting again, and
+    "resumes" is free because the ledger already makes every file idempotent.
+    """
+    import sys
+    sys.path.insert(0, os.path.join(HERE, "..", "host"))
+    import ingest_card
+
+    files = card_scan.recordings(path)
+    import_job.update(running=True, done=0, total=len(files), file=None,
+                      new=0, failed=0, finished_at=None)
+    device.event("log", text=f"importing {len(files)} recording(s) from the card")
+    device.publish()
+
+    def one(f, ledger, held):
+        line = ingest_card.ingest_file(f, held, ledger, write=True)
+        ingest_card.save_ledger(ledger)
+        return line
+
+    ledger = await asyncio.to_thread(ingest_card.load_ledger)
+    held = await asyncio.to_thread(ingest_card.held_records)
+
+    for i, f in enumerate(files):
+        import_job["file"] = os.path.basename(f)
+        import_job["done"] = i
+        device.publish()
+        try:
+            line = await asyncio.to_thread(one, f, ledger, held)
+        except Exception as e:
+            import_job["failed"] += 1
+            device.event("log", text=f"{os.path.basename(f)}: {e}")
+            continue
+        if "already ingested" not in line:
+            import_job["new"] += 1
+            device.event("log", text=line)
+
+    import_job.update(running=False, done=len(files), file=None,
+                      finished_at=time.time())
+    queued = _queue_card_clips()
+    device.event("log",
+                 text=f"import finished: {import_job['new']} file(s) brought "
+                      f"in, {import_job['failed']} failed, {queued} clip(s) "
+                      f"queued to transcribe")
+    device.publish()
+
+
+@app.get("/api/recordings/import")
+async def api_recordings_import_status():
+    """Where the bulk import has got to."""
+    return dict(import_job)
 
 
 @app.get("/api/device_files")
@@ -2012,49 +2100,20 @@ async def api_card():
 
 @app.post("/api/card/ingest")
 async def api_card_ingest():
-    """Import what the archive does not already hold.
+    """Kept for anything holding the old address; the work lives in one place.
 
-    Runs off the event loop: verifying and decoding a day of audio is minutes
-    of CPU, and doing it inline would stop the server answering -- including
-    stopping it accepting the live audio that is still arriving.
+    This was the docked-card import before the two routes were merged. Two
+    implementations of "bring the card in" is two places for the ingest rules
+    to drift, which is the thing the merge existed to prevent -- so this
+    starts the same background job the merged control does.
     """
-    import sys
-    sys.path.insert(0, os.path.join(HERE, "..", "host"))
-    import ingest_card
-
     cards = card_scan.find_cards()
     if not cards:
         return {"ok": False, "error": "no docked card found"}
-
-    path = cards[0]
-
-    def run():
-        ledger = ingest_card.load_ledger()
-        held = ingest_card.held_records()
-        lines = []
-        for f in card_scan.recordings(path):
-            lines.append(ingest_card.ingest_file(f, held, ledger, write=True))
-        ingest_card.save_ledger(ledger)
-        return lines
-
-    lines = await asyncio.to_thread(run)
-    for line in lines:
-        device.event("log", text=line)
-
-    # Card clips are clips. Whatever the pipeline does to a live one it
-    # should do to these, and it will not notice them on its own.
-    queued = 0
-    for f in sorted(os.listdir(DATA)):
-        if f.startswith("card_") and f.endswith(".wav"):
-            if not os.path.exists(pipeline.transcript_path(f)):
-                if worker.submit(f):
-                    queued += 1
-    if queued:
-        device.event("log", text=f"queued {queued} card clip(s) for transcription")
-
-    return {"ok": True, "files": len(lines), "queued": queued,
-            "lines": lines}
-
+    if import_job.get("running"):
+        return {"ok": False, "error": "an import is already running"}
+    asyncio.create_task(_run_bulk_import(cards[0]))
+    return {"ok": True, "started": True}
 
 @app.post("/api/transcribe_all")
 async def api_transcribe_all():

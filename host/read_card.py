@@ -54,19 +54,35 @@ def read_header(f):
             "codec_name": CODEC_NAMES.get(codec, f"unknown({codec})")}
 
 
+# The same CRC the device writes, and the same one its flash backlog already
+# used: polynomial 0x07, init 0xFF. Table-driven because this runs once per
+# record and a card holds hundreds of thousands of them -- the bit-at-a-time
+# version was two seconds of every file.
+_CRC8 = []
+for _b in range(256):
+    _c = _b
+    for _ in range(8):
+        _c = ((_c << 1) ^ 0x07) & 0xFF if _c & 0x80 else (_c << 1) & 0xFF
+    _CRC8.append(_c)
+
+
 def crc8(data):
-    """The same CRC the device writes, and the same one its flash backlog
-    already used. Polynomial 0x07, init 0xFF."""
     crc = 0xFF
     for b in data:
-        crc ^= b
-        for _ in range(8):
-            crc = ((crc << 1) ^ 0x07) & 0xFF if crc & 0x80 else (crc << 1) & 0xFF
+        crc = _CRC8[crc ^ b]
     return crc
 
 
 def read_frames(f, version):
     """Yield (payload, ok) for each record.
+
+    Reads the whole file into memory first and walks it there. The obvious
+    version -- three small reads per record, for the length, the checksum and
+    the payload -- is thirty thousand reads for one recording, and against a
+    card mounted over USB that was ten of the thirteen seconds each file
+    took. Decoding the audio was half a second of it. A recording is about a
+    megabyte; holding one is nothing, and it turns the slowest part of an
+    import into the fastest.
 
     A file whose tail is torn -- the battery went during a batch -- stops
     here rather than raising. Everything before the tear is real audio and is
@@ -77,24 +93,25 @@ def read_frames(f, version):
     ending the read. The length chain is still intact after it, so the rest
     of the file is still readable, and one scrambled frame is 20 ms.
     """
+    buf = f.read()
+    pos = 0
+    end = len(buf)
+    extra = 1 if version >= 2 else 0
+
     while True:
-        head = f.read(2)
-        if len(head) < 2:
+        if pos + 2 + extra > end:
             return
-        (n,) = struct.unpack("<H", head)
+        n = buf[pos] | (buf[pos + 1] << 8)
         if n == 0 or n > 4096:
             return                     # not a length; the file is torn here
 
-        want_crc = None
-        if version >= 2:
-            c = f.read(1)
-            if len(c) < 1:
-                return
-            want_crc = c[0]
+        want_crc = buf[pos + 2] if extra else None
+        start = pos + 2 + extra
+        if start + n > end:
+            return                     # the tail is torn
 
-        payload = f.read(n)
-        if len(payload) < n:
-            return
+        payload = buf[start:start + n]
+        pos = start + n
 
         ok = want_crc is None or crc8(payload) == want_crc
         yield payload, ok

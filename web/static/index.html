@@ -6225,6 +6225,38 @@ recPoll(0);
 
 $("recbtn").onclick = () => recPoll(1);
 
+// Follow a bulk import to the end, saying which file and how far.
+//
+// Polled rather than pushed: the import is host-side work on a directory,
+// nothing to do with the device, and it must keep reporting while the device
+// is disconnected -- which is the ordinary case, since the cable that carries
+// the card is the same cable, and docking hands the card to the computer.
+async function recFollowImport(btn){
+  for (;;){
+    await new Promise(r => setTimeout(r, 1500));
+    let j;
+    try { j = await (await fetch("/api/recordings/import")).json(); }
+    catch(e){ continue; }          // a blip is not a reason to stop watching
+
+    if (j.total){
+      const pct = Math.round(100 * j.done / j.total);
+      $("recv").textContent = j.running
+        ? `importing ${j.done} of ${j.total}… ${pct}%`
+        : `imported ${j.new} of ${j.total}`;
+      if (btn) btn.textContent = j.running ? `${pct}%` : "Refresh";
+    }
+    if (!j.running){
+      if (j.failed) {
+        toast(`Imported ${j.new}, ${j.failed} could not be read`, "bad");
+      } else {
+        toast(`Imported ${j.new} recording${j.new === 1 ? "" : "s"} — ` +
+              `transcribing now`, "ok");
+      }
+      return;
+    }
+  }
+}
+
 async function recImport(f, btn){
   const all = f === null;
   btn.disabled = true;
@@ -6241,7 +6273,13 @@ async function recImport(f, btn){
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify(body),
     })).json();
-    if (r.ok){
+    if (r.ok && r.started){
+      /* A whole card is minutes of verifying and decoding, not a request to
+         hold open. The server does it in the background and says where it
+         has got to; this follows along so the page is never a spinner with
+         no number in it. */
+      await recFollowImport(btn);
+    } else if (r.ok){
       for (const line of (r.lines || [])) log(line);
       if (r.queued) log(`queued ${r.queued} clip(s) for transcription`);
       toast("Imported — the new recordings are in Recordings", "ok");
