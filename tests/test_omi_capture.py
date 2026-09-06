@@ -199,10 +199,15 @@ def test_capture_reports_progress_to_whoever_started_it():
 
 def test_the_interface_says_what_it_has_heard():
     # "recording" alone for an hour is indistinguishable from "stuck saying
-    # recording".
+    # recording", so the panel carries the count and the duration behind it.
+    # These moved out of the status line and into the stats row when the two
+    # recorders were given the same panel; the requirement is that the figures
+    # are on screen, not which line they sit on.
     html = read_file("web/static/index.html")
     assert "clip` \n" not in html
-    assert "this session" in html
+    assert "This session" in html          # the stat's label
+    assert '$("omiclips").textContent' in html   # and something fills it
+    assert "min of audio" in html or "` \u00b7 ${mins} min`" in html
 
 
 # ------------------------------------------------------ what it says about itself

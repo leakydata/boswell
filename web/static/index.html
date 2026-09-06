@@ -552,6 +552,9 @@ dialog.sheet .hint{font-family:var(--mono);font-size:12px;color:var(--muted);
 .hero .status{margin:2px 0 10px}
 .hero .btns{margin-top:14px}
 .hero .btns button{min-height:48px;font-size:15.5px}
+/* Both recorder panels carry their device's address, so which physical thing
+   a panel is about is never a guess. */
+.addr{font-weight:normal;font-family:var(--mono);font-size:11px;color:var(--faint)}
 dl.herostats{margin:6px 0 2px;display:flex;gap:28px;flex-wrap:wrap}
 dl.herostats dt{font-size:11px;font-family:var(--mono);letter-spacing:.08em;
   text-transform:uppercase;color:var(--faint)}
@@ -823,7 +826,7 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
   <div class="view" id="viewDev" role="tabpanel" aria-labelledby="tabDev" tabindex="0">
   <div class="grid">
     <div class="card span2 hero">
-      <h2>Device</h2>
+      <h2><span id="devname">Device</span> <span id="devaddr" class="addr"></span></h2>
       <div class="status">
         <span class="dot off" id="dot"></span>
         <div>
@@ -869,6 +872,43 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
       </div>
     </div>
 
+    <div class="card span2 hero" id="omicard" hidden>
+      <h2>Omi <span id="omiaddr" class="addr"></span></h2>
+      <div class="status">
+        <span class="dot off" id="omidot"></span>
+        <div>
+          <div class="stxt" id="omistate" role="status" aria-live="polite">—</div>
+          <div class="ssub" id="omisub"></div>
+        </div>
+      </div>
+
+      <dl class="herostats">
+        <dt>Battery</dt><dd id="omibatt">—</dd>
+        <dt>This session</dt><dd id="omiclips">—</dd>
+        <dt>Its clock</dt><dd id="omiclock">—</dd>
+      </dl>
+
+      <div id="omibar" hidden style="margin-top:8px;height:4px;border-radius:2px;
+           background:var(--rule);overflow:hidden">
+        <div id="omibarfill" style="height:100%;width:0;background:var(--accent);
+             transition:width .4s"></div>
+      </div>
+      <div id="omistats" hidden style="margin-top:12px;display:grid;
+           grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px 14px"></div>
+      <p class="note" id="omenote">Recording into the same archive, alongside
+        the device above. It catches up on whatever it stored while away
+        before it starts streaming, so a long sync after a day out is the
+        normal shape of things rather than a fault.</p>
+    </div>
+
+    <!-- One control for getting recordings off the device, whichever way it
+         arrived: docked over USB, or over the radio. Two importing-shaped
+         buttons a few rows apart, one of them usually invisible, was how "I
+         clicked Import and I'm not sure anything happened" happened. -->
+    <!-- The second recorder. Separate from the device panel above because it
+         is a different device: it fails on its own, it is worn instead of
+         rather than as well as, and conflating the two would mean neither
+         status could be trusted. -->
     <div class="card">
       <h2>Capture</h2>
       <label class="row">Microphone gain
@@ -884,34 +924,6 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
       <p class="note">Off: finish the buffered audio first, so the conversation
         stays in order. On: hear live audio immediately and recover the buffer
         alongside it — recovered audio is saved as its own clip.</p>
-    </div>
-
-    <!-- One control for getting recordings off the device, whichever way it
-         arrived: docked over USB, or over the radio. Two importing-shaped
-         buttons a few rows apart, one of them usually invisible, was how "I
-         clicked Import and I'm not sure anything happened" happened. -->
-    <!-- The second recorder. Separate from the device panel above because it
-         is a different device: it fails on its own, it is worn instead of
-         rather than as well as, and conflating the two would mean neither
-         status could be trusted. -->
-    <div class="card" id="omicard" hidden>
-      <h2>Omi <span id="omiaddr" class="note"
-          style="font-weight:normal;font-family:var(--mono);font-size:11px"></span></h2>
-      <div class="row" style="align-items:center">
-        <span class="val" id="omistate" style="flex:1;text-align:left;min-width:0">—</span>
-        <span class="val" id="omiclips" style="flex:none"></span>
-      </div>
-      <div id="omibar" hidden style="margin-top:8px;height:4px;border-radius:2px;
-           background:var(--rule);overflow:hidden">
-        <div id="omibarfill" style="height:100%;width:0;background:var(--accent);
-             transition:width .4s"></div>
-      </div>
-      <div id="omistats" hidden style="margin-top:10px;display:grid;
-           grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px 14px"></div>
-      <p class="note" id="omenote">Recording into the same archive, alongside
-        the device above. It catches up on whatever it stored while away
-        before it starts streaming, so a long sync after a day out is the
-        normal shape of things rather than a fault.</p>
     </div>
 
     <div class="card" id="recrow" hidden>
@@ -1800,6 +1812,10 @@ function paint(s){
   connected = s.connected; armed = s.armed;
   /* The tab title carries the standing question: among eleven open tabs,
      which one is the recorder and is it doing its job. */
+  // The panel heading names the thing rather than its category, matching the
+  // recorder below it: two panels, both saying which box they are about.
+  $("devname").textContent = s.device_name || "Device";
+  $("devaddr").textContent = s.device_address || "";
   recorders.boswell = {
     name: s.device_name || s.device_address || "connected",
     connected: !!s.connected, capturing: !!(s.connected && s.armed),
@@ -6451,24 +6467,24 @@ async function omiPoll(){
   if (!known) return;
 
   const clips = s.clips || 0;
-  $("omiclips").textContent = clips ? `${clips} clip${clips===1?"":"s"}` : "";
 
   // Whatever the device said about itself last time something held it. Kept
   // on screen while it is away rather than blanked: "the battery was 24% an
   // hour ago" is the most useful thing to know about a device that has just
   // stopped answering, and blanking it is how you lose that.
   const st = s.stats || {};
-  const cells = [];
-  const add = (k, v) => { if (v !== undefined && v !== null && v !== "") cells.push([k, v]); };
-  add("battery", st.battery != null
-      ? `${st.battery}%${st.charging ? " · charging" : ""}` : null);
-  add("codec", st.codec_name || (st.codec != null ? `id ${st.codec}` : null));
-  add("mic gain", st.mic_gain);
-  add("led", st.dim_ratio != null ? `${st.dim_ratio}%` : null);
-  add("model", st.model);
-  add("firmware", st.firmware);
-  add("hardware", st.hardware);
-  add("maker", st.maker);
+
+  /* The three facts the panel above puts in the same place, in the same
+     place here. A recorder is a recorder: is it connected, how much charge
+     has it got, what has it heard -- and the answer should not be somewhere
+     different depending on which box you are asking about. */
+  $("omibatt").textContent = st.battery != null
+      ? `${st.battery}%${st.charging ? " · charging" : ""}` : "—";
+  const mins = Math.round((s.frames || 0) * 20 / 1000 / 60);
+  $("omiclips").textContent = clips
+      ? `${clips} clip${clips === 1 ? "" : "s"}${mins ? ` · ${mins} min` : ""}`
+      : "—";
+  let clockNote = "—";
   if (st.device_epoch){
     /* Against the moment the reading was taken, not against now. The stats
        are read once per session and then shown unchanged, so comparing them
@@ -6480,12 +6496,29 @@ async function omiPoll(){
     const off = Math.round(Math.abs(st.device_epoch - readAt));
     // A device clock is not trivia here: it stamps the packets it stores,
     // and those stamps are the only thing that places offloaded audio.
-    add("its clock", off > 120
-        ? `${new Date(st.device_epoch * 1000).toLocaleString()} — off by `
-          + `${off > 86400 ? (off / 86400).toFixed(1) + " days" : Math.round(off / 60) + " min"}`
-        : "correct");
+    clockNote = off > 120
+        ? `off by ${off > 86400 ? (off / 86400).toFixed(1) + " days"
+                                : Math.round(off / 60) + " min"}`
+        : (st.clock_set_to ? "correct · set by this host" : "correct");
   }
-  if (st.clock_set_to) add("clock", "set by this host");
+  $("omiclock").textContent = clockNote;
+
+  // The rest is what this device is, rather than what it is doing, so it sits
+  // below the line the other panel draws in the same place.
+  const cells = [];
+  const add = (k, v) => { if (v !== undefined && v !== null && v !== "") cells.push([k, v]); };
+  // The codec is in the status line above while it is recording; repeating it
+  // here only gave the reader two places to check for one fact. It reappears
+  // when there is no status line saying it.
+  if (s.state !== "recording"){
+    add("codec", st.codec_name || (st.codec != null ? `id ${st.codec}` : null));
+  }
+  add("mic gain", st.mic_gain);
+  add("led", st.dim_ratio != null ? `${st.dim_ratio}%` : null);
+  add("model", st.model);
+  add("firmware", st.firmware);
+  add("hardware", st.hardware);
+  add("maker", st.maker);
 
   const box = $("omistats");
   box.hidden = !cells.length;
@@ -6503,37 +6536,52 @@ async function omiPoll(){
   // guess -- the same reason the panel above stopped saying XIAO-MIC.
   $("omiaddr").textContent = s.address || "";
 
+  /* Headline, subtext and dot, in the words and colours the panel above uses.
+     Two recorders described in two different vocabularies is two things to
+     learn to read, and the one you have not read lately is the one that is
+     lying to you. */
+  const show = (dotClass, head, sub) => {
+    $("omidot").className = "dot " + dotClass;
+    $("omistate").textContent = head;
+    $("omisub").textContent = sub || "";
+  };
+
   if (!s.running){
     // Said plainly. A recorder that has stopped looking like one that is
     // merely quiet is the failure this whole project keeps finding.
-    $("omistate").textContent = "not running";
+    show("off", "Not running", "the omid service is not running");
     $("omibar").hidden = true;
     return;
   }
 
   if (s.state === "syncing" && s.total){
     const pct = Math.round(100 * (s.done || 0) / s.total);
-    $("omistate").textContent =
-      `catching up — ${(s.done||0).toLocaleString()} of ${s.total.toLocaleString()} (${pct}%)`;
+    show("drain", "Catching up",
+         `${(s.done||0).toLocaleString()} of ${s.total.toLocaleString()} packets · ${pct}%`);
     $("omibar").hidden = false;
     $("omibarfill").style.width = pct + "%";
-  } else {
+    return;
+  }
+
+  $("omibar").hidden = true;
+  if (s.state === "recording"){
     // What it has heard, not only that it is listening. "recording" alone
     // for an hour is indistinguishable from "stuck saying recording".
-    if (s.state === "recording" && (s.clips || s.frames)){
-      const mins = Math.round((s.frames || 0) * 20 / 1000 / 60);
-      $("omistate").textContent = `recording — ${s.clips || 0} clip`
-        + `${s.clips === 1 ? "" : "s"} this session`
-        + (mins ? `, ${mins} min of audio` : "");
-      $("omibar").hidden = true;
-      return;
-    }
-    const words = {recording:"recording", looking:"looking for the device",
-                   waiting:"waiting to reconnect", lost:"lost the link",
-                   "not found":"not in range", "catching up":"catching up"};
-    $("omistate").textContent = words[s.state] || s.state || "—";
-    $("omibar").hidden = true;
+    // The format and the count of what has arrived, which is what the panel
+    // above puts here. What it has heard belongs in the stats row, and saying
+    // it in both places just made the two disagree by one clip.
+    show("live", "Recording",
+         [st.codec_name || "Opus",
+          `${(s.frames || 0).toLocaleString()} frames`].join(" · "));
+    return;
   }
+  const words = {looking: ["off", "Searching…", "not in range yet"],
+                 waiting: ["off", "Waiting to reconnect", "the link dropped"],
+                 lost: ["off", "Lost the link", "it stopped answering"],
+                 "not found": ["off", "Not in range", "nothing advertising"],
+                 "catching up": ["drain", "Catching up", "from a previous run"]};
+  const w = words[s.state];
+  show(w ? w[0] : "idle", w ? w[1] : (s.state || "—"), w ? w[2] : "");
 }
 setInterval(omiPoll, 4000);
 omiPoll();
