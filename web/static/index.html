@@ -573,6 +573,26 @@ dialog.sheet .hint{font-family:var(--mono);font-size:12px;color:var(--muted);
   background:color-mix(in srgb,var(--warn) 8%,transparent);border-radius:0 6px 6px 0}
 .quiet b{display:block;font-size:13.5px}
 .quiet p{margin:4px 0 0;font-size:12.5px;color:var(--muted);line-height:1.55}
+/* A device somebody might pair. Reads as a thing rather than a table row:
+   first runs are where a project either makes sense or does not. */
+.dcard{display:flex;align-items:center;gap:14px;padding:14px;margin:10px 0;
+  border:1px solid var(--rule);border-radius:10px;background:var(--sunk)}
+.dcard .icon{flex:none;width:44px;height:44px;border-radius:12px;
+  display:grid;place-items:center;background:var(--bg);
+  border:1px solid var(--rule);color:var(--accent)}
+.dcard .icon svg{width:24px;height:24px;fill:currentColor}
+.dcard .what{flex:1;min-width:0}
+.dcard .what b{display:block;font-size:14.5px}
+.dcard .what span{font-size:11.5px;color:var(--faint);font-family:var(--mono)}
+.dcard .acts{display:flex;gap:8px;flex:none}
+.dcard button{flex:none;width:auto;min-width:84px}
+.hunting{display:flex;align-items:center;gap:10px;color:var(--muted);
+  font-size:13px;padding:10px 0}
+.hunting i{width:10px;height:10px;border-radius:50%;background:var(--accent);
+  animation:pulse 1.1s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:.25;transform:scale(.8)}50%{opacity:1;transform:scale(1.15)}}
+@media (prefers-reduced-motion:reduce){.hunting i{animation:none;opacity:.8}}
+
 /* Things to try, in the order worth trying them. */
 .fixsteps{margin:8px 0 0;padding-left:20px}
 .fixsteps li{margin:5px 0;font-size:12.5px;color:var(--muted);line-height:1.55}
@@ -1890,12 +1910,34 @@ const recorders = {
  * hardware they will never have, with a Connect button that could not
  * succeed. Panels now follow this list.
  */
+/* A recorder, drawn as a thing. An Omi is a pendant; the handmade one is a
+   board. Two shapes is enough to tell them apart at a glance, which is the
+   whole job on a first run. */
+const KIND_ICON = {
+  omi: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a1 1 0 0 1 1 1v2.2a6.8 6.8 0 1 1-2 0V3a1 1 0 0 1 1-1zm0 6.2a4.8 4.8 0 1 0 0 9.6 4.8 4.8 0 0 0 0-9.6zm0 2.3a2.5 2.5 0 1 1 0 5 2.5 2.5 0 0 1 0-5z"/></svg>',
+  boswell: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4h10a3 3 0 0 1 3 3v10a3 3 0 0 1-3 3H7a3 3 0 0 1-3-3V7a3 3 0 0 1 3-3zm0 2a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V7a1 1 0 0 0-1-1H7zm2 3h6v2H9V9zm0 4h6v2H9v-2z"/></svg>',
+};
+function kindIcon(kind){ return KIND_ICON[kind] || KIND_ICON.boswell; }
+function kindName(kind){
+  return kind === "omi" ? "Omi" : "Handmade recorder";
+}
+/* Signal as a place rather than a number. -55 dBm means nothing to anybody;
+   "in this room" is the fact behind it. */
+function howClose(rssi){
+  if (rssi == null) return "";
+  if (rssi > -60) return "very close";
+  if (rssi > -75) return "in this room";
+  if (rssi > -88) return "nearby";
+  return "far away — bring it closer";
+}
+
 let paired = [];
 /* Whether the list has been fetched at all. Until it has, "nothing is paired"
    and "we have not asked yet" are the same empty array, and treating the
    second as the first flashes "no recorder paired" over a working setup on
    every page load. */
 let pairedLoaded = false;
+let firstLookDone = false;
 
 function paintPairing(){
   const have = k => paired.some(r => r.kind === k);
@@ -1919,9 +1961,14 @@ function paintPairing(){
   const list = $("pairlist");
   list.innerHTML = "";
   if (!paired.length){
-    list.innerHTML = '<p class="note">No recorders yet. Look for one below, '
-                   + 'with the device switched on and not connected to '
-                   + 'anything else.</p>';
+    list.innerHTML = '<p class="note">No recorders yet. Switch your recorder '
+                   + 'on and keep it near this computer. If it is connected to '
+                   + 'a phone app, close that first — only one thing can hold '
+                   + 'a recorder at a time.</p>';
+    // A first run should not need somebody to find the right button. Once,
+    // and only while nothing is paired, so it never scans behind a working
+    // setup's back.
+    if (!firstLookDone){ firstLookDone = true; $("bScan").click(); }
     return;
   }
   for (const r of paired){
@@ -2078,7 +2125,8 @@ on("bScan", "click", async () => {
   const b = $("bScan"), box = $("pairfound");
   b.disabled = true; b.textContent = "Looking…";
   box.hidden = false;
-  box.innerHTML = '<p class="note">Scanning for about eight seconds…</p>';
+  box.innerHTML = '<div class="hunting"><i></i><span>Listening for recorders '
+                + 'nearby — about eight seconds…</span></div>';
   try{
     const d = await (await fetch("/api/recorders/scan?seconds=8",
                                  {method: "POST"})).json();
@@ -2092,28 +2140,47 @@ on("bScan", "click", async () => {
       box.innerHTML = '<p class="note">Everything nearby is already paired.</p>';
     }
     for (const r of rows){
-      const row = document.createElement("div");
-      row.className = "prow";
-      row.innerHTML =
-        `<span class="pname"><b>${esc(r.name || r.address)}</b>
-           <span class="addr">${esc(r.address)}${
-             r.rssi != null ? " · " + r.rssi + " dBm" : ""}</span></span>
-         <span class="lbl dev">${esc(r.kind)}</span>`;
+      const card = document.createElement("div");
+      card.className = "dcard";
+      const close = howClose(r.rssi);
+      card.innerHTML =
+        `<span class="icon">${kindIcon(r.kind)}</span>
+         <span class="what"><b>${esc(r.name || kindName(r.kind))}</b>
+           <span>${esc(kindName(r.kind))} · ${esc(r.address)}${
+             close ? " · " + esc(close) : ""}</span></span>`;
+      const acts = document.createElement("div");
+      acts.className = "acts";
       const add = document.createElement("button");
       add.type = "button"; add.className = "pri"; add.textContent = "Pair";
       add.onclick = async () => {
-        add.disabled = true;
+        add.disabled = true; add.textContent = "Pairing…";
         try{
           const p = await (await fetch("/api/recorders/pair", {
             method: "POST", headers: {"Content-Type": "application/json"},
             body: JSON.stringify({kind: r.kind, address: r.address,
                                   name: r.name})})).json();
           paired = p.recorders || []; paintPairing();
-          row.remove();
-        }catch(e){ add.disabled = false; log("could not pair that recorder"); }
+          card.remove();
+          if (!box.querySelector(".dcard")){
+            box.innerHTML = '<p class="note">Paired. It gets its own panel at '
+              + 'the top of this page, and starts recording on its own.</p>';
+          }
+        }catch(e){
+          add.disabled = false; add.textContent = "Pair";
+          log("could not pair that recorder");
+        }
       };
-      row.appendChild(add);
-      box.appendChild(row);
+      // Saying no has to be as easy as saying yes, or a scan that turns up a
+      // neighbour's device leaves something you cannot dismiss.
+      const no = document.createElement("button");
+      no.type = "button"; no.textContent = "Not mine";
+      no.onclick = () => {
+        card.remove();
+        if (!box.querySelector(".dcard")) box.hidden = true;
+      };
+      acts.append(add, no);
+      card.appendChild(acts);
+      box.appendChild(card);
     }
   }catch(e){
     box.innerHTML = '<p class="note">The scan could not run. Another scan may '
