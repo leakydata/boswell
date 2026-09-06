@@ -93,6 +93,58 @@ def _ensure(c):
     if "tagged" not in have:
         c.execute("ALTER TABLE clips ADD COLUMN tagged INTEGER")
         c.commit()
+    # When the recording was actually captured, as the device's own clock saw
+    # it, and whether that time is trustworthy. mtime is when the file was
+    # written, which for recovered audio can be hours after the conversation;
+    # ordering and day-grouping by mtime puts a morning's talk into the
+    # evening it was docked. False is written only when the sidecar says so
+    # outright -- a clip recorded before the host ever set the device's clock
+    # has no honest timestamp, and showing a guessed one as a fact is the
+    # error this exists to prevent.
+    backfill = False
+    if "started" not in have:
+        c.execute("ALTER TABLE clips ADD COLUMN started REAL")
+        c.commit()
+        backfill = True
+    if "time_known" not in have:
+        c.execute("ALTER TABLE clips ADD COLUMN time_known INTEGER")
+        c.commit()
+        backfill = True
+    if backfill:
+        _backfill_capture_times(c)
+    c.commit()
+
+
+def _backfill_times_read(name):
+    """The capture-time sidecar, reduced to what the index stores."""
+    # Sidecars are named after the whole clip name, extension included
+    # ("clip_123.wav.json"), matching device_times above.
+    p = os.path.join(DATA, "times", name + ".json")
+    if not os.path.exists(p):
+        return None, None
+    try:
+        d = json.load(open(p))
+    except Exception:
+        return None, None
+    if d.get("time_known") is False:
+        return None, 0
+    started = d.get("started")
+    return (float(started) if started else None), 1
+
+
+def _backfill_capture_times(c):
+    """Fill started/time_known for rows indexed before the columns existed.
+
+    Reads sidecars only -- no audio is opened, so the one-time cost on an
+    archive of a few thousand clips is a couple of seconds of small file
+    reads, not a re-index.
+    """
+    rows = [(r["name"],) for r in c.execute(
+        "SELECT name FROM clips WHERE started IS NULL AND time_known IS NULL")]
+    for (name,) in rows:
+        started, known = _backfill_times_read(name)
+        c.execute("UPDATE clips SET started=?, time_known=? WHERE name=?",
+                  (started, known, name))
     c.commit()
 
 
@@ -163,10 +215,12 @@ def upsert_clip(name, transcript_path=None, wav_path=None):
         except Exception:
             status = "error"
 
+    started, time_known = _backfill_times_read(name)
     c.execute("""INSERT INTO clips(name, seconds, modified, status, has_speech,
                                    edited, speakers, preview, indexed_at,
-                                   voice_tag, sounds, sounds_strong, tagged)
-                 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+                                   voice_tag, sounds, sounds_strong, tagged,
+                                   started, time_known)
+                 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                  ON CONFLICT(name) DO UPDATE SET
                    seconds=excluded.seconds, modified=excluded.modified,
                    status=excluded.status, has_speech=excluded.has_speech,
@@ -175,10 +229,12 @@ def upsert_clip(name, transcript_path=None, wav_path=None):
                    voice_tag=excluded.voice_tag,
                    sounds=excluded.sounds,
                    sounds_strong=excluded.sounds_strong,
-                   tagged=excluded.tagged""",
+                   tagged=excluded.tagged,
+                   started=excluded.started,
+                   time_known=excluded.time_known""",
               (name, seconds, os.path.getmtime(wav), status, has_speech,
                edited, json.dumps(speakers), preview, time.time(), voice_tag,
-               sounds, sounds_strong, tagged))
+               sounds, sounds_strong, tagged, started, time_known))
     c.execute("DELETE FROM segments WHERE clip = ?", (name,))
     if segs:
         c.executemany(
@@ -288,7 +344,12 @@ def list_clips(limit=1000):
              # it disagrees with the transcriber without a second request.
              "voice_tag": (None if r["voice_tag"] is None
                            else round(float(r["voice_tag"]), 3)),
-             "sounds": (r["sounds"] or "").split("\n") if r["sounds"] else []}
+             "sounds": (r["sounds"] or "").split("\n") if r["sounds"] else [],
+             # True capture time when the device clock witnessed it, and
+             # whether it can be trusted at all. mtime is arrival; this is
+             # when it happened. The interface sorts and groups on it.
+             "started": r["started"],
+             "time_known": None if r["time_known"] is None else bool(r["time_known"])}
             for r in rows]
 
 
@@ -318,7 +379,9 @@ def clips_by_name(names):
                 "has_speech": None if r["has_speech"] is None else bool(r["has_speech"]),
                 "edited": bool(r["edited"]),
                 "speakers": json.loads(r["speakers"] or "[]"),
-                "preview": r["preview"] or ""}
+                "preview": r["preview"] or "",
+                "started": r["started"],
+                "time_known": None if r["time_known"] is None else bool(r["time_known"])}
     return out
 
 
