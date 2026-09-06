@@ -1155,6 +1155,12 @@ class Worker:
         or not the words come from this machine."""
         if self._diar is not None or self._sound is not None:
             return
+        # Imported here as well as in _load. This used to rely on the import
+        # in the caller, which held while the two were one function and broke
+        # silently when they were split: diarization fell over with "name
+        # 'whisperx' is not defined" and every clip came out with nobody in
+        # it, reported as one line in a log nobody reads.
+        import whisperx
         # The environment first, then whatever was entered in Settings, so a
         # key typed into the interface works without editing a dotfile -- and
         # an existing .env keeps working unchanged.
