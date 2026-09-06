@@ -668,6 +668,20 @@ select.speed{min-height:0;padding:5px 26px 5px 9px;font-size:12.5px;
 .labbar .warn{background:color-mix(in srgb,var(--warn) 70%,transparent)}
 .labbar .none{background:color-mix(in srgb,var(--accent) 60%,transparent)}
 
+/* ---- the restart hint ----
+   Accent-tinted, dismissible, and quiet about it for three days: a pending
+   action the owner has to take away from the device should sit in the
+   interface's face exactly once, not nag. */
+.hintbanner{display:flex;gap:12px;align-items:baseline;margin-bottom:12px;
+  padding:11px 14px;border:1px solid color-mix(in srgb,var(--warn) 45%,transparent);
+  background:color-mix(in srgb,var(--warn) 9%,transparent);border-radius:8px;
+  font-size:13.5px;line-height:1.55}
+.hintbanner[hidden]{display:none}
+.hintbanner code{font-family:var(--mono);font-size:12px;color:var(--ink)}
+.hintbanner button{flex:none;min-height:0;padding:2px 9px;font-size:14px;
+  border:none;background:none;color:var(--muted)}
+.hintbanner button:hover{color:var(--bad)}
+
 /* ---- skeleton loaders ---- */
 .skel{position:relative;overflow:hidden;background:var(--sunk);
   border:1px solid var(--rule);border-radius:8px}
@@ -1080,6 +1094,17 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
       <button type="button" id="bRefresh">Refresh</button>
       <span class="val" id="qdepth"></span>
     </div>
+    <!-- The server may predate the capture-time update. The interface can
+           tell -- clip rows simply arrive without the fields -- and rather
+           than quietly running without it, it says so once. -->
+    <div class="hintbanner" id="restartHint" hidden>
+      <span>This server was last started before the capture-time update:
+        recordings still order by when they arrived, not when they happened.
+        <code>systemctl --user restart boswell.service</code> when the device
+        is idle — a restart drops the clip being recorded.</span>
+      <button type="button" id="restartHintClose" aria-label="Dismiss">×</button>
+    </div>
+
     <!-- The pulse: the archive's shape, and the work left in it. Bars are
            capture days; click one to live in it. -->
     <details class="card pulsecard" id="pulseCard">
@@ -1454,6 +1479,7 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
 </dialog>
 
 <script>
+
 
 
 
@@ -3514,6 +3540,12 @@ async function loadBattery(force){
    Three numbers under the navigation: what the archive is now, not what it
    was when the page was designed. */
 async function loadArchiveFoot(){
+  /* The probe: one clip row, whatever view is open, tells whether the
+     server is running the capture-time update. */
+  try{
+    const probe = await (await fetch("/api/clips?limit=1")).json();
+    maybeRestartHint(probe);
+  }catch(e){}
   try{
     const [ix, sp] = await Promise.all([
       (await fetch("/api/index")).json(),
@@ -4121,6 +4153,23 @@ function syncFilterToggle(){
   b.textContent = n ? `Filters · ${n}` : "Filters";
 }
 
+/* The interface can tell when the server predates the capture-time fields:
+   clip rows arrive without them. Rather than quietly ordering by arrival,
+   it says so -- once, dismissibly, and not again for three days. */
+function maybeRestartHint(all){
+  const el = $("restartHint");
+  if (!el || !all.length || "started" in all[0]){ el.hidden = true; return; }
+  let dismissedAt = 0;
+  try{ dismissedAt = +(localStorage.getItem("boswell_restart_hint") || 0); }
+  catch(e){}
+  if (Date.now() - dismissedAt < 3 * 86400000) return;
+  el.hidden = false;
+}
+on("restartHintClose", "click", () => {
+  $("restartHint").hidden = true;
+  try{ localStorage.setItem("boswell_restart_hint", String(Date.now())); }catch(e){}
+});
+
 async function loadClips(){
   const el = $("clipList");
   listCursor = -1;
@@ -4142,6 +4191,7 @@ async function loadClips(){
        into the query rather than to raise this again. */
     const all = await (await fetch("/api/clips?limit=" + CLIP_FETCH_LIMIT)).json();
     el.classList.remove("empty-now");
+    maybeRestartHint(all);
     loadSoundFilter();
     renderDayStrip(all.map(c => ({t: capTime(c), seconds: c.seconds})));
     // has_speech is null until a clip is transcribed; an unknown clip is not
@@ -6514,6 +6564,7 @@ loadBattery();
 $("pulseCard").open = pulseWanted();
 if (pulseWanted()) loadPulse();
 addEventListener("resize", () => { if ($("pulseCard").open) drawPulse(); });
+
 
 
 

@@ -2380,3 +2380,28 @@ class TestTheProTouches:
     def test_printing_leaves_the_transcript_on_the_paper(self):
         page = self._page()
         assert "@media print{" in page
+
+
+class TestTheRestartHint:
+    """The interface can tell when the server predates the capture-time
+    fields -- clip rows arrive without them -- and rather than quietly
+    ordering by arrival, it says so once, dismissibly, for three days.
+    """
+
+    def _page(self):
+        import os
+        here = os.path.dirname(__file__)
+        with open(os.path.join(here, "..", "web", "static", "index.html"),
+                  encoding="utf-8") as f:
+            return f.read()
+
+    def test_the_hint_detects_the_old_server_and_forgets_itself(self):
+        page = self._page()
+        assert '"started" in all[0]' in page
+        assert "boswell_restart_hint" in page
+        assert "3 * 86400000" in page
+
+    def test_a_current_server_never_sees_it(self):
+        page = self._page()
+        # The happy path: fields present, banner stays hidden.
+        assert 'if (!el || !all.length || "started" in all[0]){ el.hidden = true; return; }' in page
