@@ -210,15 +210,19 @@ nav.tabs button[aria-selected=true]{background:var(--surface);color:var(--ink);
    The mobile overrides live HERE, after the base rules, or the base
    declarations win the cascade at every width. */
 #filterPanel{display:contents}
-.filterToggle{display:none}
+.filterToggle{display:inline-flex;min-height:38px;flex:0 0 auto;
+  padding:8px 14px;font-size:14px;border-radius:7px}
+/* The low-use filters live behind the toggle at every width; the four
+   workflow filters stay out. On a phone the whole panel folds away. */
+.opt{display:none}
+#filterPanel.open .opt{display:inline-block}
 @media(max-width:900px){
-  /* The seven filters do not fit a phone and must not push the archive
-     below the fold. They fold away behind the toggle, which says how many
-     are active. */
+  /* Seven filters do not fit a phone and must not push the archive below
+     the fold; all of them fold behind the toggle, which says how many are
+     active. */
   #filterPanel{display:none;flex-wrap:wrap;gap:8px;flex-basis:100%}
   #filterPanel.open{display:flex}
-  .filterToggle{display:inline-flex;min-height:40px;flex:0 0 auto;
-    padding:8px 14px;font-size:14px;border-radius:7px}
+  #filterPanel.open .opt{display:inline-flex}
 }
 
 /* notes: items are the content, the model controls are its rail */
@@ -268,7 +272,7 @@ select.filter:focus{outline:2px solid var(--accent);outline-offset:-1px}
  * them. contain-intrinsic-size gives each skipped row a placeholder height so
  * the scrollbar stays honest -- without it the page height jumps around as
  * rows come into view. Roughly the height of a real row. */
-.clip, .item, .conv{content-visibility:auto;contain-intrinsic-size:auto 64px}
+.clip, .item, .conv{content-visibility:auto;contain-intrinsic-size:auto 110px}
 .clip .ci{flex:1;min-width:0}
 .clip .cn{font-family:var(--mono);font-size:12px;color:var(--muted)}
 .hits{margin-top:6px;display:flex;flex-direction:column;gap:3px}
@@ -794,6 +798,12 @@ dialog.sheet .prow textarea{font-family:var(--sans);resize:vertical}
 .personnote{font-size:13px;color:var(--ink);margin:6px 0 0;
   white-space:pre-wrap;max-width:70ch}
 
+/* ---- audit findings: fades ---- */
+/* A horizontal list that overflows fades at the edge instead of cutting. */
+.daystrip.edge{mask-image:linear-gradient(90deg,#000 calc(100% - 30px),
+  transparent);-webkit-mask-image:linear-gradient(90deg,#000 calc(100% - 30px),
+  transparent)}
+
 /* ---- device segment switcher ---- */
 .devtabs{display:flex;gap:4px;background:var(--sunk);padding:4px;
   border-radius:8px;margin-bottom:14px;width:fit-content}
@@ -840,7 +850,7 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
   outline-offset:-2px;border-radius:8px}
 
 /* ---- battery sparkline ---- */
-.battspark{margin:10px 0 0}
+.battspark{margin:10px 0 0;max-width:380px}
 .battspark[hidden]{display:none}
 .battspark canvas{width:100%;height:36px;display:block}
 .battspark .val{display:block;margin-top:2px;font-size:10.5px}
@@ -1024,10 +1034,9 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
           connecting?</button>
       </div>
 
-      <p class="note" id="omenote">Recording into the same archive, alongside
-        the device above. It catches up on whatever it stored while away
-        before it starts streaming, so a long sync after a day out is the
-        normal shape of things rather than a fault.</p>
+      <p class="note" id="omenote">Records into the same archive as the
+        recorder above; catches up on whatever it stored while away before
+        it streams.</p>
     </div>
 
     <!-- One control for getting recordings off the device, whichever way it
@@ -1293,12 +1302,12 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
         <option value="week">Last 7 days</option>
         <option value="old">Older than a week</option>
       </select>
-      <select class="filter" id="fMode" aria-label="Search mode">
+      <select class="filter opt" id="fMode" aria-label="Search mode">
         <option value="both">Words and meaning</option>
         <option value="words">Match words only</option>
         <option value="meaning">Match meaning only</option>
       </select>
-      <select class="filter" id="fGroup" aria-label="Group recordings">
+      <select class="filter opt" id="fGroup" aria-label="Group recordings">
         <option value="conv">Conversations</option>
         <option value="day">By day</option>
         <option value="flat">All clips</option>
@@ -1306,10 +1315,10 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
       <select class="filter" id="fDevice" aria-label="Filter by recorder">
         <option value="">Any recorder</option>
       </select>
-      <select class="filter" id="fSound" aria-label="Filter by what was heard">
+      <select class="filter opt" id="fSound" aria-label="Filter by what was heard">
         <option value="">Any sound</option>
       </select>
-      <select class="filter" id="fPerPage" aria-label="How many to show per page">
+      <select class="filter opt" id="fPerPage" aria-label="How many to show per page">
         <option value="25">25 per page</option>
         <option value="50" selected>50 per page</option>
         <option value="100">100 per page</option>
@@ -1331,7 +1340,12 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
         <option value="srt">Subtitles (.srt)</option>
         <option value="json">Data (.json)</option>
       </select>
-      <button type="button" id="bAll">Transcribe all</button>
+      <details class="moremenu" id="recMore">
+        <summary>More</summary>
+        <div class="menupanel">
+          <button type="button" id="bAll">Transcribe everything waiting</button>
+        </div>
+      </details>
       <button type="button" id="bRefresh">Refresh</button>
       <span class="val" id="qdepth"></span>
     </div>
@@ -1610,7 +1624,12 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
           <option value="facts">Facts</option>
           <option value="topics">Topics</option>
         </select>
-        <button type="button" class="dang" id="bClearItems" style="min-height:40px;flex:0 0 auto">Clear all</button>
+        <details class="moremenu" id="itemsMore">
+          <summary>More</summary>
+          <div class="menupanel">
+            <button type="button" class="dang" id="bClearItems">Clear all shown</button>
+          </div>
+        </details>
       </div>
       <div id="itemList"><div class="empty">loading…</div></div>
     </div>
@@ -1705,18 +1724,20 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
   <div class="view" id="viewHeard" role="tabpanel" aria-labelledby="tabHeard" tabindex="0" hidden>
     <div class="card">
       <h2>Everything that was not speech</h2>
-      <div style="font-size:13px;color:var(--muted);line-height:1.55">
-        What a second model heard in your recordings, from 527 everyday sound
-        classes — the room and the keyboard left out. <strong>Rarest first</strong>:
-        a turkey heard once is why this page is worth opening, and the sound
-        filter in Recordings sorts by count, which buries every one-off under
-        Speech and Typing.
-        <br><br>
-        Press play to hear the clip it came from. The tagger is confident about
-        broad categories and vague about specifics, so treat a name as a lead
-        rather than a fact — and it describes the whole thirty seconds, not a
-        moment in it.
-      </div>
+      <p class="note">What a second model heard in your recordings, rarest
+        first. Press play to hear the clip it came from.</p>
+      <details>
+        <summary>How to read these</summary>
+        <div class="inner">
+        <p class="note">The tagger listens for 527 everyday sound classes —
+          the room and the keyboard left out. Rarest first is the sort on
+          purpose: a turkey heard once is why this page is worth opening, and
+          sorting by count buries every one-off under Speech and Typing. It
+          is confident about broad categories and vague about specifics, so
+          treat a name as a lead rather than a fact — and it describes the
+          whole thirty seconds, not a moment in it.</p>
+        </div>
+      </details>
       <div class="toolbar2" style="margin-top:12px">
         <button type="button" id="bHeardRefresh">Refresh</button>
         <span class="count" id="heardTotal"></span>
@@ -1825,6 +1846,9 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
 </dialog>
 
 <script>
+
+
+
 
 
 
@@ -3777,6 +3801,7 @@ async function loadVoices(){
          in it. Tagging retires the voice and stops it competing for identity;
          its words stay searchable. */
       const media = document.createElement("button");
+      media.classList.add("aux");
       media.textContent = v.kind === "media" ? "Not a video" : "It's a video";
       media.title = v.kind === "media"
         ? "Put this back in the queue as an unidentified person"
@@ -3803,6 +3828,7 @@ async function loadVoices(){
          Nothing is deleted: the voiceprints stay, so one dismissed today can
          be named next month with all its evidence intact. */
       const skip = document.createElement("button");
+      skip.classList.add("aux");
       const wasIgnored = v.kind === "ignored";
       skip.textContent = wasIgnored ? "Put back in the queue" : "Not worth naming";
       skip.title = wasIgnored
@@ -3903,7 +3929,7 @@ addEventListener("keydown", e => {
 let pulseClips = null, pulseAt = 0, pulseBars = [];
 
 function pulseWanted(){
-  try{ return (localStorage.getItem("boswell_pulse") ?? "open") === "open"; }
+  try{ return (localStorage.getItem("boswell_pulse") ?? "closed") === "open"; }
   catch(e){ return true; }
 }
 
@@ -4488,7 +4514,7 @@ function applyHashState(){
   labelFilter = $("fLabel").value;
   dateFilter = $("fDate").value;
   pageSize = parseInt($("fPerPage").value, 10) || 0;
-  if (["rec","ppl","notes","heard","tidy"].includes(tab)) showTab(tab);
+  if (["dev","rec","ppl","notes","heard","tidy","set"].includes(tab)) showTab(tab);
 }
 /* applyHashState is called at the very end of the script, after every let
    it mirrors exists. Its first placement ran before them and threw a
@@ -4662,6 +4688,10 @@ function renderDayStrip(items){
   const list = [...days.values()].sort((a, b) => b.k.localeCompare(a.k))
                                  .slice(0, 14);
   el.replaceChildren();
+  /* The fade that says "more off the right edge" only means something when
+     there is more. */
+  requestAnimationFrame(() => el.classList.toggle("edge",
+    el.scrollWidth > el.clientWidth + 4));
   if (dayFilter){
     const clear = document.createElement("button");
     clear.type = "button";
@@ -4737,11 +4767,11 @@ async function loadConversations(el){
     const n = c.clips.length;
     d.innerHTML =
       `<div class="ch">
-         <span class="cw">${fmtClock(c.start)}–${fmtClock(c.end)}${people.length ? " · " + esc(people.join(", ")) : ""}</span>
+         <span class="cw"><span class="cwt">${fmtClock(c.start)}–${fmtClock(c.end)}</span>${people.length ? " · " + esc(people.join(", ")) : ""}</span>
          <span class="cmeta"><span class="cm">${fmtDur(c.seconds)} · ${n} clip${n===1?"":"s"}${
              typeof c.with_speech === "number" && c.with_speech < n
                ? ` · ${n - c.with_speech} silent` : ""}</span>${
-             deviceChip(c.device_id)}${labelBadge(c.speakers)}</span>
+             deviceChip(c.device_id)}${convLabelChip(c)}</span>
        </div>` +
       (c.preview ? `<div class="cpv">${esc(c.preview)}</div>` : "") +
       `<div class="convacts"></div><div class="parts" hidden></div>`;
@@ -4757,12 +4787,9 @@ async function loadConversations(el){
     /* Opens the whole conversation. This used to open the first clip, which
        meant the thing the agent summarises could only be read thirty seconds
        at a time and the rest was reachable only by clicking through parts. */
-    const openBtn = document.createElement("button");
-    openBtn.className = "pri";
-    openBtn.textContent = "Read";
-    openBtn.onclick = () => { rememberScroll(); openConversation(c); };
-    acts.appendChild(openBtn);
-
+    /* The card itself opens the conversation -- the heading, the preview and
+       (on a pointer device) the whole card are the affordance -- so the
+       action row holds only what has no other way in. */
     /* The parts list is worth having but not worth showing by default: a long
        conversation produced eighty-odd identical chips and buried everything
        else on the page. */
@@ -5091,6 +5118,17 @@ function labelState(speakers){
   return unnamed === sp.length ? "none" : "some";
 }
 
+/* Conversations with a voice in it but no name on anybody are work too --
+   the queue should be visible while scanning, not only once naming started. */
+function convLabelChip(c){
+  const b = labelBadge(c.speakers);
+  if (b) return b;
+  if ((c.with_speech || 0) > 0)
+    return `<span class="lbl none" title="a voice was heard here, but `
+         + `nobody has been named yet">no names</span>`;
+  return "";
+}
+
 function labelBadge(speakers){
   const st = labelState(speakers);
   if (st === "na") return "";
@@ -5413,7 +5451,7 @@ async function loadClips(){
           lastDay = day;
           const h = document.createElement("div");
           h.className = "daygroup";
-          const tot = capT != null && dayTotals[dayKey(capT)];
+          const tot = t0 != null && dayTotals[dayKey(t0)];
           h.innerHTML = esc(day) + (tot ? ` <span>· ${fmtDur(tot.secs)}
             in ${tot.n} recording${tot.n === 1 ? "" : "s"}</span>` : "");
           el.appendChild(h);
@@ -5440,11 +5478,24 @@ async function loadClips(){
         ${c.has_speech === false && (c.voice_tag || 0) >= MISSED_VOICE_FLOOR
           ? `<span class="cd" title="how sure the sound tagger was that somebody was audible">voice ${c.voice_tag.toFixed(2)}</span>`
           : ""}
-        ${deviceChip(c.device_id)}${labelBadge(c.speakers)}${c.time_known === false
-          ? `<span class="lbl unk" title="Recorded before the device knew `
-            + `what time it was. Placed by when it reached the computer, not `
-            + `when it happened.">time unknown</span>`
-          : ""}
+        ${(() => {
+          /* Five badges can crowd a two-line preview; two show, the rest
+             fold into a counting chip that says what it is hiding. */
+          const chips = [];
+          if (c.has_speech === false && (c.voice_tag || 0) >= MISSED_VOICE_FLOOR)
+            chips.push(`<span class="cd" title="how sure the sound tagger was `
+              + `that somebody was audible">voice ${c.voice_tag.toFixed(2)}</span>`);
+          chips.push(deviceChip(c.device_id));
+          chips.push(labelBadge(c.speakers));
+          if (c.time_known === false)
+            chips.push(`<span class="lbl unk" title="Recorded before the device `
+              + `knew what time it was. Placed by when it reached the `
+              + `computer, not when it happened.">time unknown</span>`);
+          const more = chips.slice(2);
+          return chips.slice(0, 2).join("")
+            + (more.length ? `<span class="cd" title="${esc(more.map(m =>
+                m.replace(/<[^>]*>/g, "")).join(" · "))}">+${more.length}</span>` : "");
+        })()}
         <span class="cd">${c.seconds.toFixed(0)}s</span>
         <span class="tag ${c.status}">${c.status === "none" ? "new"
           : (c.has_speech === false ? "silent" : c.status)}</span>`;
@@ -7953,6 +8004,7 @@ function recSetShown(on){
   try { localStorage.setItem("boswell_reclist", recShown ? "1" : "0"); } catch(e){}
   const have = !!(recFiles && recFiles.length);
   $("reclist").hidden = !(recShown && have);
+  $("recnote").hidden = !(recShown && have);
   $("rechide").hidden = !have;
   $("rechide").textContent = recShown ? "Hide" : "Show";
 }
@@ -8021,7 +8073,7 @@ async function recPoll(ask){
        is how "I can't seem to locate the Look area" happens. */
     const havePaired = paired.some(x => x.kind === "boswell");
     $("recrow").hidden = !havePaired;
-    $("recnote").hidden = !r.route;
+    $("recnote").hidden = !r.route || !recShown;
     $("recbtn").hidden = !r.route;
 
     if (!r.route){
@@ -8458,6 +8510,9 @@ loadBattery();
 $("pulseCard").open = pulseWanted();
 if (pulseWanted()) loadPulse();
 addEventListener("resize", () => { if ($("pulseCard").open) drawPulse(); });
+
+
+
 
 
 
