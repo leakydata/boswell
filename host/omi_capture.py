@@ -301,7 +301,7 @@ async def find_omi(timeout=15.0):
 
 async def capture(address, seconds=None, quiet=False, on_progress=None,
                   should_stop=None, on_stats=None, stats_every=60,
-                  on_tick=None, on_connected=None):
+                  on_tick=None, on_connected=None, dev=None):
     """Stream from one Omi until interrupted, filing clips as it goes.
 
     `on_stats` is handed the readings that change while it runs -- battery
@@ -317,7 +317,7 @@ async def capture(address, seconds=None, quiet=False, on_progress=None,
     reboots = [0]
     dropped = [0]
 
-    async with BleakClient(address, timeout=25.0) as client:
+    async with BleakClient(dev or address, timeout=25.0) as client:
         frame_samples = 320
         try:
             raw = await client.read_gatt_char(OMI_CODEC)

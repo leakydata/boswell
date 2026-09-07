@@ -138,7 +138,7 @@ def clear_wanted(applied_id):
         pass
 
 
-async def one_session(address, quiet=False):
+async def one_session(address, quiet=False, dev=None):
     """Catch up, then stream, until the link goes."""
     device_id = omi_capture.norm_id(address)
 
@@ -160,7 +160,7 @@ async def one_session(address, quiet=False):
     stats = dict(LAST["stats"])
     try:
         from bleak import BleakClient
-        async with BleakClient(address, timeout=25.0) as c:
+        async with BleakClient(dev or address, timeout=25.0) as c:
             stats = await omi_capture.read_stats(c)
             # When this reading was taken. The stats are read once a session
             # and then republished unchanged, so anything comparing the
@@ -208,7 +208,7 @@ async def one_session(address, quiet=False):
         except Exception:
             pass                       # a panel figure, never a reason to stop
         spool, took = await omi_sync.sync(
-            address, quiet=quiet,
+            address, quiet=quiet, dev=dev,
             progress=lambda done, total: publish(
                 state="syncing", address=address, stats=stats,
                 done=done, total=total))
@@ -311,7 +311,7 @@ async def one_session(address, quiet=False):
     pulse = asyncio.create_task(heartbeat())
     clipper = None
     try:
-        clipper = await omi_capture.capture(address, quiet=quiet,
+        clipper = await omi_capture.capture(address, quiet=quiet, dev=dev,
                                             on_progress=beat.update,
                                             should_stop=lambda: stopping,
                                             # Merged into the dict the
@@ -400,14 +400,21 @@ async def wait_until_advertising(address, timeout):
     Sleeping is the wrong shape for waiting on something that appears without
     warning. Listening costs the same and catches it.
 
-    Returns True if it appeared, False if the wait ran out.
+    Returns the device it saw, or None if the wait ran out.
+
+    What it saw, rather than merely that it saw something: connecting by
+    address makes bleak go and discover the device all over again, and this
+    recorder advertises in windows too short to find twice. Handing the
+    object straight to BleakClient skips that second search.
     """
     from bleak import BleakScanner
     want = omi_capture.norm_id(address)
     seen = asyncio.Event()
+    found = {"dev": None}
 
     def on_seen(dev, _adv):
         if omi_capture.norm_id(dev.address) == want:
+            found["dev"] = dev
             seen.set()
 
     scanner = BleakScanner(detection_callback=on_seen)
@@ -417,12 +424,12 @@ async def wait_until_advertising(address, timeout):
         # No scanner, no cleverness: fall back to the old behaviour rather
         # than turning a retry loop into a crash loop.
         await asyncio.sleep(timeout)
-        return False
+        return None
     try:
         await asyncio.wait_for(seen.wait(), timeout)
-        return True
+        return found["dev"]
     except asyncio.TimeoutError:
-        return False
+        return None
     finally:
         try:
             await scanner.stop()
@@ -432,6 +439,11 @@ async def wait_until_advertising(address, timeout):
 
 async def run(address=None, quiet=False):
     tries = 0
+    # What the last wait actually saw, if it saw anything. Used for the one
+    # session that follows the sighting and then dropped: a device object is
+    # a handle on a device that was there a moment ago, and reusing a stale
+    # one across later retries would be worse than looking again.
+    sighted = None
     while not stopping:
         addr = address
         if not addr:
@@ -465,7 +477,7 @@ async def run(address=None, quiet=False):
 
         if addr:
             try:
-                await one_session(addr, quiet=quiet)
+                await one_session(addr, quiet=quiet, dev=sighted)
                 tries = 0            # a session that ran is a success
                 publish(state="waiting", address=addr)
             except Exception as e:
@@ -474,6 +486,8 @@ async def run(address=None, quiet=False):
         else:
             publish(state="not found")
 
+        sighted = None               # used, and only good for that session
+
         if stopping:
             break
         wait = BACKOFF[min(tries, len(BACKOFF) - 1)]
@@ -481,7 +495,8 @@ async def run(address=None, quiet=False):
         if addr:
             # Listen through the wait instead of sleeping through it, and go
             # the moment it appears.
-            if await wait_until_advertising(addr, wait):
+            sighted = await wait_until_advertising(addr, wait)
+            if sighted is not None:
                 print("saw it advertise -- connecting now", flush=True)
                 tries = 0
         else:

@@ -281,7 +281,7 @@ async def find_omi(timeout=12.0):
 
 
 async def sync(address, mark_read=True, limit_packets=None, quiet=False,
-               progress=None):
+               progress=None, dev=None):
     """Pull the ring to a spool file, then turn the spool into clips."""
     device_id = norm_id(address)
     os.makedirs(SPOOL, exist_ok=True)
@@ -289,7 +289,7 @@ async def sync(address, mark_read=True, limit_packets=None, quiet=False,
     t0 = time.time()
     spool_path = os.path.join(SPOOL, f"{device_id}_{int(time.time())}.raw")
 
-    async with BleakClient(address, timeout=30.0) as client:
+    async with BleakClient(dev or address, timeout=30.0) as client:
         link = Link(client)
         await client.start_notify(CTRL, link.on_notify)
         await asyncio.sleep(0.5)

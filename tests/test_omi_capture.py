@@ -711,3 +711,42 @@ def test_connected_means_notifications_are_running():
     src = read_file("host/omi_capture.py")
     i = src.index("await client.start_notify(OMI_AUDIO, on_frame)")
     assert "on_connected" in src[i:i + 400]
+
+
+def test_a_recorder_that_was_just_seen_is_not_looked_for_again():
+    """The wait returned True and dropped the device it had seen, so the
+    session that followed made bleak discover it all over again -- three
+    times, once each for stats, sync and capture.
+
+    This recorder advertises in windows too short to find twice. A capture of
+    200 seconds carried 349 advertisements from fifteen devices and not one
+    from this one, so the sighting is the scarce thing and throwing it away
+    is what turned "saw it advertise -- connecting now" into "not found".
+    """
+    src = read_file("host/omid.py")
+    fn = src[src.index("async def wait_until_advertising"):]
+    fn = fn[:fn.index("\nasync def run(")]
+    assert "return found[\"dev\"]" in fn, "the wait still discards what it saw"
+    assert "return True" not in fn, "still reporting a sighting as a bare flag"
+
+    loop = src[src.index("async def run(address=None"):]
+    assert "sighted = await wait_until_advertising(addr, wait)" in loop
+    assert "one_session(addr, quiet=quiet, dev=sighted)" in loop, \
+        "the sighting never reaches the session"
+
+
+def test_a_sighting_is_not_reused_after_the_session_it_belongs_to():
+    # A device object is a handle on something that was there a moment ago.
+    # Carrying a stale one into later retries is worse than looking again.
+    src = read_file("host/omid.py")
+    loop = src[src.index("async def run(address=None"):]
+    body = loop[:loop.index("wait = BACKOFF[")]
+    assert "sighted = None" in body, "a stale sighting outlives its session"
+
+
+def test_every_connection_in_a_session_can_use_the_sighting():
+    # All three -- stats, sync, capture -- discovered the device separately,
+    # so a device seen once still had to be found three more times.
+    assert "BleakClient(dev or address" in read_file("host/omid.py")
+    assert "BleakClient(dev or address" in read_file("host/omi_sync.py")
+    assert "BleakClient(dev or address" in read_file("host/omi_capture.py")
