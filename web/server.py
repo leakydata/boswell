@@ -146,7 +146,7 @@ PREF_KEYS = ("armed", "vad", "backlog_mode", "gain", "led_level", "led_mode",
         "tap_enabled", "tap_thresh",
              "fast_charge", "mic_power_save", "rate16",
              "agent_enabled", "agent_model", "agent_idle_seconds",
-             "agent_backend", "transcriber")
+             "agent_backend", "transcriber", "connect_wanted")
 
 
 def load_prefs():
@@ -1344,7 +1344,8 @@ class Device:
 
         self.event("log", text=f"rebooting into the {which} bootloader")
         # Stop reconnecting. The device is about to stop being a Boswell.
-        self.want(False)
+        # Not remembered: this is the program's decision, not the owner's.
+        self.want(False, remember=False)
         return True
 
     async def set_led(self, level: int, pulse: bool):
@@ -1387,10 +1388,26 @@ class Device:
             self.remember(vad=bool(on))
             self.event("log", text=f"VAD {'on' if on else 'off'}")
 
-    def want(self, on: bool):
+    def want(self, on: bool, remember: bool = True):
+        """Whether to keep looking for this recorder at all.
+
+        Remembered, like the armed flag and for the same reason. Pressing
+        Disconnect and finding the machine hunting for the device again a
+        minute later -- because the service restarted, or the room did not
+        change but the process did -- is the interface overruling a decision
+        somebody made on purpose. Somebody who switches a recorder off and
+        disconnects it has said something, and it should still be true
+        afterwards.
+
+        `remember=False` is for the times the program disconnects for its own
+        reasons, like rebooting the board into its bootloader. That is not the
+        owner saying "stop looking".
+        """
         self._want = bool(on)
         if not on:
             self.state["connected"] = False
+        if remember:
+            self.remember(connect_wanted=bool(on))
         self.publish()
 
 
@@ -1670,7 +1687,9 @@ async def lifespan(app: FastAPI):
         print(f"index: {st}", flush=True)
     except Exception as e:
         print(f"index sync failed: {e}", flush=True)
-    device.want(True)          # start looking for the board immediately
+    # Look for the board unless somebody said not to. Default on, so a fresh
+    # install still finds a recorder without being told to.
+    device.want(bool(PREFS.get("connect_wanted", True)), remember=False)
     tasks = [asyncio.create_task(device.run()), asyncio.create_task(rotator()),
              asyncio.create_task(auto_consolidator()),
              asyncio.create_task(backer_upper()),
@@ -2090,8 +2109,14 @@ async def api_recorders_quiet():
     """
     now = time.time()
     out = []
+    looking = bool(PREFS.get("connect_wanted", True))
     for r in _recorder_rows():
         if r["connected"]:
+            continue
+        # Somebody who pressed Disconnect has said something. Reporting the
+        # resulting silence as a problem argues with a decision they made on
+        # purpose, and an alert that fires on request is one nobody reads.
+        if r["kind"] == "boswell" and not looking:
             continue
         last = index_db.last_clip_for(r["id"])
         quiet_for = (now - last) if last else None
@@ -2205,6 +2230,11 @@ async def api_recorders_diagnose(seconds: float = 8.0):
         last = index_db.last_clip_for(ident)
         if r["connected"]:
             verdict, steps = "connected", []
+        elif r["kind"] == "boswell" and not PREFS.get("connect_wanted", True):
+            verdict = "not being looked for"
+            steps = ["You pressed Disconnect, so nothing is trying to reach "
+                     "this recorder. Press Connect on its panel to start "
+                     "again."]
         elif rssi is not None:
             verdict = "nearby but not connected"
             # It is advertising, so the radio and the device are both fine and

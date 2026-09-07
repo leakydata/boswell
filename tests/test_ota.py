@@ -55,7 +55,11 @@ def test_the_reconnect_loop_is_stopped_afterwards():
     fn = fn[:fn.index("\n    async def ")]
     # The device comes back as a bootloader, which does not advertise the
     # audio service. Chasing it forever is noise.
-    assert "self.want(False)" in fn
+    assert "self.want(False" in fn
+    # And it must not be written down as the owner's decision: this is the
+    # program disconnecting for its own reasons, not somebody saying "stop
+    # looking for my recorder".
+    assert "remember=False" in fn
 
 
 def test_the_websocket_accepts_it():

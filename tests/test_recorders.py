@@ -201,3 +201,23 @@ def test_the_diagnosis_separates_the_three_faults():
     assert "nearby but not connected" in body, "advertising is not told apart"
     assert "not advertising" in body
     assert "last_clip" in body, "no answer to how long it has been gone"
+
+
+def test_disconnect_is_remembered():
+    """Pressing Disconnect and finding the machine hunting for the device a
+    minute later -- because the service restarted -- is the interface
+    overruling a decision somebody made on purpose."""
+    src = open(os.path.join(os.path.dirname(__file__), "..",
+                            "web", "server.py")).read()
+    keys = src[src.index("PREF_KEYS"):src.index("PREF_KEYS") + 400]
+    assert "connect_wanted" in keys, \
+        "the choice is not among the remembered preferences"
+    assert 'PREFS.get("connect_wanted", True)' in src, "startup ignores it"
+    assert "remember=False" in src, "the program's own disconnects are stored"
+
+
+def test_a_recorder_nobody_is_looking_for_is_not_a_fault():
+    # An alert that fires on request is one nobody reads.
+    src = open(os.path.join(os.path.dirname(__file__), "..",
+                            "web", "server.py")).read()
+    assert "not being looked for" in src
