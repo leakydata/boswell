@@ -355,6 +355,49 @@ async def one_session(address, quiet=False):
     return clipper
 
 
+async def wait_until_advertising(address, timeout):
+    """Listen until the recorder announces itself, then return at once.
+
+    The loop used to sleep a fixed backoff between attempts, which meant it
+    was deaf for about sixty seconds of every hundred and forty-five. A
+    recorder that advertises only briefly -- after a button press, or in a
+    window between power-saving sleeps -- can pass entirely inside that gap,
+    and did: several presses in a row produced nothing because nothing was
+    listening when the device spoke.
+
+    Sleeping is the wrong shape for waiting on something that appears without
+    warning. Listening costs the same and catches it.
+
+    Returns True if it appeared, False if the wait ran out.
+    """
+    from bleak import BleakScanner
+    want = omi_capture.norm_id(address)
+    seen = asyncio.Event()
+
+    def on_seen(dev, _adv):
+        if omi_capture.norm_id(dev.address) == want:
+            seen.set()
+
+    scanner = BleakScanner(detection_callback=on_seen)
+    try:
+        await scanner.start()
+    except Exception:
+        # No scanner, no cleverness: fall back to the old behaviour rather
+        # than turning a retry loop into a crash loop.
+        await asyncio.sleep(timeout)
+        return False
+    try:
+        await asyncio.wait_for(seen.wait(), timeout)
+        return True
+    except asyncio.TimeoutError:
+        return False
+    finally:
+        try:
+            await scanner.stop()
+        except Exception:
+            pass
+
+
 async def run(address=None, quiet=False):
     tries = 0
     while not stopping:
@@ -403,7 +446,14 @@ async def run(address=None, quiet=False):
             break
         wait = BACKOFF[min(tries, len(BACKOFF) - 1)]
         tries += 1
-        await asyncio.sleep(wait)
+        if addr:
+            # Listen through the wait instead of sleeping through it, and go
+            # the moment it appears.
+            if await wait_until_advertising(addr, wait):
+                print("saw it advertise -- connecting now", flush=True)
+                tries = 0
+        else:
+            await asyncio.sleep(wait)
 
     publish(state="stopped")
 

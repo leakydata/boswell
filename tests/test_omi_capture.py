@@ -598,3 +598,24 @@ def test_connecting_does_not_count_as_connected():
     src = read_file("web/server.py")
     away = src[src.index("_AWAY = "):src.index("_AWAY = ") + 320]
     assert '"connecting"' in away
+
+
+def test_the_wait_between_attempts_is_spent_listening():
+    """The loop slept a fixed backoff between attempts, so it was deaf for
+    about sixty seconds of every hundred and forty-five. A recorder that
+    advertises only briefly -- after a button press, or between power-saving
+    sleeps -- can pass entirely inside that gap."""
+    src = read_file("host/omid.py")
+    assert "async def wait_until_advertising" in src
+    tail = src[src.index("wait = BACKOFF["):]
+    tail = tail[:tail.index("publish(state=\"stopped\")")]
+    assert "wait_until_advertising(addr, wait)" in tail, \
+        "the loop still sleeps through the wait"
+
+
+def test_a_scanner_that_will_not_start_does_not_become_a_crash_loop():
+    # A retry loop is the wrong place to discover that scanning is broken.
+    src = read_file("host/omid.py")
+    fn = src[src.index("async def wait_until_advertising"):]
+    fn = fn[:fn.index("\nasync def run(")]
+    assert "except Exception:" in fn and "await asyncio.sleep(timeout)" in fn
