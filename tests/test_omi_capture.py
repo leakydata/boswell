@@ -578,3 +578,23 @@ def test_a_bogus_session_from_an_older_build_is_not_restored():
     omid.LAST = {"stats": {}, "session": None}
     omid._restore_last()
     assert omid.LAST["session"]["clips"] == 41, "a real session was dropped"
+
+
+def test_recording_is_claimed_only_once_audio_arrives():
+    """The heartbeat said "recording" the moment it started -- before capture
+    had connected, let alone received anything. A session that never found
+    the device announced itself as recording every twenty seconds against a
+    retry cycle of twenty-five, so the interface spent most of its time
+    claiming to record from a device that was not there."""
+    src = read_file("host/omid.py")
+    beat = src[src.index("async def heartbeat"):]
+    beat = beat[:beat.index("await asyncio.wait_for")]
+    assert 'state=("recording" if beat["frames"] else "connecting")' in beat, \
+        "recording is still claimed before any audio"
+
+
+def test_connecting_does_not_count_as_connected():
+    # Otherwise the panel, the badge and the diagnosis all inherit the lie.
+    src = read_file("web/server.py")
+    away = src[src.index("_AWAY = "):src.index("_AWAY = ") + 320]
+    assert '"connecting"' in away

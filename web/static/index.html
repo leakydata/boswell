@@ -7412,7 +7412,9 @@ async function omiPoll(){
           `${(s.frames || 0).toLocaleString()} frames`].join(" · "));
     return;
   }
-  const words = {"not paired": ["off", "Not paired",
+  const words = {connecting: ["off", "Connecting…",
+                              "found the service, waiting for audio"],
+                 "not paired": ["off", "Not paired",
                                 "pair it below and it will start on its own"],
                  looking: ["off", "Searching…", "not in range yet"],
                  waiting: ["off", "Waiting to reconnect", "the link dropped"],

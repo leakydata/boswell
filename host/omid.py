@@ -223,7 +223,19 @@ async def one_session(address, quiet=False):
 
     async def heartbeat():
         while not stop.is_set():
-            publish(state="recording", address=address, stats=stats,
+            # "recording" only once audio has actually arrived.
+            #
+            # This published it the moment the beat started, which is before
+            # capture has connected, let alone received anything. A session
+            # that failed to find the device therefore announced itself as
+            # recording, and did so every twenty seconds against a retry
+            # cycle of twenty-five -- so the interface spent most of its time
+            # claiming to record from a device that was not there, and the
+            # owner reasonably asked why no clips were arriving.
+            #
+            # A thing that stopped must not look like a thing that works.
+            publish(state=("recording" if beat["frames"] else "connecting"),
+                    address=address, stats=stats,
                     clips=beat["clips"], frames=beat["frames"])
             try:
                 await asyncio.wait_for(stop.wait(), timeout=20)

@@ -1936,7 +1936,10 @@ async def api_envelope(name: str):
 # "lost" and "waiting" are it saying the link went; treating them as connected
 # had a diagnosis panel report a recorder as connected two hours after it
 # stopped recording, which is the exact failure that panel exists to prevent.
-_AWAY = ("not found", "looking", "lost", "waiting", "stopped", "not paired")
+_AWAY = ("not found", "looking", "lost", "waiting", "stopped", "not paired",
+         # Trying, and not there yet. Counting this as connected is how a
+         # failing session came to be reported as a working one.
+         "connecting")
 
 
 def _omi_state():
