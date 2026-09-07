@@ -768,6 +768,47 @@ select.speed{min-height:0;padding:5px 26px 5px 9px;font-size:12.5px;
   .seg .txt,.cvtext{font-size:11pt}
 }
 
+/* scanability: the clock is the primary key on a row, the day header
+   carries the date and the size. */
+.clip .cn{font-size:13.5px;color:var(--ink);font-weight:500}
+
+/* ---- settings, two columns ---- */
+.setcols{display:grid;gap:14px}
+@media(min-width:1000px){
+  .setcols{grid-template-columns:1fr 1fr;align-items:start}
+  .setcols .card:first-child{grid-column:1/-1}
+}
+
+/* ---- people profile editor ---- */
+dialog.sheet .prow{display:flex;flex-direction:column;gap:4px;margin-bottom:11px;
+  font-size:13px;color:var(--muted)}
+dialog.sheet .prow input,dialog.sheet .prow textarea{
+  font-size:16px;padding:10px 11px;border-radius:8px;border:1px solid var(--rule);
+  background:var(--paper);color:var(--ink);width:100%}
+dialog.sheet .prow input:focus,dialog.sheet .prow textarea:focus{
+  outline:2px solid var(--accent);outline-offset:-1px}
+dialog.sheet .prow textarea{font-family:var(--sans);resize:vertical}
+.psub{font-family:var(--mono);font-size:11px}
+.personfacts{font-size:12.5px;color:var(--muted);margin:2px 0 0;
+  font-family:var(--mono)}
+.personnote{font-size:13px;color:var(--ink);margin:6px 0 0;
+  white-space:pre-wrap;max-width:70ch}
+
+/* ---- device segment switcher ---- */
+.devtabs{display:flex;gap:4px;background:var(--sunk);padding:4px;
+  border-radius:8px;margin-bottom:14px;width:fit-content}
+.devtabs[hidden]{display:none}
+.devtabs button{min-height:0;padding:8px 16px;font-size:14px;font-weight:600;
+  flex:0 0 auto;border:none;background:transparent;color:var(--muted);
+  border-radius:6px}
+.devtabs button[aria-pressed=true]{background:var(--surface);color:var(--ink);
+  box-shadow:0 1px 3px #0002}
+.segoff{display:none!important}
+.ghostbtn{min-height:0;padding:6px 12px;font-size:13px;flex:none;
+  border:none;background:none;color:var(--muted);text-decoration:underline;
+  text-underline-offset:3px}
+.ghostbtn:hover{color:var(--accent)}
+
 /* ---- command palette and shortcut dialogs ---- */
 .palettebtn{min-height:0;padding:4px 9px;font-size:12px;flex:none;
   font-family:var(--mono);color:var(--muted)}
@@ -890,8 +931,13 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
        "is it working right now"; everything below is set once and forgotten,
        and lives behind a summary row so it stops competing with the answer. -->
   <div class="view" id="viewDev" role="tabpanel" aria-labelledby="tabDev" tabindex="0">
+  <!-- One recorder on screen at a time. Two full panels stacked was the
+       page's own scroll bar flirting with its second screen before anything
+       was read. The segment chooses whose panels are up; the Recorders
+       segment is where pairing and troubleshooting live. -->
+  <div class="devtabs" id="devtabs" role="group" aria-label="Which recorder to show" hidden></div>
   <div class="grid">
-    <div class="card span2 hero" id="devcard">
+    <div class="card span2 hero" id="devcard" data-rec="boswell">
       <h2><span id="devname">Device</span> <span id="devaddr" class="addr"></span></h2>
       <div class="status">
         <span class="dot off" id="dot"></span>
@@ -936,9 +982,11 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
         <button type="button" id="bSave" disabled>Save clip</button>
         <button type="button" class="dang" id="bDis" disabled>Disconnect</button>
       </div>
+      <button type="button" class="ghostbtn" id="devDiag">Why is it not
+        connecting?</button>
     </div>
 
-    <div class="card span2 hero" id="omicard" hidden>
+    <div class="card span2 hero" id="omicard" data-rec="omi" hidden>
       <h2>Omi <span id="omiaddr" class="addr"></span></h2>
       <div class="status">
         <span class="dot off" id="omidot"></span>
@@ -972,6 +1020,8 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
            align-items:center;gap:10px;flex-wrap:wrap">
         <button id="omisearch" type="button">Stop looking</button>
         <span class="note" id="omisearchnote"></span>
+        <button type="button" class="ghostbtn" id="omiDiag">Why is it not
+          connecting?</button>
       </div>
 
       <p class="note" id="omenote">Recording into the same archive, alongside
@@ -988,7 +1038,7 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
          is a different device: it fails on its own, it is worn instead of
          rather than as well as, and conflating the two would mean neither
          status could be trusted. -->
-    <div class="card" id="capcard">
+    <div class="card" id="capcard" data-rec="boswell">
       <h2>Capture <span class="owner" data-owner>Boswell</span></h2>
       <label class="row">Microphone gain
         <input type="range" id="gain" min="20" max="70" value="50" step="1" disabled>
@@ -1009,7 +1059,7 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
          added to the one above, because these are written to a different
          device over a different connection and half of them would be
          disabled at any moment. -->
-    <div class="card" id="omiset" hidden>
+    <div class="card" id="omiset" data-rec="omi" hidden>
       <h2>Capture <span class="owner">Omi</span></h2>
       <label class="row">Microphone gain
         <input type="range" id="omigain" min="0" max="20" value="6" step="1" disabled>
@@ -1025,7 +1075,7 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
         adjustable while it is connected.</p>
     </div>
 
-    <div class="card" id="recrow" hidden>
+    <div class="card" id="recrow" data-rec="boswell" hidden>
       <h2>Recordings on the device <span class="owner" data-owner>Boswell</span></h2>
       <div class="row" style="align-items:center">
         <span class="val" id="recv" style="flex:1;text-align:left;min-width:0">—</span>
@@ -1050,7 +1100,7 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
       </div>
     </div>
 
-    <div class="card span2" id="setcard">
+    <div class="card span2" id="setcard" data-rec="boswell">
       <h2>Device settings <span class="owner" data-owner>Boswell</span></h2>
 
       <details>
@@ -1165,7 +1215,7 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
          pointer -- so there is no way to look at one recording and leave it
          there. What can honestly be shown is how much is waiting, how much
          it holds, and whether anything was lost. -->
-    <div class="card" id="omirec" hidden>
+    <div class="card" id="omirec" data-rec="omi" hidden>
       <h2>Recordings on the device <span class="owner">Omi</span></h2>
       <dl class="herostats">
         <dt>Waiting</dt><dd id="omirwait">—</dd>
@@ -1184,7 +1234,7 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
          was paired, not because the code knows the make -- somebody who owns
          an Omi and nothing else should not meet a page about a handmade
          board they will never have. -->
-    <div class="card span2" id="paircard">
+    <div class="card span2" id="paircard" data-rec="mgr">
       <h2>Recorders</h2>
       <div id="quietband" hidden></div>
       <div id="pairlist"></div>
@@ -1602,6 +1652,9 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
        configured". Mixing them is how the Device tab became a list of
        twenty controls of wildly different importance. -->
   <div class="view" id="viewSet" role="tabpanel" aria-labelledby="tabSet" tabindex="0" hidden>
+   <!-- Two columns on a desk: these are five small answers, and a single
+        column made the page a scroll past all of them to reach any. -->
+   <div class="setcols">
 
     <div class="card">
       <h2>Recorders</h2>
@@ -1644,6 +1697,7 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
       <div id="setservices" style="margin-top:10px" class="note">loading…</div>
     </div>
 
+   </div>
   </div>
 
 
@@ -1730,6 +1784,32 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
   </div>
 </dialog>
 
+<dialog class="sheet" id="profEdit" aria-labelledby="profT">
+  <h3 id="profT">Profile</h3>
+  <div class="hint" id="profSub"></div>
+  <label class="prow">Role or relationship
+    <input type="text" id="profRole" placeholder="housemate, YouTuber, colleague…"
+           autocomplete="off" maxlength="80">
+  </label>
+  <label class="prow">How the name is said
+    <input type="text" id="profPron" placeholder="e.g. nah-TAHN"
+           autocomplete="off" maxlength="80">
+  </label>
+  <label class="prow">Also goes by <span class="psub">one per line, up to 8</span>
+    <textarea id="profAliases" rows="3" spellcheck="false" autocapitalize="off"
+              placeholder="Bob&#10;Rob"></textarea>
+  </label>
+  <label class="prow">Notes
+    <textarea id="profNote" rows="3"
+              placeholder="Anything worth knowing that is not a name."></textarea>
+  </label>
+  <div id="profErr"></div>
+  <div class="btns" style="margin-top:10px">
+    <button type="button" id="profCancel">Cancel</button>
+    <button type="button" class="pri" id="profSave">Save profile</button>
+  </div>
+</dialog>
+
 <dialog class="sheet" id="namer" aria-labelledby="namerT">
   <h3 id="namerT">Who is this?</h3>
   <div class="hint" id="namerSub"></div>
@@ -1745,6 +1825,9 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
 </dialog>
 
 <script>
+
+
+
 
 
 
@@ -1971,6 +2054,77 @@ let paired = [];
 let pairedLoaded = false;
 let firstLookDone = false;
 
+/* ---- which recorder is on screen ----
+   The segment decides whose panels are up; pairing decides whether a panel
+   exists at all. Two separate reasons to hide, kept separate on purpose:
+   paintPairing owns the hidden attribute, the segment owns a class, and
+   neither can stomp the other -- recrow's own route logic underneath keeps
+   working exactly as before. */
+let devSeg = null;
+const DEV_KINDS = ["boswell", "omi"];
+
+function devKindsPaired(){
+  return DEV_KINDS.filter(k => paired.some(r => r.kind === k));
+}
+
+function paintDevTabs(){
+  const bar = $("devtabs");
+  const kinds = devKindsPaired();
+  bar.replaceChildren();
+  if (!kinds.length){ bar.hidden = true; return; }
+  bar.hidden = false;
+  if (!devSeg || !(kinds.includes(devSeg) || devSeg === "mgr")){
+    devSeg = kinds.includes(devSeg) ? devSeg
+           : (kinds.includes("boswell") ? "boswell" : kinds[0]);
+  }
+  const mk = (val, label) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = label;
+    b.setAttribute("aria-pressed", String(devSeg === val));
+    b.onclick = () => { devSeg = val;
+      try{ localStorage.setItem("boswell_devseg", devSeg); }catch(e){}
+      paintDevTabs(); };
+    bar.appendChild(b);
+  };
+  for (const k of kinds) mk(k, kindName(k));
+  mk("mgr", "Recorders");
+  applyDevSegment();
+}
+
+function applyDevSegment(){
+  try{ if (!devSeg) devSeg = localStorage.getItem("boswell_devseg") || null; }catch(e){}
+  const kinds = devKindsPaired();
+  if (!kinds.length){ devSeg = "mgr"; }
+  else if (devSeg !== "mgr" && !kinds.includes(devSeg)){
+    devSeg = kinds.includes("boswell") ? "boswell" : kinds[0];
+  }
+  const hasAny = kinds.length > 0;
+  $("devtabs").hidden = !hasAny;
+  for (const el of document.querySelectorAll("#viewDev [data-rec]")){
+    const rec = el.dataset.rec;
+    el.classList.toggle("segoff",
+      rec === "mgr" ? (hasAny && devSeg !== "mgr")
+                    : (!hasAny || devSeg !== rec));
+  }
+  [...$("devtabs").children].forEach(b =>
+    b.setAttribute("aria-pressed",
+      String(b.textContent === (devSeg === "omi" ? "Omi"
+        : devSeg === "mgr" ? "Recorders" : kindName(devSeg)))));
+}
+
+/* A "why is it not connecting?" press on a recorder panel jumps to the
+   Recorders segment and runs the diagnosis there, where the answer has
+   room. */
+function jumpToDiagnose(){
+  devSeg = "mgr";
+  try{ localStorage.setItem("boswell_devseg", "mgr"); }catch(e){}
+  paintDevTabs();
+  $("bDiag").click();
+}
+on("devDiag", "click", jumpToDiagnose);
+on("omiDiag", "click", jumpToDiagnose);
+
 function paintPairing(){
   const have = k => paired.some(r => r.kind === k);
   const boswell = have("boswell"), omi = have("omi");
@@ -1989,6 +2143,7 @@ function paintPairing(){
                           ["omiset", omi], ["omirec", omi]]){
     if ($(id) && !on) $(id).hidden = true;
   }
+  paintDevTabs();
 
   const list = $("pairlist");
   list.innerHTML = "";
@@ -3310,22 +3465,31 @@ async function loadPeople(){
         else log(b.detail || "could not rename");
         loadPeople(); loadVoices();
       };
-      const role = document.createElement("input");
-      role.placeholder = "who are they? (YouTuber, housemate, …)";
-      role.value = p.role || "";
-      role.style.cssText = "flex:1;min-width:140px;padding:6px 9px;border-radius:7px;"
-        + "border:1px solid var(--rule);background:var(--paper);color:var(--ink)";
-      const saveProf = document.createElement("button");
-      saveProf.textContent = "Save";
-      saveProf.onclick = async () => {
-        saveProf.disabled = true;
-        await fetch(`/api/voices/${p.person_id}/profile`, {
-          method: "POST", headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({role: role.value})});
-        log(`${p.name}: ${role.value.trim() || "role cleared"}`);
-        saveProf.disabled = false;
-      };
-      prof.append(rename, role, saveProf);
+      /* The profile is more than the role now — pronunciation, the names
+         somebody also goes by, notes — which is a sheet's worth of fields,
+         not a row. What is known shows on the card; the rest is one press
+         away. */
+      const facts = [p.role, p.pronunciation ? `says: ${p.pronunciation}` : null,
+                     p.aliases && p.aliases.length
+                       ? `also: ${p.aliases.join(", ")}` : null]
+        .filter(Boolean);
+      if (facts.length){
+        const f = document.createElement("p");
+        f.className = "personfacts";
+        f.textContent = facts.join(" · ");
+        d.appendChild(f);
+      }
+      if (p.note){
+        const n = document.createElement("p");
+        n.className = "personnote";
+        n.textContent = p.note;
+        d.appendChild(n);
+      }
+      const editProf = document.createElement("button");
+      editProf.textContent = "Profile";
+      editProf.title = "Role, pronunciation, other names, notes";
+      editProf.onclick = () => openProfileEditor(p);
+      prof.append(rename, editProf);
       d.appendChild(prof);
 
       const kind = document.createElement("button");
@@ -4547,6 +4711,14 @@ async function loadConversations(el){
   el.innerHTML = "";
   const page = pageSlice("convs", convs);
   renderPager(el, "convs", page, loadClips, true);
+  /* Day totals for the headers, from the conversations themselves. */
+  const convDayTotals = {};
+  for (const c of convs){
+    const k = dayKey(c.start);
+    convDayTotals[k] = convDayTotals[k] || {secs: 0, n: 0};
+    convDayTotals[k].secs += c.seconds || 0;
+    convDayTotals[k].n += 1;
+  }
   let lastDay = null;
   for (const c of page.rows){
     const day = fmtDay(c.end);
@@ -4554,7 +4726,9 @@ async function loadConversations(el){
       lastDay = day;
       const h = document.createElement("div");
       h.className = "daygroup";
-      h.innerHTML = `${day}`;
+      const tot = convDayTotals[dayKey(c.end)];
+      h.innerHTML = `${esc(day)}${tot ? ` <span>· ${fmtDur(tot.secs)}
+        in ${tot.n} conversation${tot.n === 1 ? "" : "s"}</span>` : ""}`;
       el.appendChild(h);
     }
     const d = document.createElement("div");
@@ -5209,6 +5383,18 @@ async function loadClips(){
       el.appendChild(w);
     }
     renderPager(el, "clips", page, loadClips, true);
+    /* What each day on this page holds, computed over the whole filtered
+       list: a header that says the day but not the size misses the chance
+       to answer "how much of Thursday is this". */
+    const dayTotals = {};
+    for (const c of clips){
+      const t = capTime(c);
+      if (t == null) continue;
+      const k = dayKey(t);
+      dayTotals[k] = dayTotals[k] || {secs: 0, n: 0};
+      dayTotals[k].secs += c.seconds || 0;
+      dayTotals[k].n += 1;
+    }
     let lastDay = null;
     /* "Shown" means this page. Selecting 1339 clips because the reader could
        see fifty of them is not what the button says. */
@@ -5227,7 +5413,9 @@ async function loadClips(){
           lastDay = day;
           const h = document.createElement("div");
           h.className = "daygroup";
-          h.textContent = day;
+          const tot = capT != null && dayTotals[dayKey(capT)];
+          h.innerHTML = esc(day) + (tot ? ` <span>· ${fmtDur(tot.secs)}
+            in ${tot.n} recording${tot.n === 1 ? "" : "s"}</span>` : "");
           el.appendChild(h);
         }
       }
@@ -5237,9 +5425,11 @@ async function loadClips(){
       b.innerHTML = (selectMode
           ? `<span class="box">${selected.has(c.name) ? "✓" : ""}</span>` : "") +
         `<div class="ci">
-          <div class="cn">${capT == null ? "time unknown — reached the archive "
-            + new Date(c.modified*1000).toLocaleString()
-            : new Date(capT*1000).toLocaleString()}</div>
+          <div class="cn"${capT == null ? "" :
+            ` title="captured ${new Date(capT*1000).toLocaleString()}"`}>${
+            capT == null ? "time unknown — reached the archive "
+              + new Date(c.modified*1000).toLocaleString()
+              : fmtClock(capT)}</div>
           <div class="cp">${highlight(c.preview) || (
             // A clip with no words but a voice tag is not the same as an
             // empty one, and saying so is the whole point of this view.
@@ -6450,6 +6640,54 @@ async function renderTranscript(name){
   }
 }
 
+/* ---- the profile editor ----
+   One sheet per person: who they are, how the name is said, what else they
+   go by, and anything worth remembering. The card above shows what is
+   known; this is where the rest gets entered. */
+let profCtx = null;
+
+function openProfileEditor(p){
+  profCtx = p;
+  $("profT").textContent = `Profile — ${p.name}`;
+  $("profSub").textContent =
+    `${p.count} voiceprint${p.count === 1 ? "" : "s"} · saved to this machine, `
+    + `part of every future match.`;
+  $("profRole").value = p.role || "";
+  $("profPron").value = p.pronunciation || "";
+  $("profAliases").value = (p.aliases || []).join("\n");
+  $("profNote").value = p.note || "";
+  $("profErr").textContent = "";
+  openSheet("profEdit", "profRole");
+}
+
+$("profSave").onclick = async () => {
+  if (!profCtx) return;
+  const body = {
+    role: $("profRole").value,
+    pronunciation: $("profPron").value,
+    aliases: $("profAliases").value.split("\n").map(s => s.trim()).filter(Boolean),
+    note: $("profNote").value,
+  };
+  $("profSave").disabled = true;
+  try{
+    const r = await fetch(`/api/voices/${profCtx.person_id}/profile`, {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(body)});
+    if (!r.ok){
+      $("profErr").textContent = (await r.json().catch(() => ({}))).detail
+        || "Could not save the profile";
+      return;
+    }
+    log(`${profCtx.name}: profile saved`);
+    $("profEdit").close();   // the close event restores focus
+    loadPeople();
+  }catch(e){
+    $("profErr").textContent = "Could not reach the server";
+  }finally{ $("profSave").disabled = false; }
+};
+$("profCancel").onclick = () => $("profEdit").close();
+$("profEdit").addEventListener("close", restoreSheetFocus);
+
 /* prompt() is blocked or silently ignored by most mobile browsers, so the
    naming flow is an in-page sheet instead. */
 let namerCtx = null;
@@ -6502,7 +6740,9 @@ $("namerSave").onclick = saveName;
   try{
     const people = await (await fetch("/api/speakers")).json();
     namerPeople = people.map(p => p.name).filter(Boolean);
+    aliasToName = {};
     for (const p of people){
+      for (const a of (p.aliases || [])) aliasToName[normName(a)] = p.name;
       const b = document.createElement("button");
       /* samples is the list of voiceprint samples; count is how many.
          Interpolating the list gave "Blase ([object Object])". */
@@ -6513,6 +6753,18 @@ $("namerSave").onclick = saveName;
       b.onclick = () => { $("namerInput").value = p.name; saveName(); };
       b.dataset.name = p.name;
       q.appendChild(b);
+    }
+    /* Aliases offered under their own name, filling the canonical one:
+       "Bob" on the button, "Robert" in the store. */
+    for (const p of people){
+      for (const a of (p.aliases || [])){
+        const b = document.createElement("button");
+        b.textContent = `${a} → ${p.name}`;
+        b.title = `Save as ${p.name}, their enrolled name`;
+        b.onclick = () => { $("namerInput").value = p.name; saveName(); };
+        b.dataset.name = a;
+        q.appendChild(b);
+      }
     }
   }catch(e){ namerPeople = []; }
 
@@ -6549,11 +6801,19 @@ let namerPeople = [];
    line editor. The check lived only in the namer, so naming one line could
    still invent a second "NileRed" with nothing said -- the same fault, in the
    field next to it. */
+/* An alias is a way in, not a second person: typing "Bob" offers and saves
+   "Robert", so the voiceprint store keeps one name per mouth. */
+let aliasToName = {};
+
 async function loadPeopleNames(){
   try{
     const people = await (await fetch("/api/speakers")).json();
     namerPeople = people.map(p => p.name).filter(Boolean);
-  }catch(e){ namerPeople = []; }
+    aliasToName = {};
+    for (const p of people){
+      for (const a of (p.aliases || [])) aliasToName[normName(a)] = p.name;
+    }
+  }catch(e){ namerPeople = []; aliasToName = {}; }
   return namerPeople;
 }
 
@@ -6563,6 +6823,9 @@ function nearestName(typed){
   const t = normName(typed);
   if (!t) return null;
   for (const n of namerPeople) if (normName(n) === t) return {name: n, exact: true};
+  /* An exact alias is an exact name, just spelled the way the person is
+     actually addressed. */
+  if (aliasToName[t]) return {name: aliasToName[t], exact: true};
   let best = null;
   for (const n of namerPeople){
     const c = normName(n);
@@ -8195,6 +8458,9 @@ loadBattery();
 $("pulseCard").open = pulseWanted();
 if (pulseWanted()) loadPulse();
 addEventListener("resize", () => { if ($("pulseCard").open) drawPulse(); });
+
+
+
 
 
 
