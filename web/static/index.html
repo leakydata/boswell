@@ -7335,6 +7335,7 @@ async function omiPoll(){
                               + " of the recorder itself");
     if (ls.dropped) bits.push(`${ls.dropped} unusable frame`
                               + (ls.dropped === 1 ? "" : "s"));
+    if (ls.clean === false) bits.push("cut off rather than ended");
     el.textContent = bits.join(" · ")
       + (ls.reboots ? " — a restart mid-session usually means the battery is "
                       + "going, not that you walked away." : "");

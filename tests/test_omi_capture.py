@@ -531,3 +531,25 @@ def test_restore_survives_a_missing_or_broken_status_file():
         f.write("{ not json")
     omid._restore_last()
     assert omid.LAST == {"stats": {}, "session": None}
+
+
+def test_a_connection_that_never_happened_is_not_a_session():
+    """The retry loop attempts a connection every twenty-five seconds and
+    each failure raises through the same block. Recording those as sessions
+    overwrote the useful record -- half a minute, no clips, no frames --
+    with a description of a link that never existed, and it survived about
+    twenty-five seconds before being replaced by the next failure."""
+    src = read_file("host/omid.py")
+    body = src[src.index("        LAST[\"stats\"] = dict(stats)"):]
+    body = body[:body.index("    return clipper")]
+    assert 'if clipper is not None or beat.get("frames")' in body, \
+        "every failed attempt is still recorded as a session"
+    # And a session that streamed then died by exception must still be kept:
+    # that is the one worth having.
+    assert 'beat.get("frames")' in body
+
+
+def test_a_session_says_whether_it_ended_cleanly():
+    # A service restart and a device walking away look the same otherwise.
+    src = read_file("host/omid.py")
+    assert '"clean": clipper is not None' in src

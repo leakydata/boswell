@@ -304,19 +304,36 @@ async def one_session(address, quiet=False):
     finally:
         stop.set()
         await pulse
+        LAST["stats"] = dict(stats)
         # What this session was, kept where the interface can read it. A link
         # that drops is not self-explanatory: whether it ran for two minutes
-        # or two hours, and whether the recorder restarted underneath it,
-        # are the difference between "you walked out of range" and "it is
-        # running out of battery".
-        LAST["stats"] = dict(stats)
-        LAST["session"] = {
-            "began": began, "ended": time.time(),
-            "seconds": round(time.time() - began, 1),
-            "clips": beat.get("clips", 0), "frames": beat.get("frames", 0),
-            "reboots": getattr(clipper, "reboots", None),
-            "dropped": getattr(clipper, "dropped", None),
-        }
+        # or two hours, and whether the recorder restarted underneath it, are
+        # the difference between "you walked out of range" and "it is running
+        # out of battery".
+        #
+        # Only a session that actually happened. A connection that was never
+        # made raises here too, and recording that as a session overwrote the
+        # useful record -- half a minute, no clips, no frames -- with a
+        # description of a link that never existed. The retry loop attempts
+        # one of those every twenty-five seconds, so the real last session
+        # survived about that long.
+        #
+        # `clipper` is returned only when capture finished on its own; frames
+        # are counted while it streams. Either means the device was really
+        # there, and a session that streamed and then died by exception is
+        # exactly the one worth keeping.
+        if clipper is not None or beat.get("frames"):
+            LAST["session"] = {
+                "began": began, "ended": time.time(),
+                "seconds": round(time.time() - began, 1),
+                "clips": beat.get("clips", 0), "frames": beat.get("frames", 0),
+                "reboots": getattr(clipper, "reboots", None),
+                "dropped": getattr(clipper, "dropped", None),
+                # Whether it ended on its own terms or was cut off, which is
+                # the difference between a service restart and a device that
+                # walked away.
+                "clean": clipper is not None,
+            }
     return clipper
 
 
