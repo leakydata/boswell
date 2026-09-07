@@ -718,10 +718,11 @@ def test_a_recorder_that_was_just_seen_is_not_looked_for_again():
     session that followed made bleak discover it all over again -- three
     times, once each for stats, sync and capture.
 
-    This recorder advertises in windows too short to find twice. A capture of
-    200 seconds carried 349 advertisements from fifteen devices and not one
-    from this one, so the sighting is the scarce thing and throwing it away
-    is what turned "saw it advertise -- connecting now" into "not found".
+    This recorder advertises in windows too short to find twice. An HCI
+    capture of 200 seconds carried 1,036 advertisements from 45 devices and
+    not one from this one, so the sighting is the scarce thing, and throwing
+    it away is what turned "saw it advertise -- connecting now" straight
+    into "device not found".
     """
     src = read_file("host/omid.py")
     fn = src[src.index("async def wait_until_advertising"):]
