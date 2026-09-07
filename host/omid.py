@@ -193,48 +193,38 @@ async def one_session(address, quiet=False, dev=None):
     # Seeded from the last session rather than started empty, so a reading
     # survives the device going away and can be shown with its age.
     stats = dict(LAST["stats"])
-    try:
-        from bleak import BleakClient
-        # Eight seconds, not twenty-five. This is a reading for a panel, and
-        # it runs before the sync and the stream, on its own connection --
-        # so a device that has stopped advertising by the time we reach it
-        # spent the whole advertising window failing to be measured. A
-        # recorder seen for a moment then produced "stats: TimeoutError"
-        # followed by sync and capture finding the device already gone.
-        # Reaching a device that is there takes a second or two; the rest of
-        # that budget only ever bought a slower failure.
-        async with BleakClient(dev or address, timeout=8.0) as c:
-            stats = await omi_capture.read_stats(c)
-            # When this reading was taken. The stats are read once a session
-            # and then republished unchanged, so anything comparing the
-            # device's clock against "now" measures how long the session has
-            # been running, not how far the clock has drifted -- the panel
-            # read "off by 23 min" twenty-three minutes after a clock that
-            # was correct when it was read.
-            stats["read_at"] = time.time()
-            # Its own clock is what stamps the packets it stores, and those
-            # stamps are the only thing that makes offloaded audio placeable.
-            # A device whose clock has drifted files real conversations under
-            # the wrong hour and nothing downstream can tell.
-            drift = abs((stats.get("device_epoch") or 0) - time.time())
-            if stats.get("device_epoch") is None or drift > 120:
-                stats["clock_set_to"] = await omi_capture.set_clock(c)
-                # What the clock now says, not what it said before the
-                # correction: leaving the stale reading in place reported a
-                # drift that had just been fixed.
-                stats["device_epoch"] = stats["clock_set_to"]
-                stats["read_at"] = stats["clock_set_to"]
-                print(f"set the device clock (was off by {drift:.0f}s)",
-                      flush=True)
-    except Exception as e:
-        print(f"stats: {type(e).__name__}: {e}", flush=True)
-        # That handle is spent. A sighting names a D-Bus object BlueZ made
-        # when it saw the device, and BlueZ drops the object once the device
-        # goes -- so reusing it after a failure turned an honest "not found"
-        # into "device 'dev_C4_B3_FD_7F_1E_91' not found" for both the sync
-        # and the stream, neither of which had tried anything yet. Looking
-        # again costs a discovery; reusing a dead path cannot succeed.
-        dev = None
+
+    async def read_on(c):
+        """The panel figures, taken on the connection the sync is holding.
+
+        These had a connection of their own, opened before the sync and the
+        stream. It failed on every session -- "stats: TimeoutError" -- while
+        the sync connected successfully seconds later, because a recorder
+        that advertises in short windows cannot be found three times over,
+        and the first search spent the window. Battery is refreshed again
+        during capture anyway; the part that only happens here is the clock.
+        """
+        stats.update(await omi_capture.read_stats(c))
+        # When this reading was taken. The stats are read once a session and
+        # then republished unchanged, so anything comparing the device clock
+        # against "now" measures how long the session has been running, not
+        # how far the clock has drifted -- the panel read "off by 23 min"
+        # twenty-three minutes after a clock that was correct when read.
+        stats["read_at"] = time.time()
+        # Its own clock is what stamps the packets it stores, and those
+        # stamps are the only thing that makes offloaded audio placeable. A
+        # device whose clock has drifted files real conversations under the
+        # wrong hour and nothing downstream can tell.
+        drift = abs((stats.get("device_epoch") or 0) - time.time())
+        if stats.get("device_epoch") is None or drift > 120:
+            stats["clock_set_to"] = await omi_capture.set_clock(c)
+            # What the clock now says, not what it said before the
+            # correction: leaving the stale reading in place reported a
+            # drift that had just been fixed.
+            stats["device_epoch"] = stats["clock_set_to"]
+            stats["read_at"] = stats["clock_set_to"]
+            print(f"set the device clock (was off by {drift:.0f}s)",
+                  flush=True)
 
     # "connecting", not "syncing" -- nothing has been reached yet.
     #
@@ -256,6 +246,7 @@ async def one_session(address, quiet=False, dev=None):
             # Asked on the connection the sync is already holding, rather
             # than on one of its own that has to find the device again.
             on_ring=lambda info: note_ring(stats, info),
+            on_client=read_on,
             progress=lambda done, total: publish(
                 state="syncing", address=address, stats=stats,
                 done=done, total=total))
@@ -276,6 +267,13 @@ async def one_session(address, quiet=False, dev=None):
         # backlog will still be there next time; the conversation happening
         # now will not.
         print(f"sync: {type(e).__name__}: {e}", flush=True)
+        # That handle is spent. A sighting names a D-Bus object BlueZ made
+        # when it saw the device, and BlueZ drops the object once the device
+        # goes -- so handing it to the stream after it has already failed
+        # turns an honest "not found" into "device 'dev_C4_B3_FD_7F_1E_91'
+        # not found" for a connection that has tried nothing. Looking again
+        # costs a discovery; reusing a dead path cannot succeed.
+        dev = None
 
     # A heartbeat for as long as it records, not one line when it starts.
     #

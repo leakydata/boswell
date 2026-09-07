@@ -281,7 +281,7 @@ async def find_omi(timeout=12.0):
 
 
 async def sync(address, mark_read=True, limit_packets=None, quiet=False,
-               progress=None, dev=None, on_ring=None):
+               progress=None, dev=None, on_ring=None, on_client=None):
     """Pull the ring to a spool file, then turn the spool into clips."""
     device_id = norm_id(address)
     os.makedirs(SPOOL, exist_ok=True)
@@ -293,6 +293,17 @@ async def sync(address, mark_read=True, limit_packets=None, quiet=False,
         link = Link(client)
         await client.start_notify(CTRL, link.on_notify)
         await asyncio.sleep(0.5)
+
+        # Anything else the caller wants from the device, asked here rather
+        # than on a connection of its own. The radio is exclusive and this
+        # recorder advertises in short windows, so every extra connection is
+        # another search that can fail -- and the readings one did were
+        # failing on every session while this one succeeded seconds later.
+        if on_client:
+            try:
+                await on_client(client)
+            except Exception as e:
+                print(f"readings: {type(e).__name__}: {e}", flush=True)
 
         info = await link.ring_info()
         # Reported from here because here is where it is already known. A
