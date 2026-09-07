@@ -6,6 +6,7 @@ What differs is everything around it: a three-byte header instead of twelve,
 no timestamp, and no boot id. Each of those absences needs a decision rather
 than a default, and these are the decisions.
 """
+import re
 import os
 import sys
 
@@ -637,9 +638,48 @@ def test_storage_is_never_read_while_audio_is_streaming():
     assert "start_notify" not in tick, "still subscribing during capture"
     assert "ring_info" not in tick, "still asking storage during capture"
     # It is read where the storage characteristic is already being used.
-    sync = src[src.index('publish(state="syncing"'):]
+    sync = src[src.index('publish(state="connecting", address=address'):]
     sync = sync[:sync.index("spool, took")]
     assert "read_ring_now" in sync
+
+
+def test_syncing_is_not_announced_before_the_device_is_reached():
+    """The daemon published "syncing" before attempting the sync, so a device
+    that was not there produced a fresh status file saying "syncing" on every
+    retry. The file never went stale, "syncing" is not one of the states the
+    interface treats as away, and the recorder was reported as connected and
+    transferring for hours while every attempt failed with "not found".
+
+    "syncing" may only be published from the progress callback, which runs
+    inside the connected client once packets are actually moving.
+    """
+    src = read_file("host/omid.py")
+    body = src[src.index("async def one_session"):]
+    body = body[:body.index("spool, took")]
+    assert 'publish(state="syncing"' not in body, \
+        "syncing is still announced before the sync is attempted"
+
+    # And where it does appear, it is inside the progress callback.
+    prog = src[src.index("progress=lambda"):]
+    prog = prog[:prog.index("))")]
+    assert 'state="syncing"' in prog, "nothing reports a sync in progress"
+
+
+def test_a_sync_that_is_only_being_attempted_reads_as_away():
+    # The status the daemon publishes while trying must be one the interface
+    # scores as not-connected, or the badge inherits the lie.
+    omid_src = read_file("host/omid.py")
+    server_src = read_file("web/server.py")
+    attempt = omid_src[omid_src.index("async def one_session"):]
+    attempt = attempt[:attempt.index("spool, took")]
+    state = re.search(r'publish\(state="([a-z ]+)", address=address, stats=stats\)',
+                      attempt)
+    assert state, "the pre-sync publish is gone or changed shape"
+    away = server_src[server_src.index("_AWAY = "):]
+    away = away[:away.index("\n\n\ndef ")]
+    assert f'"{state.group(1)}"' in away, \
+        f'the daemon publishes "{state.group(1)}" while trying, '\
+        "but the interface counts that as connected"
 
 
 def test_a_ring_read_never_stops_a_recording():

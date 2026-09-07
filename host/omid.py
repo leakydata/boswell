@@ -186,7 +186,20 @@ async def one_session(address, quiet=False):
     except Exception as e:
         print(f"stats: {type(e).__name__}: {e}", flush=True)
 
-    publish(state="syncing", address=address, stats=stats)
+    # "connecting", not "syncing" -- nothing has been reached yet.
+    #
+    # This published "syncing" before the sync was attempted, so a device
+    # that was not there at all produced a fresh status file saying syncing
+    # every retry. The file therefore never went stale, "syncing" is not one
+    # of the states the interface treats as away, and the recorder was
+    # reported as connected and transferring for hours while every single
+    # attempt failed with "device not found". The owner watched it say
+    # syncing all evening and reasonably asked why nothing arrived.
+    #
+    # The honest report while trying is "connecting". "syncing" is published
+    # from the progress callback below, which only runs once the client is
+    # connected and packets are actually moving.
+    publish(state="connecting", address=address, stats=stats)
     try:
         # While the storage characteristic is the thing being talked to
         # anyway, and before any audio is flowing.
