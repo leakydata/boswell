@@ -401,6 +401,12 @@ async def capture(address, seconds=None, quiet=False, on_progress=None,
                       f"{reboots[0]} reboot(s), {dropped[0]} unusable")
                 if last:
                     print(f"last clip: {os.path.basename(last)}")
+    # Carried out on the clipper so the caller can report them. A counter
+    # reset means the recorder restarted mid-session, which is the one fact
+    # that distinguishes "you walked away" from "it is dying", and it was
+    # only ever printed to a log.
+    clipper.reboots = reboots[0]
+    clipper.dropped = dropped[0]
     return clipper
 
 

@@ -446,3 +446,88 @@ def test_a_newer_request_is_not_swallowed_by_an_older_one_completing():
 
     omid.clear_wanted(5.0)          # the older request finishing
     assert omid.read_wanted()["id"] == 9.0, "the newer request was dropped"
+
+
+# ----------------------------------------- why the link ended, kept on screen
+def test_a_session_reports_restarts_of_the_recorder():
+    """A counter reset means the device restarted mid-session. It is the one
+    fact that tells "you walked out of range" from "it is dying", and it was
+    only ever printed to a log."""
+    src = read_file("host/omi_capture.py")
+    assert "clipper.reboots = reboots[0]" in src
+    assert "clipper.dropped = dropped[0]" in src
+
+
+def test_the_last_reading_survives_the_device_going_away():
+    # stats was rebuilt empty every session, so the last thing the device
+    # said about itself was discarded at the moment it became useful.
+    src = read_file("host/omid.py")
+    assert 'LAST = {"stats": {}, "session": None}' in src
+    assert 'stats = dict(LAST["stats"])' in src, "a new session starts blank"
+    assert 'LAST["stats"] = dict(stats)' in src, "nothing is carried out"
+
+
+def test_every_status_write_carries_what_was_last_known():
+    # Otherwise the interface has to ask separately, and the states that
+    # matter -- looking, lost, waiting -- are the ones that would not carry it.
+    src = read_file("host/omid.py")
+    body = src[src.index("def publish("):src.index("def publish(") + 400]
+    assert 'fields.setdefault("stats"' in body
+    assert 'fields["last_session"]' in body
+
+
+def test_the_panel_says_how_old_a_battery_reading_is():
+    # "96%" from an hour ago and "96%" from a minute ago are different facts.
+    html = read_file("web/static/index.html")
+    assert "battAge" in html
+    assert "last link ran" in html
+
+
+def test_what_was_known_survives_a_service_restart():
+    """A restart is exactly when somebody is trying to work out what
+    happened, and it was the moment the history was thrown away."""
+    src = read_file("host/omid.py")
+    assert "def _restore_last" in src
+    assert "_restore_last()" in src.split("def _restore_last")[1], \
+        "defined but never called"
+    # The old state is not carried over: it described the previous run.
+    body = src[src.index("def _restore_last"):]
+    body = body[:body.index("\ndef ", 10)]
+    assert '"state"' not in body
+
+
+def test_restore_reads_a_real_status_file():
+    """Exercised rather than asserted about: the point is that a battery
+    reading and the last session come back after a restart."""
+    import json as _json, tempfile
+    sys.path.insert(0, os.path.join(HERE, "..", "host"))
+    import omid
+
+    tmp = tempfile.mkdtemp()
+    omid.STATUS = os.path.join(tmp, "omi_status.json")
+    with open(omid.STATUS, "w") as f:
+        _json.dump({"state": "recording", "at": 1788700000,
+                    "stats": {"battery": 96, "read_at": 1788699000},
+                    "last_session": {"seconds": 1800, "clips": 41,
+                                     "reboots": 1}}, f)
+
+    omid.LAST = {"stats": {}, "session": None}
+    omid._restore_last()
+    assert omid.LAST["stats"]["battery"] == 96
+    assert omid.LAST["session"]["reboots"] == 1
+    # The previous run's state is not adopted as this run's.
+    assert "state" not in omid.LAST
+
+
+def test_restore_survives_a_missing_or_broken_status_file():
+    import tempfile
+    sys.path.insert(0, os.path.join(HERE, "..", "host"))
+    import omid
+    tmp = tempfile.mkdtemp()
+    omid.STATUS = os.path.join(tmp, "gone.json")
+    omid.LAST = {"stats": {}, "session": None}
+    omid._restore_last()                      # must not raise
+    with open(omid.STATUS, "w") as f:
+        f.write("{ not json")
+    omid._restore_last()
+    assert omid.LAST == {"stats": {}, "session": None}

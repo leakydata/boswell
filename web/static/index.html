@@ -954,6 +954,7 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
         <dt>Its clock</dt><dd id="omiclock">—</dd>
       </dl>
 
+      <p class="note" id="omilast" hidden style="margin-top:6px"></p>
       <div id="omibar" hidden style="margin-top:8px;height:4px;border-radius:2px;
            background:var(--rule);overflow:hidden">
         <div id="omibarfill" style="height:100%;width:0;background:var(--accent);
@@ -7228,8 +7229,14 @@ async function omiPoll(){
      place here. A recorder is a recorder: is it connected, how much charge
      has it got, what has it heard -- and the answer should not be somewhere
      different depending on which box you are asking about. */
+  /* Kept with its age. A reading from an hour ago is still the most useful
+     thing anybody has about a recorder that has stopped answering, and it
+     used to be thrown away at the moment it became useful. */
+  const battAge = st.read_at ? ago(st.read_at) : null;
   $("omibatt").textContent = st.battery != null
-      ? `${st.battery}%${st.charging ? " · charging" : ""}` : "—";
+      ? `${st.battery}%${st.charging ? " · charging" : ""}`
+        + (battAge && battAge !== "just now" ? ` (${battAge})` : "")
+      : "—";
   const mins = Math.round((s.frames || 0) * 20 / 1000 / 60);
   $("omiclips").textContent = clips
       ? `${clips} clip${clips === 1 ? "" : "s"}${mins ? ` · ${mins} min` : ""}`
@@ -7311,6 +7318,28 @@ async function omiPoll(){
       $("omidimv").textContent = st.dim_ratio + "%";
     }
   }
+  /* Why the last link ended, on screen rather than in a journal. Whether it
+     ran two minutes or two hours, and whether the recorder restarted
+     underneath it, is the difference between "you walked out of range" and
+     "it is running out of battery". */
+  const ls = s.last_session;
+  const el = $("omilast");
+  el.hidden = !(ls && !live);
+  if (!el.hidden){
+    const mins = ls.seconds < 90 ? `${Math.round(ls.seconds)} s`
+               : `${Math.round(ls.seconds / 60)} min`;
+    const bits = [`last link ran ${mins}`,
+                  `${ls.clips || 0} clip${ls.clips === 1 ? "" : "s"}`];
+    if (ls.reboots) bits.push(`${ls.reboots} restart`
+                              + (ls.reboots === 1 ? "" : "s")
+                              + " of the recorder itself");
+    if (ls.dropped) bits.push(`${ls.dropped} unusable frame`
+                              + (ls.dropped === 1 ? "" : "s"));
+    el.textContent = bits.join(" · ")
+      + (ls.reboots ? " — a restart mid-session usually means the battery is "
+                      + "going, not that you walked away." : "");
+  }
+
   /* What the device is still holding. Only meaningful while something is
      connected to ask it -- the figure is read over the radio, not kept. */
   const ring = st.storage;

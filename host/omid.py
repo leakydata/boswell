@@ -56,9 +56,43 @@ BACKOFF = [2, 5, 10, 20, 30, 60]
 
 stopping = False
 
+# What was last learned about the device, kept across sessions.
+#
+# `stats` used to be rebuilt empty on every session, so the moment a device
+# stopped answering the last thing it had said about itself was thrown away.
+# "the battery was 96% at 17:00" is exactly what somebody wants when a
+# recorder vanishes, and it was being discarded at the point it became
+# useful.
+LAST = {"stats": {}, "session": None}
+
+
+def _restore_last():
+    """Seed what was last known from the status file this daemon wrote before.
+
+    Kept in memory only, this was lost on every restart -- and a restart is
+    exactly when somebody is trying to work out what happened. The state is
+    not carried over, because that was true of the previous run and says
+    nothing about this one; the readings and the last session are facts about
+    the device and survive.
+    """
+    try:
+        with open(STATUS) as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        return
+    if isinstance(d.get("stats"), dict):
+        LAST["stats"] = d["stats"]
+    if isinstance(d.get("last_session"), dict):
+        LAST["session"] = d["last_session"]
+
+
+_restore_last()
+
 
 def publish(**fields):
     fields["at"] = time.time()
+    fields.setdefault("stats", LAST["stats"] or None)
+    fields["last_session"] = LAST["session"]
     try:
         atomicio.write_json(STATUS, fields)
     except Exception:
@@ -115,7 +149,9 @@ async def one_session(address, quiet=False):
     # Read once per session, on the connection the sync is about to use.
     # There is no second reader -- the radio is exclusive -- so whatever
     # holds the device is the only thing that can ask it anything.
-    stats = {}
+    # Seeded from the last session rather than started empty, so a reading
+    # survives the device going away and can be shown with its age.
+    stats = dict(LAST["stats"])
     try:
         from bleak import BleakClient
         async with BleakClient(address, timeout=25.0) as c:
@@ -251,7 +287,9 @@ async def one_session(address, quiet=False):
         clear_wanted(want["id"])
 
     beat = {"clips": 0, "frames": 0}
+    began = time.time()
     pulse = asyncio.create_task(heartbeat())
+    clipper = None
     try:
         clipper = await omi_capture.capture(address, quiet=quiet,
                                             on_progress=beat.update,
@@ -266,6 +304,19 @@ async def one_session(address, quiet=False):
     finally:
         stop.set()
         await pulse
+        # What this session was, kept where the interface can read it. A link
+        # that drops is not self-explanatory: whether it ran for two minutes
+        # or two hours, and whether the recorder restarted underneath it,
+        # are the difference between "you walked out of range" and "it is
+        # running out of battery".
+        LAST["stats"] = dict(stats)
+        LAST["session"] = {
+            "began": began, "ended": time.time(),
+            "seconds": round(time.time() - began, 1),
+            "clips": beat.get("clips", 0), "frames": beat.get("frames", 0),
+            "reboots": getattr(clipper, "reboots", None),
+            "dropped": getattr(clipper, "dropped", None),
+        }
     return clipper
 
 
