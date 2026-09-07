@@ -299,6 +299,63 @@ async def find_omi(timeout=15.0):
     return sorted(out, key=lambda t: -t[2])
 
 
+async def bluez_device(address):
+    """The device object BlueZ is already holding, or None.
+
+    BlueZ auto-connects a device it has bonded and trusted. A connected
+    peripheral stops advertising, and bleak finds devices by scanning for
+    advertisements -- so the moment BlueZ takes the recorder, every connect
+    fails with "device not found" and nothing recovers on its own. The
+    daemon then reports a device it cannot reach while that device is
+    sitting connected to this very machine, which is what happened here:
+    battery 100%, twelve services, and hours of "not found".
+
+    Asking BlueZ directly costs nothing and breaks the deadlock -- and is
+    better than forcing a disconnect, because a link that already exists is
+    one that does not have to be waited for.
+
+    Linux only, and quiet about it: on any other backend, or any failure,
+    there is simply nothing held.
+    """
+    try:
+        from dbus_fast.aio import MessageBus
+        from dbus_fast import BusType
+        from bleak.backends.device import BLEDevice
+    except ImportError:
+        return None
+
+    want = (address or "").upper()
+    bus = None
+    try:
+        bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
+        intro = await bus.introspect("org.bluez", "/")
+        obj = bus.get_proxy_object("org.bluez", "/", intro)
+        om = obj.get_interface("org.freedesktop.DBus.ObjectManager")
+        for path, ifaces in (await om.call_get_managed_objects()).items():
+            d = ifaces.get("org.bluez.Device1")
+            if not d:
+                continue
+            props = {k: v.value for k, v in d.items()}
+            if str(props.get("Address", "")).upper() != want:
+                continue
+            # Only a live one. A known-but-disconnected device still has an
+            # object here, and handing that to BleakClient would swap a
+            # honest "not found" for a confusing connect failure.
+            if not props.get("Connected"):
+                return None
+            return BLEDevice(address, props.get("Name"),
+                             {"path": path, "props": props})
+    except Exception:
+        return None
+    finally:
+        if bus is not None:
+            try:
+                bus.disconnect()
+            except Exception:
+                pass
+    return None
+
+
 async def capture(address, seconds=None, quiet=False, on_progress=None,
                   should_stop=None, on_stats=None, stats_every=60,
                   on_tick=None, on_connected=None, dev=None):

@@ -407,6 +407,13 @@ async def wait_until_advertising(address, timeout):
     recorder advertises in windows too short to find twice. Handing the
     object straight to BleakClient skips that second search.
     """
+    # If BlueZ is already holding it, no advertisement is ever coming: a
+    # connected peripheral does not advertise, so waiting for one is waiting
+    # forever. Ask first, and take the link that already exists.
+    held = await omi_capture.bluez_device(address)
+    if held is not None:
+        return held
+
     from bleak import BleakScanner
     want = omi_capture.norm_id(address)
     seen = asyncio.Event()
@@ -474,6 +481,11 @@ async def run(address=None, quiet=False):
             if found:
                 addr = found[0][0]
                 print(f"found {addr}", flush=True)
+
+        if addr and sighted is None:
+            # The same deadlock reached by a different door: the very first
+            # attempt, before any wait has happened.
+            sighted = await omi_capture.bluez_device(addr)
 
         if addr:
             try:

@@ -751,3 +751,45 @@ def test_every_connection_in_a_session_can_use_the_sighting():
     assert "BleakClient(dev or address" in read_file("host/omid.py")
     assert "BleakClient(dev or address" in read_file("host/omi_sync.py")
     assert "BleakClient(dev or address" in read_file("host/omi_capture.py")
+
+
+def test_a_device_bluez_is_holding_can_still_be_reached():
+    """BlueZ auto-connects a device it has bonded and trusted. A connected
+    peripheral stops advertising, and bleak finds devices by scanning for
+    advertisements, so every connect then fails with "device not found" --
+    while the recorder sits connected to this very machine.
+
+    Measured here: bluetoothctl said Connected/Paired/Trusted yes, and the
+    daemon reported "not found" for hours. Attaching to the object BlueZ
+    already had read battery 100% and twelve services on the first try.
+    Nothing about that state recovers on its own, so it has to be asked for.
+    """
+    src = read_file("host/omi_capture.py")
+    assert "async def bluez_device" in src, "nothing asks BlueZ what it holds"
+    fn = src[src.index("async def bluez_device"):]
+    fn = fn[:fn.index("\nasync def capture(")]
+    assert "org.bluez.Device1" in fn and "GetManagedObjects" in fn.replace(
+        "call_get_managed_objects", "GetManagedObjects")
+    # A known-but-disconnected device has an object too, and handing that to
+    # BleakClient trades an honest "not found" for a confusing failure.
+    assert 'props.get("Connected")' in fn
+    # Linux only, and quiet about it -- this must not break a mac.
+    assert "except ImportError:" in fn and "return None" in fn
+
+
+def test_waiting_for_an_advertisement_that_cannot_come_is_not_a_wait():
+    # A connected peripheral does not advertise. Waiting on one while BlueZ
+    # holds the device burns the whole backoff to learn nothing.
+    src = read_file("host/omid.py")
+    fn = src[src.index("async def wait_until_advertising"):]
+    fn = fn[:fn.index("\nasync def run(")]
+    head = fn[:fn.index("from bleak import BleakScanner")]
+    assert "bluez_device" in head, "it still waits before asking BlueZ"
+
+
+def test_the_first_attempt_asks_too():
+    # The deadlock is reachable before any wait has happened.
+    src = read_file("host/omid.py")
+    loop = src[src.index("async def run(address=None"):]
+    pre = loop[:loop.index("await one_session(")]
+    assert "bluez_device" in pre
