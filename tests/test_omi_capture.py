@@ -793,3 +793,40 @@ def test_the_first_attempt_asks_too():
     loop = src[src.index("async def run(address=None"):]
     pre = loop[:loop.index("await one_session(")]
     assert "bluez_device" in pre
+
+
+def test_a_panel_reading_does_not_spend_the_whole_advertising_window():
+    """Stats are read first, on their own connection, before the sync and
+    the stream. At a 25-second timeout a recorder that had already gone
+    produced "stats: TimeoutError" and nothing else got a turn -- the sync
+    and the capture then found the device missing, having tried nothing.
+
+    Reaching a device that is present takes a second or two. The rest of
+    that budget only ever bought a slower failure, paid for out of the one
+    window in which the recording could have started.
+    """
+    src = read_file("host/omid.py")
+    fn = src[src.index("async def one_session"):]
+    stats = fn[:fn.index('publish(state="connecting"')]
+    m = re.search(r"BleakClient\(dev or address, timeout=([0-9.]+)\)", stats)
+    assert m, "the stats connection is gone or changed shape"
+    assert float(m.group(1)) <= 10.0, \
+        f"stats still hold the window for {m.group(1)}s"
+    # The stream is allowed to wait longer than a panel reading is.
+    cap = read_file("host/omi_capture.py")
+    m2 = re.search(r"BleakClient\(dev or address, timeout=([0-9.]+)\)", cap)
+    assert m2 and float(m2.group(1)) > float(m.group(1)), \
+        "the recording gets no more patience than a battery reading"
+
+
+def test_a_handle_that_failed_is_not_handed_on():
+    """A sighting names a D-Bus object BlueZ made when it saw the device,
+    and BlueZ drops that object once the device goes. Reusing it after a
+    failed connection turned an honest "not found" into "device
+    'dev_C4_B3_FD_7F_1E_91' not found" for the sync and the stream, neither
+    of which had attempted anything yet."""
+    src = read_file("host/omid.py")
+    fn = src[src.index("async def one_session"):]
+    fn = fn[:fn.index('publish(state="connecting"')]
+    tail = fn[fn.index('print(f"stats:'):]
+    assert "dev = None" in tail, "a dead handle is still passed to the sync"

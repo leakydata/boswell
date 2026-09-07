@@ -160,7 +160,15 @@ async def one_session(address, quiet=False, dev=None):
     stats = dict(LAST["stats"])
     try:
         from bleak import BleakClient
-        async with BleakClient(dev or address, timeout=25.0) as c:
+        # Eight seconds, not twenty-five. This is a reading for a panel, and
+        # it runs before the sync and the stream, on its own connection --
+        # so a device that has stopped advertising by the time we reach it
+        # spent the whole advertising window failing to be measured. A
+        # recorder seen for a moment then produced "stats: TimeoutError"
+        # followed by sync and capture finding the device already gone.
+        # Reaching a device that is there takes a second or two; the rest of
+        # that budget only ever bought a slower failure.
+        async with BleakClient(dev or address, timeout=8.0) as c:
             stats = await omi_capture.read_stats(c)
             # When this reading was taken. The stats are read once a session
             # and then republished unchanged, so anything comparing the
@@ -185,6 +193,13 @@ async def one_session(address, quiet=False, dev=None):
                       flush=True)
     except Exception as e:
         print(f"stats: {type(e).__name__}: {e}", flush=True)
+        # That handle is spent. A sighting names a D-Bus object BlueZ made
+        # when it saw the device, and BlueZ drops the object once the device
+        # goes -- so reusing it after a failure turned an honest "not found"
+        # into "device 'dev_C4_B3_FD_7F_1E_91' not found" for both the sync
+        # and the stream, neither of which had tried anything yet. Looking
+        # again costs a discovery; reusing a dead path cannot succeed.
+        dev = None
 
     # "connecting", not "syncing" -- nothing has been reached yet.
     #
