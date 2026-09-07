@@ -2448,3 +2448,35 @@ def test_a_tab_left_open_is_told_when_it_is_out_of_date():
     js = html[html.index("async function checkUiVersion"):]
     js = js[:js.index("\n}")]
     assert "uiVersion === null" in js
+
+
+def test_the_recordings_list_catches_up_after_a_disconnection():
+    """The list only ever refreshed on a websocket event, so anything
+    written while the socket was away was simply missed: it reconnected,
+    resumed listening, and the clips from the gap never appeared. A server
+    restart froze the list at the moment it dropped and it stayed frozen
+    until some later event happened to reload it.
+
+    Reconnecting is exactly when the page knows it is behind.
+    """
+    html = _read("web/static/index.html")
+    assert "ws.onopen" in html, "nothing happens when the socket comes back"
+    fn = html[html.index("ws.onopen = () => {"):]
+    fn = fn[:fn.index("ws.onmessage")]
+    assert "loadClips()" in fn, "it reconnects without catching up"
+    # And it must not refresh over something the reader has open.
+    assert '$("detail").hidden' in fn
+
+
+def test_a_dropped_event_does_not_leave_the_archive_looking_stopped():
+    """Every refresh hung off a websocket message. One lost event and a
+    filling archive looks like a stopped one -- the failure this project
+    keeps finding. A slow poll is the floor under that."""
+    html = _read("web/static/index.html")
+    assert "}, 60000);" in html, "no periodic refresh of the recordings list"
+    idx = html.index("A floor under the event stream")
+    poll = html[idx:idx + 700]
+    assert "loadClips()" in poll
+    # Only while that list is what is on screen, or it fetches behind
+    # every other view and over an open transcript.
+    assert '$("viewRec").hidden' in poll and '$("detail").hidden' in poll

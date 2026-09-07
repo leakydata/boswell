@@ -2287,6 +2287,16 @@ on("bScan", "click", async () => {
 loadPaired();
 setInterval(loadPaired, 10000);
 
+/* A floor under the event stream, not a replacement for it.
+   Every refresh of the recordings list hangs off a websocket message, so a
+   dropped event or a socket that closed quietly leaves the archive looking
+   stopped while it is filling -- the failure this project keeps finding.
+   Cheap: one indexed query, and only while that list is the thing on
+   screen and nothing is open on top of it. */
+setInterval(() => {
+  if (!$("viewRec").hidden && $("detail").hidden) loadClips();
+}, 60000);
+
 /* Recorder id -> the name to show on a row. Filled from the archive by
    fillDeviceFilter(), so a row and the filter above it always use the same
    word for the same device. */
@@ -2584,6 +2594,17 @@ async function connect(){
   }catch(e){ /* fall through: the server may not require auth at all */ }
   const proto = location.protocol === "https:" ? "wss" : "ws";
   ws = new WebSocket(`${proto}://${location.host}/ws` + q);
+  /* Catch up on what happened while the socket was away.
+     The list only ever refreshes on an event, so anything written during a
+     disconnection was simply missed: the socket came back, resumed
+     listening, and the clips from the gap never appeared. A server restart
+     -- there were two today -- froze the recordings list at the moment it
+     dropped, and it stayed frozen until something else happened to reload
+     it. Reconnecting is exactly when the page knows it is behind. */
+  ws.onopen = () => {
+    convCache = null;
+    if (!$("viewRec").hidden && $("detail").hidden) loadClips();
+  };
   ws.onmessage = e => {
     const m = JSON.parse(e.data);
     if (m.type === "state") paint(m);
