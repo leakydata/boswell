@@ -82,8 +82,14 @@ def _restore_last():
         return
     if isinstance(d.get("stats"), dict):
         LAST["stats"] = d["stats"]
-    if isinstance(d.get("last_session"), dict):
-        LAST["session"] = d["last_session"]
+    last = d.get("last_session")
+    # A session with no frames and no clips was never a session. Written by
+    # an older build that recorded every failed connection attempt as one,
+    # so restoring it would carry that bug's output across the upgrade that
+    # fixed it -- and it would sit on screen describing a link that was
+    # never made until a real session happened to replace it.
+    if isinstance(last, dict) and (last.get("frames") or last.get("clips")):
+        LAST["session"] = last
 
 
 _restore_last()

@@ -553,3 +553,28 @@ def test_a_session_says_whether_it_ended_cleanly():
     # A service restart and a device walking away look the same otherwise.
     src = read_file("host/omid.py")
     assert '"clean": clipper is not None' in src
+
+
+def test_a_bogus_session_from_an_older_build_is_not_restored():
+    """An older build recorded every failed connection attempt as a session.
+    Restoring one carries that bug's output across the upgrade that fixed
+    it, and it sits on screen describing a link that was never made."""
+    import json as _json, tempfile
+    sys.path.insert(0, os.path.join(HERE, "..", "host"))
+    import omid
+    tmp = tempfile.mkdtemp()
+    omid.STATUS = os.path.join(tmp, "s.json")
+
+    with open(omid.STATUS, "w") as f:
+        _json.dump({"last_session": {"seconds": 25.0, "clips": 0,
+                                     "frames": 0}}, f)
+    omid.LAST = {"stats": {}, "session": None}
+    omid._restore_last()
+    assert omid.LAST["session"] is None, "the bug's output came back"
+
+    with open(omid.STATUS, "w") as f:
+        _json.dump({"last_session": {"seconds": 1800, "clips": 41,
+                                     "frames": 59848}}, f)
+    omid.LAST = {"stats": {}, "session": None}
+    omid._restore_last()
+    assert omid.LAST["session"]["clips"] == 41, "a real session was dropped"
