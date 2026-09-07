@@ -2334,6 +2334,45 @@ async def api_recorders_scan(seconds: float = 6.0):
     return {"found": rows}
 
 
+@app.get("/api/recorders/known")
+async def api_recorders_known():
+    """Recorders this archive has heard from before, and is not paired to now.
+
+    Pairing by scan needs the device to be advertising, which is exactly what
+    it is not doing in the cases where somebody needs to pair it: held by a
+    phone, switched off, flat, or asleep between advertisements. One stray
+    tap on Forget then puts a recorder that had been running all day out of
+    reach, because the only other way back is its Bluetooth address and
+    nobody has that written down.
+
+    The archive does have it. Every clip is stamped with the recorder that
+    filed it, so a device that has ever recorded here can be offered back by
+    name without finding it on the air first.
+    """
+    paired = {r["id"] for r in recorders.load(seed=_seed_recorders)}
+    rows = []
+    for d in index_db.device_counts():
+        ident = d["device_id"]
+        if not ident or ident in paired or len(ident) != 12:
+            continue
+        # Asked of the clips, not of the status file: the status file only
+        # names an address while something is paired, so using it here would
+        # mislabel every recorder this route exists to offer back.
+        omi = index_db.looks_like_omi(ident)
+        rows.append({
+            "id": ident,
+            # An id is an address with the colons taken out, so it can always
+            # be put back -- which is what makes this offer actionable rather
+            # than merely informative.
+            "address": ":".join(ident[i:i + 2] for i in range(0, 12, 2)).upper(),
+            "kind": "omi" if omi else "boswell",
+            "name": "Omi" if omi else DEVICE_NAME,
+            "clips": d["clips"], "first": d["first"], "last": d["last"],
+        })
+    rows.sort(key=lambda r: -(r["last"] or 0))
+    return {"known": rows}
+
+
 @app.post("/api/recorders/pair")
 async def api_recorders_pair(body: dict):
     kind, address = body.get("kind"), body.get("address")

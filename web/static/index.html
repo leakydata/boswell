@@ -1176,6 +1176,11 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
       <h2>Recorders</h2>
       <div id="quietband" hidden></div>
       <div id="pairlist"></div>
+      <!-- Recorders this archive has heard from that are not paired now.
+           Pairing by scan needs the device to be advertising, which is the
+           one thing it is not doing whenever somebody actually needs to
+           pair it. -->
+      <div id="pairknown" hidden style="margin-top:12px"></div>
       <div class="btns" style="margin-top:12px">
         <button type="button" id="bScan">Look for recorders</button>
         <button type="button" id="bDiag">Why is it not connecting?</button>
@@ -1970,6 +1975,9 @@ function paintPairing(){
     // and only while nothing is paired, so it never scans behind a working
     // setup's back.
     if (!firstLookDone){ firstLookDone = true; $("bScan").click(); }
+    // Nothing paired is the case where a recorder we have heard from before
+    // matters most, so this must not sit behind the early return.
+    loadKnown();
     return;
   }
   for (const r of paired){
@@ -1982,7 +1990,19 @@ function paintPairing(){
           r.connected ? "connected" : "not here"}</span>`;
     const b = document.createElement("button");
     b.type = "button"; b.textContent = "Forget";
+    // Two taps, like forgetting a person. One stray click unpaired a
+    // recorder that had been running all day, and the way back is worse
+    // than the way out: re-pairing needs the device to be advertising, and
+    // a recorder held by a phone -- or simply switched off -- cannot be
+    // found to be re-paired. The address is the only other route back, and
+    // nobody has that written down.
+    let armed = false;
     b.onclick = async () => {
+      if (!armed){
+        armed = true; b.textContent = "Tap again";
+        setTimeout(() => { armed = false; b.textContent = "Forget"; }, 4000);
+        return;
+      }
       // The clips stay. Forgetting is "this is not one of my devices any
       // more", which is a different thing from throwing away what it heard.
       b.disabled = true;
@@ -1996,6 +2016,60 @@ function paintPairing(){
     row.appendChild(b);
     list.appendChild(row);
   }
+  loadKnown();
+}
+
+/* Recorders this archive has heard from before and is not paired to now.
+
+   Pairing by scan needs the device to be advertising, and a recorder that
+   somebody needs to pair is usually not: held by a phone, switched off,
+   flat, or asleep between advertisements. One stray tap on Forget put a
+   recorder that had been running all day out of reach, because the only
+   other route back is its Bluetooth address and nobody has that written
+   down. The archive does -- every clip is stamped with what recorded it --
+   so a device that has recorded here can be offered back by name, with no
+   scan and nothing to type. */
+async function loadKnown(){
+  const box = $("pairknown");
+  if (!box) return;
+  try{
+    const d = await (await fetch("/api/recorders/known")).json();
+    const rows = d.known || [];
+    if (!rows.length){ box.hidden = true; box.innerHTML = ""; return; }
+    box.hidden = false;
+    box.innerHTML = '<p class="note">Recorded here before, not paired now. '
+                  + 'These do not have to be switched on to be paired back.</p>';
+    for (const r of rows){
+      const card = document.createElement("div");
+      card.className = "dcard";
+      card.innerHTML =
+        `<span class="icon">${kindIcon(r.kind)}</span>
+         <span class="what"><b>${esc(r.name || kindName(r.kind))}</b>
+           <span>${esc(kindName(r.kind))} · ${esc(r.address)} · ${
+             r.clips} clip${r.clips === 1 ? "" : "s"} · last ${
+             esc(ago(r.last))}</span></span>`;
+      const acts = document.createElement("div");
+      acts.className = "acts";
+      const add = document.createElement("button");
+      add.type = "button"; add.className = "pri"; add.textContent = "Pair again";
+      add.onclick = async () => {
+        add.disabled = true; add.textContent = "Pairing…";
+        try{
+          const p = await (await fetch("/api/recorders/pair", {
+            method: "POST", headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({kind: r.kind, address: r.address,
+                                  name: r.name})})).json();
+          paired = p.recorders || []; paintPairing();
+        }catch(e){
+          add.disabled = false; add.textContent = "Pair again";
+          log("could not pair that recorder");
+        }
+      };
+      acts.appendChild(add);
+      card.appendChild(acts);
+      box.appendChild(card);
+    }
+  }catch(e){ box.hidden = true; }
 }
 
 /* Say when a paired recorder has stopped delivering.

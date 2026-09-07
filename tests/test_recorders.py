@@ -221,3 +221,65 @@ def test_a_recorder_nobody_is_looking_for_is_not_a_fault():
     src = open(os.path.join(os.path.dirname(__file__), "..",
                             "web", "server.py")).read()
     assert "not being looked for" in src
+
+
+# ------------------------------------------------- getting a recorder back
+def read_file(p):
+    with open(os.path.join(os.path.dirname(__file__), "..", p)) as f:
+        return f.read()
+
+
+def test_forgetting_a_recorder_takes_two_taps():
+    """One stray click unpaired an Omi that had been recording all day.
+
+    Forgetting a person already asks twice. Forgetting a recorder is worse
+    to get wrong -- the way back needs the device to be advertising, which
+    is exactly what it is not doing when it is held by a phone or switched
+    off -- and it asked nothing at all.
+    """
+    html = read_file("web/static/index.html")
+    block = html[html.index('b.type = "button"; b.textContent = "Forget";'):]
+    block = block[:block.index("row.appendChild(b);")]
+    assert "armed" in block, "the recorder Forget button still fires on one tap"
+    assert "recorders/forget" in block
+    # The confirm must come before the request, not after it.
+    assert block.index("armed") < block.index("recorders/forget")
+
+
+def test_a_recorder_can_be_paired_back_without_being_switched_on():
+    """Pairing by scan needs the device to be advertising. A recorder that
+    somebody needs to pair usually is not: held by a phone, switched off, or
+    flat. Without this the only route back is the Bluetooth address, which
+    nobody has written down -- so a stray Forget was unrecoverable."""
+    src = read_file("web/server.py")
+    assert '@app.get("/api/recorders/known")' in src, "no way back without a scan"
+    fn = src[src.index('@app.get("/api/recorders/known")'):]
+    fn = fn[:fn.index("\n@app.")]
+    # Offered from the archive, which knows what has recorded into it.
+    assert "index_db.device_counts()" in fn
+    # Already-paired recorders are not offered again.
+    assert "in paired" in fn
+    # And the offer is actionable: an id is an address with the colons out.
+    assert '":".join(' in fn
+
+
+def test_the_kind_of_a_forgotten_recorder_is_read_from_its_clips():
+    """It cannot come from the status file: that only carries an address
+    while something is paired, so every recorder this route exists to offer
+    back would be labelled -- and then paired -- as the wrong kind."""
+    src = read_file("web/server.py")
+    fn = src[src.index('@app.get("/api/recorders/known")'):]
+    fn = fn[:fn.index("\n@app.")]
+    assert "_omi_address()" not in fn, "kind still comes from the status file"
+    assert "looks_like_omi" in fn
+    assert "def looks_like_omi" in read_file("web/index_db.py")
+
+
+def test_recorders_heard_before_are_offered_when_nothing_is_paired():
+    # Which is when they matter most, and is behind an early return.
+    html = read_file("web/static/index.html")
+    fn = html[html.index("function paintPairing(){"):]
+    fn = fn[:fn.index("\n/* Recorders this archive")]
+    head = fn[:fn.index("for (const r of paired){")]
+    assert "loadKnown()" in head, "the offer sits behind the empty-list return"
+    assert html.count("loadKnown()") >= 3, "not called after the list is drawn"

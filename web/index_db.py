@@ -421,6 +421,21 @@ def device_counts():
              "first": r["first"], "last": r["last"]} for r in rows]
 
 
+def looks_like_omi(device_id):
+    """Whether this recorder's clips were filed by the Omi path.
+
+    Which kind a recorder is has to be answerable without the device being
+    present, or a recorder can never be offered back once it is forgotten.
+    The status file cannot say -- it only carries an address while something
+    is paired -- but the clips can: the Omi path names what it files
+    `omi_...`, and nothing else does.
+    """
+    r = _conn().execute(
+        r"SELECT COUNT(*) n FROM clips WHERE device_id = ? "
+        r"AND name LIKE 'omi\_%' ESCAPE '\'", (device_id,)).fetchone()
+    return bool(r and r["n"])
+
+
 def last_clip_for(device_id):
     """When this recorder last filed anything. The single most useful number
     when somebody asks why a device stopped: "three hours ago" and "four days
