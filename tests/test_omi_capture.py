@@ -619,3 +619,55 @@ def test_a_scanner_that_will_not_start_does_not_become_a_crash_loop():
     fn = src[src.index("async def wait_until_advertising"):]
     fn = fn[:fn.index("\nasync def run(")]
     assert "except Exception:" in fn and "await asyncio.sleep(timeout)" in fn
+
+
+def test_storage_is_never_read_while_audio_is_streaming():
+    """The ring was read from the per-second tick during capture, and
+    `ring["at"]` started at zero, so the "every sixty seconds" test was true
+    immediately: every session opened a second notification subscription and
+    sent a storage command one second into the audio stream.
+
+    Recording stopped that afternoon and stayed broken -- sessions connected,
+    took no frames and dropped. The storage protocol is for offload; using it
+    underneath a live stream is not something the firmware offered.
+    """
+    src = read_file("host/omid.py")
+    tick = src[src.index("    async def on_tick(client):"):]
+    tick = tick[:tick.index("\n    beat = ")]
+    assert "start_notify" not in tick, "still subscribing during capture"
+    assert "ring_info" not in tick, "still asking storage during capture"
+    # It is read where the storage characteristic is already being used.
+    sync = src[src.index('publish(state="syncing"'):]
+    sync = sync[:sync.index("spool, took")]
+    assert "read_ring_now" in sync
+
+
+def test_a_ring_read_never_stops_a_recording():
+    # A figure on a panel is not a reason to lose a session.
+    src = read_file("host/omid.py")
+    call = src[src.index("await read_ring_now(address, stats)") - 200:]
+    call = call[:400]
+    assert "except Exception" in call
+
+
+def test_nothing_is_published_before_the_link_exists():
+    """The beat started with the attempt, so a session that never reached the
+    device still announced a state -- first "recording", then "connecting"
+    once that was fixed. Both described an intention rather than a
+    connection, and both were read as proof the device was there."""
+    src = read_file("host/omid.py")
+    beat = src[src.index("    async def heartbeat():"):]
+    beat = beat[:beat.index("while not stop.is_set():")]
+    assert "await linked.wait()" in beat, "the beat still runs before linking"
+    assert "on_connected=linked.set" in src, "nothing ever sets it"
+    # And the wait must be released on the way out, or a failed session
+    # leaves the beat parked forever.
+    assert "linked.set()" in src[src.index("stop.set()"):][:200]
+
+
+def test_connected_means_notifications_are_running():
+    # Called after start_notify, not after connect: a client that connects
+    # and cannot subscribe has no audio path and is not a working link.
+    src = read_file("host/omi_capture.py")
+    i = src.index("await client.start_notify(OMI_AUDIO, on_frame)")
+    assert "on_connected" in src[i:i + 400]

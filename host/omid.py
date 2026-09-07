@@ -188,6 +188,12 @@ async def one_session(address, quiet=False):
 
     publish(state="syncing", address=address, stats=stats)
     try:
+        # While the storage characteristic is the thing being talked to
+        # anyway, and before any audio is flowing.
+        try:
+            await read_ring_now(address, stats)
+        except Exception:
+            pass                       # a panel figure, never a reason to stop
         spool, took = await omi_sync.sync(
             address, quiet=quiet,
             progress=lambda done, total: publish(
@@ -221,7 +227,16 @@ async def one_session(address, quiet=False):
     # has to keep speaking.
     stop = asyncio.Event()
 
+    linked = asyncio.Event()
+
     async def heartbeat():
+        # Nothing is published until the link exists. The beat used to start
+        # with the attempt, so a session that never reached the device still
+        # announced a state -- first "recording", then "connecting" once that
+        # was fixed, both of them describing an intention rather than a
+        # connection. The honest report while trying is the one the retry
+        # loop already publishes.
+        await linked.wait()
         while not stop.is_set():
             # "recording" only once audio has actually arrived.
             #
@@ -248,48 +263,22 @@ async def one_session(address, quiet=False):
     # exactly like "never arrived" to whoever is watching the slider.
     applied = {"id": None}
 
-    ring = {"link": None, "at": 0.0}
-
-    async def read_ring(client):
-        """How much the device is still holding.
-
-        Asked on the streaming connection, because the radio is exclusive and
-        that connection is the only one there is. The storage control
-        characteristic is a different one from the audio, so this listens on
-        both rather than interrupting either.
-        """
-        if ring["link"] is None:
-            link = omi_sync.Link(client)
-            await client.start_notify(omi_sync.CTRL, link.on_notify)
-            ring["link"] = link
-        info = await ring["link"].ring_info(timeout=6.0)
-        held = max(0, info["write_seq"] - info["read_seq"])
-        spp = stats.get("seconds_per_packet")
-        stats["storage"] = {
-            "held_packets": held,
-            "held_bytes": held * info["packet_bytes"],
-            # An estimate, and said to be one: it rests on the ratio measured
-            # at the last sync, and a device that has been idle packs its
-            # packets differently from one in a loud room.
-            "held_seconds": round(held * spp, 1) if spp else None,
-            "capacity_packets": info["capacity"],
-            "capacity_seconds": (round(info["capacity"] * spp, 1)
-                                 if spp else None),
-            # Audio the ring overwrote before anything collected it. The one
-            # number here that means something was lost.
-            "dropped": info["dropped"],
-            "packet_bytes": info["packet_bytes"],
-            "at": time.time(),
-        }
 
     async def on_tick(client):
-        if time.time() - ring["at"] >= 60:
-            ring["at"] = time.time()
-            try:
-                await read_ring(client)
-            except Exception:
-                ring["link"] = None      # re-subscribe on the next attempt
-
+        # The ring used to be read from here, which meant every session
+        # opened a second notification subscription and sent a storage
+        # command one second into the audio stream -- `ring["at"]` starts at
+        # zero, so the "every sixty seconds" test was true immediately.
+        #
+        # Recording stopped working that afternoon and stayed broken:
+        # sessions connected, received no frames and dropped. The storage
+        # protocol is for offload and this was using it underneath a live
+        # stream, on a device whose firmware never promised that would work.
+        #
+        # It is read during the sync instead, which is where the storage
+        # characteristic is already in use and nothing is streaming. Some
+        # freshness is lost. Recording is the product; a figure on a panel
+        # is not.
         want = read_wanted()
         if not want or want["id"] == applied["id"]:
             return
@@ -318,9 +307,11 @@ async def one_session(address, quiet=False):
                                             # battery without another path
                                             # through the status file.
                                             on_stats=stats.update,
-                                            on_tick=on_tick)
+                                            on_tick=on_tick,
+                                            on_connected=linked.set)
     finally:
         stop.set()
+        linked.set()          # so a beat waiting on it can exit
         await pulse
         LAST["stats"] = dict(stats)
         # What this session was, kept where the interface can read it. A link
@@ -353,6 +344,34 @@ async def one_session(address, quiet=False):
                 "clean": clipper is not None,
             }
     return clipper
+
+
+async def read_ring_now(address, stats):
+    """How much the device is holding, asked while nothing is streaming.
+
+    On its own connection and its own moment. Doing this underneath a live
+    audio stream is what broke recording: the storage protocol is meant for
+    offload, and using it concurrently is not something their firmware ever
+    offered.
+    """
+    from bleak import BleakClient
+    async with BleakClient(address, timeout=20.0) as c:
+        link = omi_sync.Link(c)
+        await c.start_notify(omi_sync.CTRL, link.on_notify)
+        info = await link.ring_info(timeout=6.0)
+        held = max(0, info["write_seq"] - info["read_seq"])
+        spp = stats.get("seconds_per_packet")
+        stats["storage"] = {
+            "held_packets": held,
+            "held_bytes": held * info["packet_bytes"],
+            "held_seconds": round(held * spp, 1) if spp else None,
+            "capacity_packets": info["capacity"],
+            "capacity_seconds": (round(info["capacity"] * spp, 1)
+                                 if spp else None),
+            "dropped": info["dropped"],
+            "packet_bytes": info["packet_bytes"],
+            "at": time.time(),
+        }
 
 
 async def wait_until_advertising(address, timeout):

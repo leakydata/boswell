@@ -301,7 +301,7 @@ async def find_omi(timeout=15.0):
 
 async def capture(address, seconds=None, quiet=False, on_progress=None,
                   should_stop=None, on_stats=None, stats_every=60,
-                  on_tick=None):
+                  on_tick=None, on_connected=None):
     """Stream from one Omi until interrupted, filing clips as it goes.
 
     `on_stats` is handed the readings that change while it runs -- battery
@@ -351,6 +351,14 @@ async def capture(address, seconds=None, quiet=False, on_progress=None,
                 reboots[0] += 1
 
         await client.start_notify(OMI_AUDIO, on_frame)
+        # Only now is there a link. Anything published before this describes
+        # an intention, not a connection, and saying so is how a device that
+        # was never reached came to be reported as connecting.
+        if on_connected:
+            try:
+                on_connected()
+            except Exception:
+                pass
         if not quiet:
             print(f"recording from {address} -- ctrl-c to stop")
 
