@@ -2413,3 +2413,38 @@ class TestTheRestartHint:
         page = self._page()
         # The happy path: fields present, banner stays hidden.
         assert 'if (!el || !all.length || "started" in all[0]){ el.hidden = true; return; }' in page
+
+
+def _read(p):
+    import os
+    with open(os.path.join(os.path.dirname(__file__), "..", p)) as f:
+        return f.read()
+
+
+def test_a_tab_left_open_is_told_when_it_is_out_of_date():
+    """Cache-Control is already no-store, so nothing here is cached -- and
+    the page still went stale, because a tab keeps running the JavaScript it
+    loaded however long ago. Updating the server changed nothing in an open
+    tab: old columns, old filters, old bugs, and no way to tell. Opening a
+    private window looked like a cache fix and was only a fresh load.
+
+    It matters more for somebody who installs this and pulls an update than
+    it did here, because their tab will not say a word about being behind.
+    """
+    src = _read("web/server.py")
+    assert '@app.get("/api/ui_version")' in src, "the server has no fingerprint"
+    fn = src[src.index('@app.get("/api/ui_version")'):]
+    fn = fn[:fn.index("\n@app.")]
+    # Of the interface, not of the process: a restart that changes nothing
+    # must not tell every open tab it is out of date.
+    assert '"static", "index.html"' in fn
+    assert "st_mtime" in fn and "st_size" in fn
+
+    html = _read("web/static/index.html")
+    assert 'id="uiStale"' in html, "nothing tells the reader"
+    assert "checkUiVersion" in html and "setInterval(checkUiVersion" in html
+    # The first look records the version rather than reporting a change,
+    # or every load would open by announcing itself out of date.
+    js = html[html.index("async function checkUiVersion"):]
+    js = js[:js.index("\n}")]
+    assert "uiVersion === null" in js

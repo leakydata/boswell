@@ -962,6 +962,18 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
       </div>
       <div id="omistats" hidden style="margin-top:12px;display:grid;
            grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px 14px"></div>
+      <!-- The one thing on this panel that changes the world rather than
+           describing it. Here rather than on the settings page because this
+           is where somebody is already looking when they want the radio
+           back, and because a switch belongs next to the state it governs:
+           the line above says what the daemon is doing, and this says
+           whether it is allowed to. -->
+      <div id="omisearchrow" style="margin-top:12px;display:flex;
+           align-items:center;gap:10px;flex-wrap:wrap">
+        <button id="omisearch" type="button">Stop looking</button>
+        <span class="note" id="omisearchnote"></span>
+      </div>
+
       <p class="note" id="omenote">Recording into the same archive, alongside
         the device above. It catches up on whatever it stored while away
         before it starts streaming, so a long sync after a day out is the
@@ -1276,6 +1288,14 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
     <!-- The server may predate the capture-time update. The interface can
            tell -- clip rows simply arrive without the fields -- and rather
            than quietly running without it, it says so once. -->
+    <!-- The interface this tab loaded is no longer the one the server has.
+         Nothing is cached; the tab simply predates the update. -->
+    <div class="hintbanner" id="uiStale" hidden>
+      <span>This page is running an older version of the interface than the
+        server is serving. Reload to catch up — nothing is lost.</span>
+      <button type="button" id="uiStaleReload">Reload</button>
+      <button type="button" id="uiStaleClose" aria-label="Dismiss">×</button>
+    </div>
     <div class="hintbanner" id="restartHint" hidden>
       <span>This server was last started before the capture-time update:
         recordings still order by when they arrived, not when they happened.
@@ -4987,6 +5007,32 @@ function maybeRestartHint(all){
   if (Date.now() - dismissedAt < 3 * 86400000) return;
   el.hidden = false;
 }
+/* A tab left open runs the JavaScript it loaded, however old that is.
+   Cache-Control says no-store, so nothing here is a caching problem -- the
+   page just predates the server. Updating the server changed nothing in an
+   open tab, and the only way to notice was to open a private window and
+   find the interface different. Somebody who pulls an update gets the same
+   silence, which is why this asks. */
+let uiVersion = null;
+let uiStaleShown = false;
+async function checkUiVersion(){
+  if (uiStaleShown) return;
+  try{
+    const v = (await (await fetch("/api/ui_version")).json()).version;
+    if (!v) return;
+    if (uiVersion === null){ uiVersion = v; return; }   // first look sets it
+    if (v !== uiVersion){
+      uiStaleShown = true;
+      const el = $("uiStale");
+      if (el) el.hidden = false;
+    }
+  }catch(e){}                    // a server that is down is not a new version
+}
+checkUiVersion();
+setInterval(checkUiVersion, 60000);
+on("uiStaleReload", "click", () => location.reload());
+on("uiStaleClose", "click", () => { $("uiStale").hidden = true; });
+
 on("restartHintClose", "click", () => {
   $("restartHint").hidden = true;
   try{ localStorage.setItem("boswell_restart_hint", String(Date.now())); }catch(e){}
@@ -6937,6 +6983,39 @@ async function askOmi(fields){
     if (r && r.id){ omiPending = r.id; omiPendingAt = Date.now(); }
   }catch(e){ log("could not reach the server to change the Omi"); }
 }
+/* The search switch. Unlike the sliders this is not a request the daemon
+   consumes -- it is a standing state, so the button reflects the file and
+   not something we are waiting to see land. */
+const omisearch = $("omisearch");
+let omiSearchOn = true;
+function paintOmiSearch(on, state){
+  omiSearchOn = on !== false;
+  omisearch.textContent = omiSearchOn ? "Stop looking" : "Start looking";
+  /* Said plainly and in the panel that did it, because the objection to a
+     page that can stop a recorder was never the stopping -- it was doing it
+     where nobody would see. */
+  $("omisearchnote").textContent = omiSearchOn
+    ? "Reconnects on its own whenever the Omi is in range."
+    : "Not looking. The radio is free for something else.";
+  $("omisearchnote").style.color = omiSearchOn ? "" : "var(--warn, #b45309)";
+}
+omisearch.onclick = async () => {
+  const want = !omiSearchOn;
+  omisearch.disabled = true;
+  /* Painted before the round trip so the button answers the click, then
+     corrected by the next poll if the server disagreed. */
+  paintOmiSearch(want);
+  try{
+    const r = await (await fetch("/api/omi/search", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({search: want})})).json();
+    paintOmiSearch(r && r.search);
+  }catch(e){
+    log("could not reach the server to change the Omi search");
+    paintOmiSearch(!want);
+  }finally{ omisearch.disabled = false; }
+};
+
 const omigain = $("omigain"), omidim = $("omidim");
 omigain.oninput = () => { $("omigainv").textContent = omigain.value; };
 omigain.onchange = () => askOmi({mic_gain: +omigain.value});
@@ -7253,7 +7332,9 @@ async function loadSettings(){
     + (omi.state ? ` (${omi.state})` : "") + `</div>`
     + `<p class="note" style="margin-top:8px">Started and stopped with `
     + `<code>systemctl --user start boswell</code> and `
-    + `<code>omid</code>.</p>`;
+    + `<code>omid</code>. Whether omid looks for the Omi at all is on the `
+    + `Omi panel — stopping the search leaves the daemon running and the `
+    + `radio free.</p>`;
 }
 
 function st_ok(on){ return on ? "running" : "not running"; }
@@ -7264,6 +7345,10 @@ function st_ok(on){ return on ? "running" : "not running"; }
 async function omiPoll(){
   let s;
   try { s = await (await fetch("/api/omi")).json(); } catch(e){ return; }
+
+  // Before the early return below: the switch is meaningful even when the
+  // daemon has never reported in, and that is when somebody most wants it.
+  paintOmiSearch(s.search, s.state);
 
   const known = s && (s.state || s.clips);
   // Pairing decides whether this recorder has a panel at all; its own state
@@ -7281,7 +7366,7 @@ async function omiPoll(){
        paused, which is the same lie the capture pill was built to stop. */
     connected: !!(s && s.running
                   && !["not found", "looking", "lost", "waiting",
-                       "stopped", "not paired"].includes(s.state)),
+                       "stopped", "not paired", "paused"].includes(s.state)),
     capturing: !!(s && s.running && s.state === "recording"),
     // Its own word, so the header can say "catching up" rather than
     // flattening every not-recording state to "paused".
@@ -7484,6 +7569,14 @@ async function omiPoll(){
     show("live", "Recording",
          [st.codec_name || "Opus",
           `${(s.frames || 0).toLocaleString()} frames`].join(" · "));
+    return;
+  }
+  /* Deliberately not "off" or "lost". A paused recorder is not failing, and
+     dressing it in the same grey as a device that has gone missing is how
+     somebody spends ten minutes debugging a switch they threw themselves. */
+  if (s.state === "paused"){
+    show("idle", "Not looking",
+         "search is off — press Start looking to reconnect");
     return;
   }
   const words = {connecting: ["off", "Connecting…",

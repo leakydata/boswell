@@ -2525,6 +2525,47 @@ async def api_omi_settings(body: dict):
     return {"ok": True, **fields}
 
 
+def _omi_searching():
+    """Whether the daemon is currently allowed to look for the Omi.
+
+    Read from the control file rather than from the daemon's status, because
+    it is the answer even when the daemon is not running -- which is exactly
+    when somebody wants to know whether it will start hunting for the radio
+    the moment it comes back.
+    """
+    try:
+        with open(os.path.join(DATA, "omi_control.json")) as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        return True
+    return bool(d.get("search", True)) if isinstance(d, dict) else True
+
+
+@app.post("/api/omi/search")
+async def api_omi_search(body: dict):
+    """Turn the hunt for the Omi on or off.
+
+    The panel used to be read-only on the stated grounds that a page which
+    can silently stop a recorder eventually does. The objection was to
+    *silently*, and it still stands: this writes a switch the daemon reports
+    back in its status, so a paused recorder says so on the same panel that
+    paused it, and nobody can turn it off and forget.
+
+    A file for the same reason the settings are: the radio is exclusive and
+    the daemon is holding it, so this process cannot reach the device -- but
+    unlike a setting, this one is left in place rather than consumed. Off
+    stays off until somebody says otherwise.
+    """
+    if body.get("search") is None:
+        raise HTTPException(400, "search must be true or false")
+    on = bool(body["search"])
+    atomicio.write_json(os.path.join(DATA, "omi_control.json"),
+                        {"search": on, "at": time.time()})
+    device.event("log", text=("looking for the Omi again" if on
+                              else "stopped looking for the Omi"))
+    return {"ok": True, "search": on}
+
+
 @app.get("/api/omi")
 async def api_omi():
     """What the second recorder is doing.
@@ -2539,7 +2580,10 @@ async def api_omi():
         with open(path) as f:
             st = json.load(f)
     except (OSError, ValueError):
-        return {"running": False}
+        # No status file yet, but the switch is still answerable, and the
+        # control that sets it should not vanish just because nothing has
+        # reported in.
+        return {"running": False, "search": _omi_searching()}
 
     # A daemon that stopped writing is a daemon that is not running, whatever
     # its last line claimed. Two minutes is longer than any step it takes.
@@ -2560,6 +2604,10 @@ async def api_omi():
         pass
     st["clips"] = clips
     st["latest"] = latest
+    # From the control file, not from the daemon's last word: a daemon that
+    # has died cannot report that it was paused, and "not running" and
+    # "running but told not to look" need to read differently on the panel.
+    st["search"] = _omi_searching()
     return st
 
 
@@ -2902,6 +2950,30 @@ async def api_transcribe_all():
 async def api_queue():
     return {"pending": worker.q.qsize(), "busy": worker.busy,
             "auto": auto_transcribe}
+
+
+@app.get("/api/ui_version")
+async def api_ui_version():
+    """A fingerprint of the interface this server is currently serving.
+
+    Cache headers say no-store, so nothing is cached -- and the page still
+    went stale, because a tab left open keeps running the JavaScript it
+    loaded however long ago. Update the server and every open tab carries on
+    with the old interface, showing old columns, old filters and old bugs,
+    with no way to tell. Opening a private window looked like a cache fix
+    and was really just a fresh load.
+
+    That matters more for somebody who installs this and pulls an update
+    than it did here: their tab will not say a word about being a version
+    behind. mtime and size rather than a hash of the file, because this is
+    asked once a minute by every open tab and it only has to change when
+    the file does.
+    """
+    try:
+        st = os.stat(os.path.join(HERE, "static", "index.html"))
+        return {"version": f"{int(st.st_mtime)}-{st.st_size}"}
+    except OSError:
+        return {"version": ""}
 
 
 @app.get("/api/clips")
