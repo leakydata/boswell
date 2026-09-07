@@ -47,6 +47,7 @@ stranger a single UPDATE: every voiceprint already gathered under that cluster
 becomes a labelled reference at once, with no vectors moved or recomputed.
 """
 
+import json
 import os
 import sqlite3
 import time
@@ -226,6 +227,16 @@ def _conn():
     if "note" not in cols:
         c.execute("ALTER TABLE people ADD COLUMN note TEXT")
         c.commit()
+    # How to say the name, and the names somebody also goes by. The name field
+    # answers "who is this voice" and nothing else; these answer "how do I
+    # address them". A nickname lives here rather than in the name, where
+    # renaming to it would orphan every reference gathered under the first.
+    if "pronunciation" not in cols:
+        c.execute("ALTER TABLE people ADD COLUMN pronunciation TEXT")
+        c.commit()
+    if "aliases" not in cols:
+        c.execute("ALTER TABLE people ADD COLUMN aliases TEXT")
+        c.commit()
     vcols = {r["name"] for r in c.execute("PRAGMA table_info(voiceprints)")}
     if "source_cluster" not in vcols:
         c.execute("ALTER TABLE voiceprints ADD COLUMN source_cluster INTEGER")
@@ -341,14 +352,20 @@ def people(c=None):
     c = c or _conn()
     try:
         rows = c.execute("""
-            SELECT p.id, p.name, p.kind, p.role, p.note, p.created,
+            SELECT p.id, p.name, p.kind, p.role, p.note, p.pronunciation,
+                   p.aliases, p.created,
                    COUNT(v.id) AS prints,
                    COALESCE(SUM(v.seconds), 0) AS seconds
             FROM people p LEFT JOIN voiceprints v ON v.person_id = p.id
             GROUP BY p.id
             ORDER BY p.name IS NULL, p.name
         """).fetchall()
-        return [dict(r) for r in rows]
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["aliases"] = _aliases_out(d["aliases"])
+            out.append(d)
+        return out
     finally:
         if own:
             c.close()
@@ -1236,10 +1253,65 @@ if __name__ == "__main__":
               f"{p['seconds']:.0f}s")
 
 
-def set_profile(person_id, role=None, note=None, c=None):
+# What an alias list may hold. Capped because a person has a handful of
+# names, not a form field, and a list without a cap is a place for a bad day
+# to hide.
+ALIAS_MAX = 8
+ALIAS_CHARS = 40
+
+
+def clean_aliases(aliases):
+    """Normalise a list of alternate names to what is worth storing.
+
+    Stripped, empties dropped, duplicates folded together case-insensitively
+    ("Bob" and "bob" are the same name to a person reading them), each cut to
+    ALIAS_CHARS, at most ALIAS_MAX of them. Anything else is refused loudly
+    rather than coerced: a number in the list is a caller bug, not a nickname.
+    """
+    if isinstance(aliases, str) or not isinstance(aliases, (list, tuple)):
+        raise ValueError("aliases must be a list of strings")
+    out, seen = [], set()
+    for a in aliases:
+        if not isinstance(a, str):
+            raise ValueError("aliases must be a list of strings")
+        a = a.strip()[:ALIAS_CHARS]
+        if not a:
+            continue
+        key = a.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(a)
+        if len(out) >= ALIAS_MAX:
+            break
+    return out
+
+
+def _aliases_out(raw):
+    """The stored JSON back as a list, never a string and never an error.
+
+    A row that predates the column or was written by hand gets [], which is
+    the truthful answer about what is known.
+    """
+    if not raw:
+        return []
+    try:
+        v = json.loads(raw)
+    except (ValueError, TypeError):
+        return []
+    return v if isinstance(v, list) else []
+
+
+def set_profile(person_id, role=None, note=None, pronunciation=None,
+                aliases=None, c=None):
     """Record who somebody is. Says nothing about how they are matched.
 
     Passing None leaves a field alone; passing "" clears it.
+
+    `pronunciation` is how to say the name. `aliases` is a list of the other
+    names somebody goes by, cleaned by clean_aliases() here -- the one place
+    that enforces it, so no caller can store a version of the rules it
+    invented. Stored as JSON; profile() and people() hand it back as a list.
     """
     own = c is None
     c = c or _conn()
@@ -1249,6 +1321,15 @@ def set_profile(person_id, role=None, note=None, c=None):
             sets.append("role = ?"); args.append(role.strip() or None)
         if note is not None:
             sets.append("note = ?"); args.append(note.strip() or None)
+        if pronunciation is not None:
+            if not isinstance(pronunciation, str):
+                raise ValueError("pronunciation must be a string")
+            sets.append("pronunciation = ?")
+            args.append(pronunciation.strip() or None)
+        if aliases is not None:
+            cleaned = clean_aliases(aliases)
+            sets.append("aliases = ?")
+            args.append(json.dumps(cleaned) if cleaned else None)
         if not sets:
             return False
         args.append(person_id)
@@ -1264,9 +1345,14 @@ def profile(person_id, c=None):
     own = c is None
     c = c or _conn()
     try:
-        r = c.execute("""SELECT id, name, kind, role, note FROM people
-                         WHERE id = ?""", (person_id,)).fetchone()
-        return dict(r) if r else None
+        r = c.execute("""SELECT id, name, kind, role, note, pronunciation,
+                         aliases FROM people WHERE id = ?""",
+                      (person_id,)).fetchone()
+        if not r:
+            return None
+        p = dict(r)
+        p["aliases"] = _aliases_out(p["aliases"])
+        return p
     finally:
         if own:
             c.close()

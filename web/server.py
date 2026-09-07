@@ -4478,11 +4478,29 @@ async def api_voice_profile(person_id: int, body: dict):
     going into their name for want of anywhere else -- six of the ten names in
     this archive ended in "YouTube", which makes the name wrong and the
     category unsearchable.
+
+    `pronunciation` is how to say the name and `aliases` the names somebody
+    also goes by. Types are checked here, in the same way /api/omi/settings
+    checks its numbers: a wrong type is a caller bug and deserves a 400 that
+    names the field, not a 500 from somewhere deeper.
     """
     import speaker_store
-    if not speaker_store.set_profile(person_id,
-                                     role=body.get("role"),
-                                     note=body.get("note")):
+    for name in ("role", "note", "pronunciation"):
+        v = body.get(name)
+        if v is not None and not isinstance(v, str):
+            raise HTTPException(400, f"{name} must be a string")
+    aliases = body.get("aliases")
+    if aliases is not None and (
+            not isinstance(aliases, list)
+            or not all(isinstance(a, str) for a in aliases)):
+        raise HTTPException(400, "aliases must be a list of strings")
+    try:
+        changed = speaker_store.set_profile(
+            person_id, role=body.get("role"), note=body.get("note"),
+            pronunciation=body.get("pronunciation"), aliases=aliases)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    if not changed:
         raise HTTPException(404, "no such voice")
     return speaker_store.profile(person_id)
 

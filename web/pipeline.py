@@ -99,6 +99,10 @@ def list_speakers():
             # Who they are, as opposed to how they are matched.
             "role": p.get("role"),
             "note": p.get("note"),
+            # How to say the name, and the names somebody also goes by.
+            # people() already hands aliases back as a list.
+            "pronunciation": p.get("pronunciation"),
+            "aliases": p.get("aliases"),
             # References that arrived together are described together. A name
             # applied to a cluster can attach hundreds at once, and listing
             # those individually buries the handful made by hand.
