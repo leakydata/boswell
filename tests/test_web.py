@@ -2480,3 +2480,37 @@ def test_a_dropped_event_does_not_leave_the_archive_looking_stopped():
     # Only while that list is what is on screen, or it fetches behind
     # every other view and over an open transcript.
     assert '$("viewRec").hidden' in poll and '$("detail").hidden' in poll
+
+
+def test_a_hidden_recorder_says_so():
+    """The device filter lives in localStorage, so it survives every reload
+    -- including a hard one, which clears the cache and not this. Set once,
+    it hides every clip from the other recorder indefinitely, and the only
+    sign was a count on a collapsed Filters button. An archive filling every
+    thirty seconds looked stopped for hours because of it: the same failure
+    as a stale status line, a thing that works and a thing that stopped
+    being indistinguishable.
+    """
+    html = _read("web/static/index.html")
+    assert 'id="devFilterNote"' in html, "nothing says a recorder is hidden"
+    assert "function syncDeviceNote" in html
+    fn = html[html.index("function syncDeviceNote()"):]
+    fn = fn[:fn.index('on("devFilterClear"')]
+    # Silent when nothing is filtered, and named when something is.
+    assert "if (!deviceFilter){ el.hidden = true; return; }" in fn
+    assert "deviceNames[deviceFilter]" in fn
+    # It is drawn whenever the filter state is drawn, not only on change.
+    assert "syncDeviceNote();" in html[html.index("function syncFilterToggle"):
+                                       html.index("function syncDeviceNote")]
+
+
+def test_clearing_the_hidden_recorder_notice_is_remembered():
+    # Clearing it in the page and having it come back on the next load
+    # would be worse than not offering the button at all.
+    html = _read("web/static/index.html")
+    fn = html[html.index('on("devFilterClear", "click"'):]
+    fn = fn[:fn.index("});")]
+    assert "saveViewPrefs()" in fn, "the cleared filter is not persisted"
+    assert "loadClips()" in fn
+
+

@@ -1322,6 +1322,12 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
     <!-- Recent capture days. One tap answers "what happened on Thursday"
          without reading the date filter as prose. -->
     <div id="dayStrip" class="daystrip" hidden aria-label="Jump to a capture day"></div>
+    <!-- A device filter hides an entire recorder's output and survives every
+         reload, so nothing on screen said the archive was being narrowed. -->
+    <div class="hintbanner" id="devFilterNote" hidden>
+      <span id="devFilterText"></span>
+      <button type="button" id="devFilterClear">Show all recorders</button>
+    </div>
     <div class="card" id="clipList" style="border:none;background:transparent;padding:0">
       <div class="empty">loading…</div>
     </div>
@@ -4432,7 +4438,19 @@ let hitAt = null;
    Clips recorded before the host ever set the device's clock carry
    time_known: false -- shown, and never dressed up as a timestamp. */
 function capTime(c){
-  if (c.time_known === false) return null;
+  /* A time the device never vouched for is still a time.
+     time_known false means the moment was not read off the device's clock:
+     for offloaded audio the sidecar's "started" is really the drain time,
+     and showing that as the capture time would be a fabrication. But
+     arrival is an honest placement -- the audio reached us then, so it
+     happened about then -- and the list is built to fall back to it.
+
+     Returning null skipped that fallback and gave the clip no time at all,
+     so it fell out of every day group. Every live-streamed Omi clip has
+     time_known false: 404 of 455 of them vanished from "Today" while the
+     API returned all of them correctly, which is what made this look like a
+     server problem for hours. */
+  if (c.time_known === false) return c.modified || null;
   return c.started || c.modified;
 }
 
@@ -5014,7 +5032,37 @@ function syncFilterToggle(){
   if (!b) return;
   const n = activeFilterCount();
   b.textContent = n ? `Filters · ${n}` : "Filters";
+  syncDeviceNote();
 }
+
+/* Say out loud when a whole recorder is being hidden.
+   The device filter is kept in localStorage, so it survives a reload --
+   including a hard one, which clears the cache and not this. Set once, it
+   goes on hiding every clip from the other recorder indefinitely, and the
+   only sign was a count on a collapsed Filters button. An archive filling
+   every thirty seconds looked stopped for hours because of it, which is
+   the same failure as a stale status line: a thing that works and a thing
+   that stopped, indistinguishable. */
+function syncDeviceNote(){
+  const el = $("devFilterNote");
+  if (!el) return;
+  if (!deviceFilter){ el.hidden = true; return; }
+  const name = deviceFilter === "none"
+    ? "clips with no recorder"
+    : (deviceNames[deviceFilter] || deviceFilter);
+  $("devFilterText").textContent =
+    `Showing only ${name}. Recordings from your other recorders are hidden.`;
+  el.hidden = false;
+}
+on("devFilterClear", "click", () => {
+  deviceFilter = "";
+  const sel = $("fDevice");
+  if (sel) sel.value = "";
+  convCache = null;
+  saveViewPrefs();
+  resetPages(); loadClips();
+  syncDeviceNote();
+});
 
 /* The interface can tell when the server predates the capture-time fields:
    clip rows arrive without them. Rather than quietly ordering by arrival,
