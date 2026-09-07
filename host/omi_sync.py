@@ -281,7 +281,7 @@ async def find_omi(timeout=12.0):
 
 
 async def sync(address, mark_read=True, limit_packets=None, quiet=False,
-               progress=None, dev=None):
+               progress=None, dev=None, on_ring=None):
     """Pull the ring to a spool file, then turn the spool into clips."""
     device_id = norm_id(address)
     os.makedirs(SPOOL, exist_ok=True)
@@ -295,6 +295,15 @@ async def sync(address, mark_read=True, limit_packets=None, quiet=False,
         await asyncio.sleep(0.5)
 
         info = await link.ring_info()
+        # Reported from here because here is where it is already known. A
+        # separate connection asking the same question kept failing and
+        # nobody saw, so the panel showed a figure twenty-one hours old
+        # beside a battery reading a minute old, and it read as current.
+        if on_ring:
+            try:
+                on_ring(info)
+            except Exception:
+                pass
         waiting = info["write_seq"] - info["read_seq"]
         if not quiet:
             mb = waiting * info["packet_bytes"] / 1024 / 1024

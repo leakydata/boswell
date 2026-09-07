@@ -614,12 +614,47 @@ def test_the_wait_between_attempts_is_spent_listening():
         "the loop still sleeps through the wait"
 
 
-def test_a_scanner_that_will_not_start_does_not_become_a_crash_loop():
+def test_a_scanner_that_will_not_start_does_not_become_a_crash_loop(monkeypatch):
     # A retry loop is the wrong place to discover that scanning is broken.
-    src = read_file("host/omid.py")
-    fn = src[src.index("async def wait_until_advertising"):]
-    fn = fn[:fn.index("\nasync def run(")]
-    assert "except Exception:" in fn and "await asyncio.sleep(timeout)" in fn
+    #
+    # Asserted by running it rather than by reading it. This used to grep the
+    # source for `await asyncio.sleep(timeout)`, which stopped being the way
+    # the wait is spent the moment it had to be interruptible -- and a test
+    # that fails when the code is refactored but not when the behaviour
+    # breaks is protecting the spelling, not the promise. The promise is: a
+    # scanner that will not start is absorbed, and the wait is still a wait.
+    import asyncio
+    import time
+
+    import omid
+
+    class WillNotStart:
+        def __init__(self, *a, **k):
+            pass
+
+        async def start(self):
+            raise RuntimeError("no bluetooth")
+
+        async def stop(self):
+            pass
+
+    async def no_such_device(_addr):
+        return None
+
+    fake = type(sys)("bleak")
+    fake.BleakScanner = WillNotStart
+    monkeypatch.setitem(sys.modules, "bleak", fake)
+    monkeypatch.setattr(omid.omi_capture, "bluez_device", no_such_device)
+    monkeypatch.setattr(omid, "searching", lambda: True)
+
+    began = time.monotonic()
+    got = asyncio.run(omid.wait_until_advertising("AA:BB:CC:DD:EE:FF", 1.0))
+    took = time.monotonic() - began
+
+    assert got is None
+    # It waited rather than returning at once -- returning immediately is
+    # what turns the caller's retry loop into a spin.
+    assert took >= 0.9, f"gave up after {took:.2f}s instead of waiting"
 
 
 def test_storage_is_never_read_while_audio_is_streaming():
@@ -637,10 +672,13 @@ def test_storage_is_never_read_while_audio_is_streaming():
     tick = tick[:tick.index("\n    beat = ")]
     assert "start_notify" not in tick, "still subscribing during capture"
     assert "ring_info" not in tick, "still asking storage during capture"
-    # It is read where the storage characteristic is already being used.
-    sync = src[src.index('publish(state="connecting", address=address'):]
-    sync = sync[:sync.index("spool, took")]
-    assert "read_ring_now" in sync
+    # It is read where the storage characteristic is already being used:
+    # on the sync's own connection, handed back as it asks.
+    assert "on_ring=lambda info: note_ring(stats, info)" in src
+    snc = read_file("host/omi_sync.py")
+    ring = snc[snc.index("info = await link.ring_info()"):]
+    ring = ring[:ring.index("waiting = info[")]
+    assert "on_ring(info)" in ring, "the sync does not report what it read"
 
 
 def test_syncing_is_not_announced_before_the_device_is_reached():
@@ -684,10 +722,30 @@ def test_a_sync_that_is_only_being_attempted_reads_as_away():
 
 def test_a_ring_read_never_stops_a_recording():
     # A figure on a panel is not a reason to lose a session.
-    src = read_file("host/omid.py")
-    call = src[src.index("await read_ring_now(address, stats)") - 200:]
-    call = call[:400]
+    snc = read_file("host/omi_sync.py")
+    call = snc[snc.index("on_ring(info)") - 120:]
+    call = call[:200]
     assert "except Exception" in call
+
+
+def test_the_storage_figure_is_not_asked_for_on_its_own_connection():
+    """It was, and that connection had to find the device a second time --
+    which for a recorder advertising in short windows mostly failed. The
+    failure was swallowed as "a panel figure, never a reason to stop", so
+    the storage line sat twenty-one hours stale beside a battery reading a
+    minute old, with nothing to tell them apart. Read as current, it said
+    the device held nine seconds of audio while it was recording normally;
+    the very next sync pulled 304 packets.
+    """
+    src = read_file("host/omid.py")
+    assert "async def read_ring_now" not in src, \
+        "the ring is still asked for on a connection of its own"
+    assert "def note_ring(stats, info)" in src
+    # And it is filled from what the sync was already told.
+    fn = src[src.index("def note_ring(stats, info)"):]
+    fn = fn[:fn.index("\n\nasync def ")]
+    assert 'info["write_seq"] - info["read_seq"]' in fn
+    assert '"at": time.time()' in fn
 
 
 def test_nothing_is_published_before_the_link_exists():

@@ -49,6 +49,19 @@ STATUS = os.path.join(clipwriter.DATA, "omi_status.json")
 # two processes, no shared memory, and a file that survives both of them.
 WANTED = os.path.join(clipwriter.DATA, "omi_wanted.json")
 
+# Whether to look for the device at all.
+#
+# A standing switch, not a request: WANTED is consumed the moment it is
+# applied, which is right for "set the gain to 40" and wrong for "stop
+# looking" -- a switch that turns itself back on after one reading is not a
+# switch. So this file is read and left alone, and the search is off for
+# exactly as long as it says so.
+#
+# Absent or unreadable means search, so deleting the file and a fresh install
+# both behave the way somebody would expect, and a corrupt one fails towards
+# recording rather than towards silence.
+CONTROL = os.path.join(clipwriter.DATA, "omi_control.json")
+
 # Backing off, in seconds. Quick at first because the usual failure is the
 # device being briefly busy; longer after that because the usual failure
 # after several tries is that it is not in the room.
@@ -138,6 +151,28 @@ def clear_wanted(applied_id):
         pass
 
 
+# Re-read at most once a second. The capture loop asks on every tick so it
+# can put down a live session promptly, and that is a stat and a small read
+# each time -- cheap, but there is no reason to do it at the rate a tight
+# loop can ask.
+_SEARCH = {"at": 0.0, "on": True}
+
+
+def searching():
+    """False only while something has explicitly turned the search off."""
+    now = time.time()
+    if now - _SEARCH["at"] < 1.0:
+        return _SEARCH["on"]
+    try:
+        with open(CONTROL) as f:
+            d = json.load(f)
+        on = bool(d.get("search", True)) if isinstance(d, dict) else True
+    except (OSError, ValueError):
+        on = True
+    _SEARCH.update(at=now, on=on)
+    return on
+
+
 async def one_session(address, quiet=False, dev=None):
     """Catch up, then stream, until the link goes."""
     device_id = omi_capture.norm_id(address)
@@ -216,14 +251,11 @@ async def one_session(address, quiet=False, dev=None):
     # connected and packets are actually moving.
     publish(state="connecting", address=address, stats=stats)
     try:
-        # While the storage characteristic is the thing being talked to
-        # anyway, and before any audio is flowing.
-        try:
-            await read_ring_now(address, stats)
-        except Exception:
-            pass                       # a panel figure, never a reason to stop
         spool, took = await omi_sync.sync(
             address, quiet=quiet, dev=dev,
+            # Asked on the connection the sync is already holding, rather
+            # than on one of its own that has to find the device again.
+            on_ring=lambda info: note_ring(stats, info),
             progress=lambda done, total: publish(
                 state="syncing", address=address, stats=stats,
                 done=done, total=total))
@@ -328,7 +360,14 @@ async def one_session(address, quiet=False, dev=None):
     try:
         clipper = await omi_capture.capture(address, quiet=quiet, dev=dev,
                                             on_progress=beat.update,
-                                            should_stop=lambda: stopping,
+                                            # Off means off now, not at the
+                                            # end of whatever this is: the
+                                            # reason to stop searching is
+                                            # usually that somebody wants the
+                                            # radio, and "after this session"
+                                            # could be hours.
+                                            should_stop=lambda: (stopping
+                                                                 or not searching()),
                                             # Merged into the dict the
                                             # heartbeat already publishes, so
                                             # the next beat carries the new
@@ -374,32 +413,32 @@ async def one_session(address, quiet=False, dev=None):
     return clipper
 
 
-async def read_ring_now(address, stats):
-    """How much the device is holding, asked while nothing is streaming.
+def note_ring(stats, info):
+    """Record what the device says it is holding.
 
-    On its own connection and its own moment. Doing this underneath a live
-    audio stream is what broke recording: the storage protocol is meant for
-    offload, and using it concurrently is not something their firmware ever
-    offered.
+    Taken from the sync's own connection, where the answer is already in
+    hand. This used to open a connection of its own to ask the same
+    question, and that connection had to find the device a second time --
+    which, for a recorder that advertises in short windows, mostly failed.
+    The failure was swallowed as "a panel figure, never a reason to stop",
+    so nothing said so: the storage line sat twenty-one hours stale next to
+    a battery reading a minute old, with nothing to tell them apart. It was
+    read as current, and it said the device was holding nine seconds of
+    audio when the device was in fact recording normally.
     """
-    from bleak import BleakClient
-    async with BleakClient(address, timeout=20.0) as c:
-        link = omi_sync.Link(c)
-        await c.start_notify(omi_sync.CTRL, link.on_notify)
-        info = await link.ring_info(timeout=6.0)
-        held = max(0, info["write_seq"] - info["read_seq"])
-        spp = stats.get("seconds_per_packet")
-        stats["storage"] = {
-            "held_packets": held,
-            "held_bytes": held * info["packet_bytes"],
-            "held_seconds": round(held * spp, 1) if spp else None,
-            "capacity_packets": info["capacity"],
-            "capacity_seconds": (round(info["capacity"] * spp, 1)
-                                 if spp else None),
-            "dropped": info["dropped"],
-            "packet_bytes": info["packet_bytes"],
-            "at": time.time(),
-        }
+    held = max(0, info["write_seq"] - info["read_seq"])
+    spp = stats.get("seconds_per_packet")
+    stats["storage"] = {
+        "held_packets": held,
+        "held_bytes": held * info["packet_bytes"],
+        "held_seconds": round(held * spp, 1) if spp else None,
+        "capacity_packets": info["capacity"],
+        "capacity_seconds": (round(info["capacity"] * spp, 1)
+                             if spp else None),
+        "dropped": info["dropped"],
+        "packet_bytes": info["packet_bytes"],
+        "at": time.time(),
+    }
 
 
 async def wait_until_advertising(address, timeout):
@@ -422,6 +461,12 @@ async def wait_until_advertising(address, timeout):
     recorder advertises in windows too short to find twice. Handing the
     object straight to BleakClient skips that second search.
     """
+    # Asked before anything is opened. The switch is mostly thrown because
+    # somebody wants the radio, and starting a scan to find out whether we
+    # were allowed to scan would be the one thing it asked us not to do.
+    if not searching():
+        return None
+
     # If BlueZ is already holding it, no advertisement is ever coming: a
     # connected peripheral does not advertise, so waiting for one is waiting
     # forever. Ask first, and take the link that already exists.
@@ -444,14 +489,31 @@ async def wait_until_advertising(address, timeout):
         await scanner.start()
     except Exception:
         # No scanner, no cleverness: fall back to the old behaviour rather
-        # than turning a retry loop into a crash loop.
-        await asyncio.sleep(timeout)
+        # than turning a retry loop into a crash loop. Still in slices, so a
+        # host with no working scanner is not also a host where the switch
+        # appears to be ignored.
+        deadline = time.time() + timeout
+        while time.time() < deadline and searching():
+            await asyncio.sleep(min(0.5, deadline - time.time()))
         return None
     try:
-        await asyncio.wait_for(seen.wait(), timeout)
-        return found["dev"]
-    except asyncio.TimeoutError:
-        return None
+        # Waited in slices rather than in one go, so the switch can be thrown
+        # while we are listening. One long wait_for meant "stop looking" left
+        # a scanner running for up to a minute afterwards -- which is the
+        # whole of what it was asked to stop, and long enough that somebody
+        # would reasonably conclude the button did nothing.
+        deadline = time.time() + timeout
+        while True:
+            left = deadline - time.time()
+            if left <= 0:
+                return None
+            if not searching():
+                return None
+            try:
+                await asyncio.wait_for(seen.wait(), min(0.5, left))
+                return found["dev"]
+            except asyncio.TimeoutError:
+                continue
     finally:
         try:
             await scanner.stop()
@@ -461,12 +523,32 @@ async def wait_until_advertising(address, timeout):
 
 async def run(address=None, quiet=False):
     tries = 0
+    # Said once when the switch goes off, rather than on every pass: the loop
+    # comes round every couple of seconds and a paused daemon should be quiet
+    # in the journal, not the loudest thing in it.
+    announced_paused = False
     # What the last wait actually saw, if it saw anything. Used for the one
     # session that follows the sighting and then dropped: a device object is
     # a handle on a device that was there a moment ago, and reusing a stale
     # one across later retries would be worse than looking again.
     sighted = None
     while not stopping:
+        if not searching():
+            # Nothing scanned, nothing connected, no backoff advanced. The
+            # radio is left entirely alone so something else can have it,
+            # which is the whole point of the switch.
+            if not announced_paused:
+                print("search paused; not looking for the Omi", flush=True)
+                announced_paused = True
+            publish(state="paused", address=address, searching=False)
+            tries = 0
+            sighted = None
+            await asyncio.sleep(2)
+            continue
+        if announced_paused:
+            print("search resumed", flush=True)
+            announced_paused = False
+
         addr = address
         if not addr:
             # A paired recorder is the one to talk to. Taking whichever Omi
