@@ -856,7 +856,10 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
 .battspark .val{display:block;margin-top:2px;font-size:10.5px}
 
 /* ---- archive footer under the navigation ---- */
-.sidebar{grid-area:side;align-self:start}
+.sidebar{grid-area:side;
+  /* Full column height, so the sticky nav inside it has room to travel --
+     align-self:start shrank this wrapper to its content, and a sticky
+     element inside a content-sized box cannot stick at all. */}
 .archivefoot{font-family:var(--mono);
   font-size:11px;color:var(--faint);padding:10px 4px 0;line-height:1.6}
 .archivefoot[hidden]{display:none}
@@ -1863,6 +1866,8 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
 
 
 
+
+
 const $ = id => document.getElementById(id);
 let ws, armed = false, connected = false, drainPeak = 0;
 
@@ -2091,30 +2096,99 @@ function devKindsPaired(){
   return DEV_KINDS.filter(k => paired.some(r => r.kind === k));
 }
 
+/* The order itself is yours. Whichever recorder is your main one at the
+   moment should be the first tab and the one the page opens on -- and that
+   changes: a board goes on the desk, a pendant goes out the door. Drag a
+   tab, or focus it and press Alt+Left/Right. The order is remembered; the
+   Recorders segment stays last, because it is management rather than a
+   device. */
+let devOrder = null;
+try{ devOrder = JSON.parse(localStorage.getItem("boswell_devseg_order") || "null"); }
+catch(e){ devOrder = null; }
+
+function orderedKinds(kinds){
+  if (!Array.isArray(devOrder)) return kinds;
+  const head = devOrder.filter(k => kinds.includes(k));
+  return head.concat(kinds.filter(k => !head.includes(k)));
+}
+function saveDevOrder(){
+  try{ localStorage.setItem("boswell_devseg_order", JSON.stringify(devOrder)); }
+  catch(e){}
+}
+function devReorder(key, dir){
+  const kinds = orderedKinds(devKindsPaired());
+  const i = kinds.indexOf(key);
+  const j = i + dir;
+  if (i < 0 || j < 0 || j >= kinds.length) return;
+  kinds.splice(j, 0, kinds.splice(i, 1)[0]);
+  devOrder = kinds;
+  saveDevOrder();
+  paintDevTabs();
+}
+function devMoveBefore(key, target){
+  const kinds = orderedKinds(devKindsPaired());
+  const from = kinds.indexOf(key), to = kinds.indexOf(target);
+  if (from < 0 || to < 0 || from === to) return;
+  kinds.splice(to, 0, kinds.splice(from, 1)[0]);
+  devOrder = kinds;
+  saveDevOrder();
+  paintDevTabs();
+}
+
 function paintDevTabs(){
   const bar = $("devtabs");
   const kinds = devKindsPaired();
   bar.replaceChildren();
   if (!kinds.length){ bar.hidden = true; return; }
   bar.hidden = false;
-  if (!devSeg || !(kinds.includes(devSeg) || devSeg === "mgr")){
-    devSeg = kinds.includes(devSeg) ? devSeg
-           : (kinds.includes("boswell") ? "boswell" : kinds[0]);
+  const ordered = orderedKinds(kinds);
+  if (!devSeg || !(ordered.includes(devSeg) || devSeg === "mgr")){
+    devSeg = ordered.includes(devSeg) ? devSeg : ordered[0];
   }
   const mk = (val, label) => {
     const b = document.createElement("button");
     b.type = "button";
     b.textContent = label;
+    b.dataset.seg = val;
     b.setAttribute("aria-pressed", String(devSeg === val));
+    b.title = val === "mgr" ? "Pairing and troubleshooting"
+      : "Drag to reorder, or focus and press Alt+←/→ — the first tab is "
+      + "where the page opens";
     b.onclick = () => { devSeg = val;
       try{ localStorage.setItem("boswell_devseg", devSeg); }catch(e){}
       paintDevTabs(); };
+    /* A tab carries the recorder's own name when it has one -- the point
+       of naming a recorder is reading the name back in the places that
+       matter. */
+    if (val !== "mgr"){
+      b.draggable = true;
+      b.addEventListener("dragstart", e => {
+        dragKey = val; e.dataTransfer.effectAllowed = "move"; });
+      b.addEventListener("dragover", e => {
+        if (dragKey && dragKey !== val) e.preventDefault(); });
+      b.addEventListener("drop", e => {
+        e.preventDefault();
+        if (dragKey && dragKey !== val) devMoveBefore(dragKey, val);
+        dragKey = null; });
+      b.addEventListener("dragend", () => { dragKey = null; });
+      b.addEventListener("keydown", e => {
+        if (!e.altKey || (e.key !== "ArrowLeft" && e.key !== "ArrowRight")) return;
+        e.preventDefault();
+        devReorder(val, e.key === "ArrowLeft" ? -1 : 1);
+        const again = [...bar.children].find(x => x.dataset.seg === val);
+        if (again) again.focus();
+      });
+    }
     bar.appendChild(b);
   };
-  for (const k of kinds) mk(k, kindName(k));
+  for (const k of ordered){
+    const r = paired.find(x => x.kind === k);
+    mk(k, r && r.name ? r.name : kindName(k));
+  }
   mk("mgr", "Recorders");
   applyDevSegment();
 }
+let dragKey = null;
 
 function applyDevSegment(){
   try{ if (!devSeg) devSeg = localStorage.getItem("boswell_devseg") || null; }catch(e){}
@@ -2133,8 +2207,8 @@ function applyDevSegment(){
   }
   [...$("devtabs").children].forEach(b =>
     b.setAttribute("aria-pressed",
-      String(b.textContent === (devSeg === "omi" ? "Omi"
-        : devSeg === "mgr" ? "Recorders" : kindName(devSeg)))));
+      String(b.getAttribute("aria-pressed") === "true" ||
+             (devSeg === "mgr" && b.textContent === "Recorders"))));
 }
 
 /* A "why is it not connecting?" press on a recorder panel jumps to the
@@ -8510,6 +8584,8 @@ loadBattery();
 $("pulseCard").open = pulseWanted();
 if (pulseWanted()) loadPulse();
 addEventListener("resize", () => { if ($("pulseCard").open) drawPulse(); });
+
+
 
 
 
