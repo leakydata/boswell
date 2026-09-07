@@ -253,7 +253,10 @@ async def one_session(address, quiet=False, dev=None):
         if took:
             sink = omi_sync.drain_spool(device_id, quiet=True)
             n = sink.clips if sink else 0
-            print(f"synced {took} packet(s) -> {n} clip(s)", flush=True)
+            lost = getattr(sink, "undated", 0) if sink else 0
+            print(f"synced {took} packet(s) -> {n} clip(s)"
+                  + (f" ({lost} with no timestamp, not filed)" if lost else ""),
+                  flush=True)
             # How much audio a stored packet is worth, measured rather than
             # assumed. Packets are a fixed 444 bytes but hold a variable
             # number of 20 ms frames -- a partly filled one is padded -- so
@@ -596,6 +599,7 @@ async def run(address=None, quiet=False):
         sighted = None               # used, and only good for that session
 
         if stopping:
+            print("stopping; finishing the clip in hand", flush=True)
             break
         wait = BACKOFF[min(tries, len(BACKOFF) - 1)]
         tries += 1
@@ -621,10 +625,16 @@ def main():
     def stop(*_):
         global stopping
         stopping = True
+        # Nothing is printed from here. A signal can land in the middle of a
+        # print, and writing to the same buffered stream from inside the
+        # handler raises "reentrant call inside BufferedWriter" -- which
+        # killed the daemon outright, mid-session, exit code 1. The line
+        # announcing a clean stop was the thing making it unclean. The loop
+        # says it instead, where there is no handler to re-enter.
+        #
         # The capture loop checks this every second, so the flush that saves
         # the half-finished clip actually happens. It used to be checked only
         # between sessions, which meant never while recording.
-        print("stopping; finishing the clip in hand", flush=True)
 
     signal.signal(signal.SIGINT, stop)
     signal.signal(signal.SIGTERM, stop)

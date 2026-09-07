@@ -891,3 +891,33 @@ def test_a_handle_that_failed_is_not_handed_on():
     tail = fn[fn.index('print(f"sync:'):]
     tail = tail[:tail.index("# A heartbeat")]
     assert "dev = None" in tail, "a dead handle is still passed to the stream"
+
+
+def test_a_signal_handler_does_not_print():
+    """A signal can land in the middle of a print, and writing to the same
+    buffered stream from inside the handler raises "reentrant call inside
+    BufferedWriter". That killed the daemon outright, mid-session, exit code
+    1 -- the line announcing a clean stop was what made it unclean.
+    """
+    src = read_file("host/omid.py")
+    fn = src[src.index("    def stop(*_):"):]
+    fn = fn[:fn.index("signal.signal(")]
+    assert "print(" not in fn, "the signal handler still writes to stdout"
+    # The loop still says it, where there is no handler to re-enter.
+    assert 'print("stopping; finishing the clip in hand"' in src
+
+
+def test_stored_audio_with_no_timestamp_is_not_dropped_in_silence():
+    """The device stores audio before it has a clock to stamp it with --
+    after a reset, or before a run's first sync. Those packets were skipped
+    without a word, so a sync reported "197 packet(s) -> 0 clip(s)" and read
+    as a device with nothing to say rather than twenty seconds of speech
+    going in the bin."""
+    snc = read_file("host/omi_sync.py")
+    loop = snc[snc.index("for i in range(len(blob) // PACKET_BYTES):"):]
+    loop = loop[:loop.index("sink.flush()")]
+    assert "sink.undated" in loop, "undated packets still vanish quietly"
+    assert "self.undated = 0" in snc, "nothing counts them"
+    # And the count reaches the log, or counting it changes nothing.
+    src = read_file("host/omid.py")
+    assert "no timestamp, not filed" in src

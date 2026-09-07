@@ -134,6 +134,9 @@ class Sink:
         self.first_ts = self.last_ts = None
         self.clips = self.frames = self.bad = 0
         self.skipped = 0
+        # Packets the device stored with no timestamp on them. They cannot
+        # be placed in the day, and they are not nothing.
+        self.undated = 0
         # What the archive already has, so a second sync of the same ring --
         # after --keep, or after an interruption re-read a few seconds -- is
         # not a second copy of the same conversation.
@@ -383,6 +386,14 @@ def drain_spool(device_id, quiet=False):
                                            (i + 1) * PACKET_BYTES])
             if ts:
                 sink.add(ts, frames)
+            elif frames:
+                # Audio the device stored before it had a clock to stamp it
+                # with -- after a reset, or before the first sync of a run.
+                # It was dropped here without a word, so a sync could report
+                # "197 packet(s) -> 0 clip(s)" and look like a device with
+                # nothing to say rather than twenty seconds of speech going
+                # in the bin. Counted, at least, until it is placed.
+                sink.undated += 1
         sink.flush()
         os.remove(path)
         if not quiet:
