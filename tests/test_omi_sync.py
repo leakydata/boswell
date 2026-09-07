@@ -104,3 +104,61 @@ def test_a_re_read_is_not_a_second_copy():
     src = open(os.path.join(HERE, "..", "host", "omi_sync.py")).read()
     fn = src[src.index("    def flush(self):"):src.index("\nclass Link")]
     assert "dedup.is_duplicate" in fn
+
+
+def test_audio_stored_before_the_clock_was_set_is_filed_by_arrival(tmp_path,
+                                                                   monkeypatch):
+    """After a reset, and before the first sync sets the clock, the device
+    stamps stored packets with zero. Those were skipped without a word, so a
+    sync reported "197 packet(s) -> 0 clip(s)" -- a device with nothing to
+    say, rather than twenty seconds of speech going in the bin.
+
+    There is no honest way to say when it happened from the device's side.
+    Arrival is the placement live-streamed audio already gets, and it is
+    marked the same way, so nothing claims a precision it does not have.
+    """
+    import json, os, struct
+    import numpy as np
+    import omi_sync, clipwriter
+
+    monkeypatch.setattr(clipwriter, "DATA", str(tmp_path))
+    monkeypatch.setattr(clipwriter, "TIMES", str(tmp_path / "times"))
+    monkeypatch.setattr(omi_sync, "SPOOL", str(tmp_path / "spool"))
+    os.makedirs(omi_sync.SPOOL)
+    # The plumbing is under test, not the codec.
+    monkeypatch.setattr(omi_sync, "decode_opus",
+                        lambda b, n, r: np.zeros(n, dtype=np.int16))
+
+    blob = b""
+    for _ in range(2000):                      # about 160 seconds
+        p = struct.pack(">I", 0)               # the zero stamp
+        for _ in range(4):
+            p += bytes([8]) + b"\x01" * 8
+        blob += p[:omi_sync.PACKET_BYTES].ljust(omi_sync.PACKET_BYTES, b"\0")
+    (tmp_path / "spool" / "c4b3fd7f1e91_1.raw").write_bytes(blob)
+
+    sink = omi_sync.drain_spool("c4b3fd7f1e91", quiet=True)
+    assert sink.undated == 2000
+    assert sink.clips > 0, "undated audio is still being thrown away"
+
+    wavs = sorted(p for p in os.listdir(str(tmp_path)) if p.endswith(".wav"))
+    assert len(wavs) == sink.clips
+    # Cut like every other clip: one offload can hold hours, and a single
+    # wav of it would be neither playable nor transcribable.
+    assert len(wavs) > 1, "the whole offload was written as one clip"
+    # Clips are named for the second they end, so chunks sharing an arrival
+    # time would share a filename and overwrite one another.
+    assert len(set(wavs)) == len(wavs)
+
+    recs = [json.load(open(os.path.join(str(tmp_path / "times"), w + ".json")))
+            for w in wavs]
+    assert all(r["time_known"] is False for r in recs), \
+        "it would claim the device said when this happened"
+    # No counter came with the packets, and dedup drops a span holding None
+    # rather than guessing -- keeping audio beats discarding it on a guess.
+    assert all(r["device_ms"] == [None, None] for r in recs)
+    # In order, and contiguous: the run reads as the stretch it was.
+    for a, b in zip(recs, recs[1:]):
+        assert a["ended"] <= b["started"] + 0.01
+    assert abs(sum(r["seconds"] for r in recs) - 160.0) < 0.5
+    assert os.listdir(omi_sync.SPOOL) == [], "the spool was not cleared"

@@ -135,8 +135,9 @@ class Sink:
         self.clips = self.frames = self.bad = 0
         self.skipped = 0
         # Packets the device stored with no timestamp on them. They cannot
-        # be placed in the day, and they are not nothing.
+        # be placed by the device's account, so they are placed by arrival.
         self.undated = 0
+        self.undated_pcm = []
         # What the archive already has, so a second sync of the same ring --
         # after --keep, or after an interruption re-read a few seconds -- is
         # not a second copy of the same conversation.
@@ -163,6 +164,68 @@ class Sink:
         if self.have >= CLIP_SECONDS * RATE:
             self.flush()
         return self.clips != before
+
+    def add_undated(self, frames):
+        """Audio the device stored before it had a clock to stamp it with.
+
+        After a reset, and before the first sync sets the clock, stored
+        packets carry a zero timestamp. There is no honest way to say when
+        that audio happened from the device's side -- but it is speech, and
+        it was being dropped on the floor without a word. Placing it by
+        arrival is exactly what live-streamed audio already gets, and it is
+        marked the same way, so nothing claims a precision it does not have.
+        """
+        for f in frames:
+            try:
+                self.undated_pcm.append(
+                    decode_opus(bytes(f), FRAME_SAMPLES, RATE))
+            except Exception:
+                self.bad += 1
+                continue
+            self.frames += 1
+        self.undated += 1
+
+    def flush_undated(self, arrived=None):
+        """File what has no time of its own, placed by when it reached us.
+
+        Cut into clips the same length as everything else, and walked
+        backwards from arrival so the run reads in order. Both matter: one
+        offload can hold hours, and a single wav of it would be unplayable
+        and untranscribable -- and clips are named for the second they end,
+        so two chunks sharing an arrival time would share a filename and the
+        second would quietly overwrite the first.
+        """
+        if not self.undated_pcm:
+            return None
+        audio = np.concatenate(self.undated_pcm)
+        self.undated_pcm = []
+        ends_at = float(arrived if arrived is not None else time.time())
+        step = int(CLIP_SECONDS * RATE)
+        chunks = [audio[i:i + step] for i in range(0, len(audio), step)]
+        # The last chunk is the one that ends at arrival; the rest run up to
+        # it, so the earliest audio carries the earliest time.
+        last = None
+        for k, chunk in enumerate(reversed(chunks)):
+            seconds = len(chunk) / float(RATE)
+            ended = ends_at - sum(len(c) for c in list(reversed(chunks))[:k]) / float(RATE)
+            started = ended - seconds
+            path = clipwriter.save_wav("omi", ended, chunk, RATE)
+            clipwriter.write_times(
+                path, started=started, ended=ended, seconds=seconds,
+                source="omi-card",
+                # No counter, because the packets carried none. dedup drops
+                # any record with a None in its span rather than guessing,
+                # which is the behaviour wanted here: audio ingested twice is
+                # a visible, fixable mess, and audio discarded on a guess is
+                # neither.
+                first_ms=None, last_ms=None,
+                boot_id=OFFLINE_RUN, device_id=self.device_id,
+                # By arrival, not by the device's account. The interface
+                # places it and says "time unknown", which is the truth.
+                time_known=False)
+            self.clips += 1
+            last = path
+        return last
 
     def flush(self):
         if not self.pcm:
@@ -392,13 +455,17 @@ def drain_spool(device_id, quiet=False):
                 # It was dropped here without a word, so a sync could report
                 # "197 packet(s) -> 0 clip(s)" and look like a device with
                 # nothing to say rather than twenty seconds of speech going
-                # in the bin. Counted, at least, until it is placed.
-                sink.undated += 1
+                # in the bin.
+                sink.add_undated(frames)
         sink.flush()
+        # Placed by when the file reached the spool, which is the closest
+        # thing to a time this audio has.
+        sink.flush_undated(os.path.getmtime(path))
         os.remove(path)
         if not quiet:
             print(f"  {name}: {sink.clips} clip(s) so far")
     sink.flush()
+    sink.flush_undated()
     return sink
 
 

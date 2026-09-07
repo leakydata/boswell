@@ -907,17 +907,32 @@ def test_a_signal_handler_does_not_print():
     assert 'print("stopping; finishing the clip in hand"' in src
 
 
-def test_stored_audio_with_no_timestamp_is_not_dropped_in_silence():
+def test_stored_audio_with_no_timestamp_is_kept_not_dropped():
     """The device stores audio before it has a clock to stamp it with --
-    after a reset, or before a run's first sync. Those packets were skipped
-    without a word, so a sync reported "197 packet(s) -> 0 clip(s)" and read
-    as a device with nothing to say rather than twenty seconds of speech
-    going in the bin."""
+    after a reset, or before a run's first sync -- and those packets carry a
+    zero stamp. They were skipped without a word, so a sync reported "197
+    packet(s) -> 0 clip(s)" and read as a device with nothing to say rather
+    than twenty seconds of speech going in the bin.
+
+    There is no honest way to say when it happened from the device's side,
+    but arrival is exactly the placement live-streamed audio already gets,
+    and it is marked the same way.
+    """
     snc = read_file("host/omi_sync.py")
     loop = snc[snc.index("for i in range(len(blob) // PACKET_BYTES):"):]
     loop = loop[:loop.index("sink.flush()")]
-    assert "sink.undated" in loop, "undated packets still vanish quietly"
-    assert "self.undated = 0" in snc, "nothing counts them"
-    # And the count reaches the log, or counting it changes nothing.
+    assert "sink.add_undated(frames)" in loop, "undated audio is still dropped"
+    assert "def add_undated" in snc and "def flush_undated" in snc
+
+    # Filed, and honest about how it was placed.
+    fn = snc[snc.index("def flush_undated"):]
+    fn = fn[:fn.index("\n    def flush(self)")]
+    assert "time_known=False" in fn, "it would claim the device said so"
+    assert "clipwriter.save_wav" in fn, "counted but never written"
+
+    # Nothing is left holding audio when the spool is done.
+    tail = snc[snc.index("os.remove(path)"):]
+    assert "sink.flush_undated()" in tail, "the last of it is never filed"
+
     src = read_file("host/omid.py")
-    assert "no timestamp, not filed" in src
+    assert "placed by arrival" in src

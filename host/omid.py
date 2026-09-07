@@ -253,9 +253,10 @@ async def one_session(address, quiet=False, dev=None):
         if took:
             sink = omi_sync.drain_spool(device_id, quiet=True)
             n = sink.clips if sink else 0
-            lost = getattr(sink, "undated", 0) if sink else 0
+            undated = getattr(sink, "undated", 0) if sink else 0
             print(f"synced {took} packet(s) -> {n} clip(s)"
-                  + (f" ({lost} with no timestamp, not filed)" if lost else ""),
+                  + (f" ({undated} with no timestamp, placed by arrival)"
+                     if undated else ""),
                   flush=True)
             # How much audio a stored packet is worth, measured rather than
             # assumed. Packets are a fixed 444 bytes but hold a variable
