@@ -283,3 +283,56 @@ def test_recorders_heard_before_are_offered_when_nothing_is_paired():
     head = fn[:fn.index("for (const r of paired){")]
     assert "loadKnown()" in head, "the offer sits behind the empty-list return"
     assert html.count("loadKnown()") >= 3, "not called after the list is drawn"
+
+
+def test_a_second_recorder_of_a_kind_can_be_the_one_used():
+    """Oldest-first is fine with one of a kind and wrong with two. A Neo 1
+    speaks the same Omi audio service, so it pairs, lists -- and could never
+    be used, because the first Omi paired always won and the only way to
+    reach the other was to forget the first."""
+    tmp = tempfile.mkdtemp()
+    r = _fresh(tmp)
+    r.add("omi", "C4:B3:FD:7F:1E:91", "Omi")
+    r.add("omi", "F6:B5:62:44:2A:32", "Neo 1")
+    assert r.first_of("omi")["name"] == "Omi", "oldest should still win by default"
+
+    r.set_primary("f6b562442a32")
+    assert r.first_of("omi")["name"] == "Neo 1"
+    # Exactly one of the kind is chosen.
+    assert sum(1 for x in r.of_kind("omi") if x.get("primary")) == 1
+
+
+def test_choosing_one_kind_does_not_disturb_another():
+    tmp = tempfile.mkdtemp()
+    r = _fresh(tmp)
+    r.add("boswell", "D9:66:CF:BB:58:A4", "Boswell")
+    r.add("omi", "C4:B3:FD:7F:1E:91", "Omi")
+    r.set_primary("d966cfbb58a4")
+    r.set_primary("c4b3fd7f1e91")
+    assert r.first_of("boswell")["name"] == "Boswell"
+    assert any(x.get("primary") for x in r.of_kind("boswell")), \
+        "choosing an Omi cleared the handmade board's choice"
+
+
+def test_choosing_a_recorder_that_is_not_paired_is_refused():
+    tmp = tempfile.mkdtemp()
+    r = _fresh(tmp)
+    r.add("omi", "C4:B3:FD:7F:1E:91", "Omi")
+    try:
+        r.set_primary("ffffffffffff")
+    except ValueError:
+        return
+    raise AssertionError("an unpaired id was accepted")
+
+
+def test_the_choice_is_written_down_not_just_remembered():
+    # The daemon is another process and reads the file; a choice held only in
+    # this one would never reach the thing doing the recording.
+    tmp = tempfile.mkdtemp()
+    r = _fresh(tmp)
+    r.add("omi", "C4:B3:FD:7F:1E:91", "Omi")
+    r.add("omi", "F6:B5:62:44:2A:32", "Neo 1")
+    r.set_primary("f6b562442a32")
+    on_disk = json.load(open(r.PATH))["recorders"]
+    chosen = [x for x in on_disk if x.get("primary")]
+    assert [x["id"] for x in chosen] == ["f6b562442a32"]

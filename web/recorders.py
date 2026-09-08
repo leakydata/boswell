@@ -102,8 +102,45 @@ def of_kind(kind):
 
 
 def first_of(kind):
+    """The recorder of this kind to actually talk to.
+
+    Oldest first was the whole rule, which is fine with one of a kind and
+    wrong the moment there are two: a second Omi-protocol device could be
+    paired, listed and never once used, because the first one paired always
+    won and the only way to reach the other was to forget the first.
+
+    Boswell records from one device of a kind at a time -- the radio is
+    exclusive and a second stream is a second connection competing for it --
+    so which one is a choice somebody has to be able to make. `primary` is
+    that choice; without it, oldest still wins.
+    """
     rows = of_kind(kind)
-    return rows[0] if rows else None
+    if not rows:
+        return None
+    for r in rows:
+        if r.get("primary"):
+            return r
+    return rows[0]
+
+
+def set_primary(ident):
+    """Choose which recorder of its kind is the one to record from.
+
+    Exclusive within the kind and not across it: choosing an Omi says
+    nothing about which handmade board to use, and clearing every other
+    kind's choice would be a surprise nobody asked for.
+    """
+    ident = norm_id(ident) or ident
+    rows = load()
+    me = next((r for r in rows if r.get("id") == ident), None)
+    if not me:
+        raise ValueError(f"no recorder {ident!r}")
+    for r in rows:
+        if r.get("kind") == me.get("kind"):
+            r.pop("primary", None)
+    me["primary"] = True
+    _write(rows)
+    return rows
 
 
 def has(kind):

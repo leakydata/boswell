@@ -2393,6 +2393,28 @@ async def api_recorders_pair(body: dict):
     return {"ok": True, "recorders": _recorder_rows(rows)}
 
 
+@app.post("/api/recorders/primary")
+async def api_recorders_primary(body: dict):
+    """Choose which recorder of its kind Boswell records from.
+
+    One at a time per kind: the radio is exclusive, and a second stream is a
+    second connection competing with the first. Pairing a second
+    Omi-protocol device -- a Neo 1 speaks the same audio service -- used to
+    list it and never use it, because the first one paired always won.
+    """
+    ident = body.get("id")
+    if not ident:
+        raise HTTPException(400, "no id given")
+    try:
+        rows = recorders.set_primary(ident)
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    row = next((r for r in rows if r.get("primary")
+                and recorders.norm_id(r.get("id")) == recorders.norm_id(ident)), None)
+    device.event("log", text=f"recording from {(row or {}).get('name') or ident}")
+    return {"ok": True, "recorders": _recorder_rows(rows)}
+
+
 @app.post("/api/recorders/forget")
 async def api_recorders_forget(body: dict):
     ident = body.get("id")
