@@ -269,3 +269,35 @@ def test_the_key_file_is_not_world_readable():
     secrets_store.set_key("OPENAI_API_KEY", "sk-something")
     mode = stat.S_IMODE(os.stat(secrets_store.PATH).st_mode)
     assert not (mode & (stat.S_IRGRP | stat.S_IROTH)), f"mode {oct(mode)}"
+
+
+def test_a_key_slot_needs_no_interface_change():
+    """The settings list is drawn from whatever /api/secrets returns, so a
+    new provider is one entry in KEYS and nothing else. Worth pinning: the
+    moment a slot needs its own markup, adding one means editing the page,
+    and the page is not always free to edit."""
+    import os as _os, sys as _sys
+    _sys.path.insert(0, _os.path.join(_os.path.dirname(__file__), "..", "web"))
+    import secrets_store
+
+    assert "GROQ_API_KEY" in secrets_store.KEYS
+    for name, meta in secrets_store.KEYS.items():
+        assert meta.get("label") and meta.get("help"), f"{name} is unexplained"
+
+    here = _os.path.dirname(__file__)
+    with open(_os.path.join(here, "..", "web", "static", "index.html")) as f:
+        html = f.read()
+    # No provider is named in the page: if one were, the list would be drawn
+    # in two places and they would drift.
+    for name in secrets_store.KEYS:
+        assert name not in html, f"{name} is hardcoded in the interface"
+
+
+def test_only_listed_keys_can_be_written():
+    # Otherwise a stray POST turns this into a general-purpose file writer.
+    import os as _os, sys as _sys
+    _sys.path.insert(0, _os.path.join(_os.path.dirname(__file__), "..", "web"))
+    import secrets_store
+    src = open(_os.path.join(_os.path.dirname(__file__), "..",
+                             "web", "secrets_store.py")).read()
+    assert "if name not in KEYS" in src

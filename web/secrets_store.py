@@ -57,6 +57,14 @@ KEYS = {
         "help": "Not used yet. One key for many models, for notes and tags.",
         "url": "https://openrouter.ai/keys",
     },
+    "GROQ_API_KEY": {
+        "label": "Groq",
+        "help": "Not used yet. Transcription, on a free tier at the time of "
+                "writing -- worth a look on a machine with no GPU, where the "
+                "local pipeline runs below real time and the backlog never "
+                "closes.",
+        "url": "https://console.groq.com/keys",
+    },
 }
 
 
