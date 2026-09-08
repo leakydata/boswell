@@ -261,3 +261,50 @@ def test_the_interface_has_a_way_to_ask_for_this():
     # Off the event loop: a second of work would otherwise stall every other
     # request on the server.
     assert "run_in_executor" in fn
+
+
+def test_the_depth_floor_is_set_against_real_conversation():
+    """0.08 was calibrated against synthetic vectors in the tests above, and
+    real speech is far noisier. Measured over this archive -- 3,852 gaps
+    across 62 conversations -- the median depth is 0.047 and p95 is 0.316, so
+    0.08 called 38% of all gaps a change of subject: one section every 1.3
+    minutes, and a single exchange about a noise cut into three.
+    """
+    assert threads.MIN_DEPTH >= 0.24, \
+        "the floor is back below the noise in real conversation"
+    # And not so high that nothing is ever a boundary: p99 was 0.476.
+    assert threads.MIN_DEPTH <= 0.45
+
+
+def test_a_short_exchange_on_one_subject_stays_one_section():
+    """The real failure at 0.08: three consecutive lines about one noise --
+    "What is that sound?", "High-pitched, like, cicada sound.", "I think it's
+    coming from the air conditioner." -- became three sections. Neighbouring
+    sentences on one subject wobble; that is what conversation sounds like,
+    not a change of subject.
+
+    The wobble here is chosen to sit in the band where the old floor and the
+    measured one disagree, so this fails if the floor ever goes back.
+    """
+    units, vecs, t = [], {}, 0.0
+    for i in range(10):
+        v = _v(1.0, 0.25 * ((i % 4) - 1.5), 0.05)
+        units.append(_unit(t, t + 4.0, v, index=i))
+        vecs[("a.wav", i)] = v
+        t += 5.0
+    assert len(threads.sections(units, vecs, min_depth=0.08)) > 1, \
+        "this data no longer exercises the regression it was written for"
+    secs = threads.sections(units, vecs)
+    assert len(secs) == 1, f"one subject was cut into {len(secs)} sections"
+
+
+def test_a_real_change_of_subject_still_cuts():
+    # The floor must not be so high that nothing is ever a boundary.
+    one, two = _v(1.0, 0.0, 0.0), _v(0.0, 1.0, 0.0)
+    units, vecs, t = [], {}, 0.0
+    for i in range(12):
+        v = one if i < 6 else two
+        units.append(_unit(t, t + 4.0, v, index=i))
+        vecs[("a.wav", i)] = v
+        t += 5.0
+    assert len(threads.sections(units, vecs)) >= 2

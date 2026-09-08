@@ -241,7 +241,22 @@ def _block(vecs, lo, hi):
 # relative scoring alone cut a steady twelve-unit stretch into three. This is
 # the floor underneath it: below this the similarity barely moved, and
 # whatever the ranking says, nothing happened there.
-MIN_DEPTH = 0.08
+#
+# 0.08 was set against synthetic vectors in a test, and real conversation is
+# far noisier than that. Measured over this archive: 3,852 gaps across 62
+# conversations, median depth 0.047, p90 0.241, p95 0.316 -- so 0.08 called
+# 38% of all gaps a change of subject, one section every 1.3 minutes. It cut
+# a single exchange into three:
+#
+#     [subject] 1 unit | What is that sound?
+#     [subject] 1 unit | High-pitched, like, cicada sound.
+#     [subject] 1 unit | I think it's coming from the air conditioner.
+#
+# At 0.30 -- a little under p95 -- that stays one section, and an 89-unit
+# conversation resolves into four: a technical discussion, the noise, a phone
+# call, and firmware. One section per fourteen units, about four minutes,
+# which is roughly how often a subject really changes.
+MIN_DEPTH = 0.30
 
 
 def sections(units, vectors, window=3, hard_gap=180.0, min_units=4,
