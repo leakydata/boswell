@@ -370,10 +370,12 @@ def for_conversation(names):
     import semantic
 
     segments, clip_start, voices = [], {}, {}
+    transcribed = 0
     for name in names:
         tp = _transcript_path(name)
         if not os.path.exists(tp):
             continue
+        transcribed += 1
         try:
             t = json.load(open(tp))
         except Exception:
@@ -427,7 +429,10 @@ def for_conversation(names):
     except Exception:
         pass
 
-    return {"units": units, "sections": sections(units, vectors)}
+    return {"units": units, "sections": sections(units, vectors),
+            # How many of the clips asked for actually had a transcript, so
+            # the reader can tell "nothing was said" from "not read yet".
+            "transcribed": transcribed}
 
 
 def main():

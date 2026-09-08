@@ -1473,6 +1473,14 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
       </div>
       <h2 id="cvTitle">Conversation</h2>
       <div class="cvmeta" id="cvMeta"></div>
+      <!-- A thirty-second clip cuts wherever thirty seconds landed, so one
+           sentence arrives as two or three rows. This reads the same
+           conversation as the things people actually said. -->
+      <div class="btns" style="margin:6px 0 2px">
+        <button type="button" id="cvThoughts" aria-pressed="false"
+                title="Join lines the clip boundary split, and mark where the subject changed"
+                >Read as thoughts</button>
+      </div>
       <div class="spk" id="cvSpeakers"></div>
       <audio id="cvPlayer" preload="none"></audio>
       <div class="cvnow" id="cvNow" hidden>
@@ -6207,7 +6215,136 @@ async function openConversation(conv){
     $("cvMsg").textContent =
       `${data.not_transcribed} clip${data.not_transcribed === 1 ? "" : "s"} not transcribed yet`;
   }
+
+  syncThoughtsButton();
+  if (thoughtsMode) renderThoughts(conv);
 }
+
+/* Reading a conversation as things people said, rather than as clip rows.
+
+   A thirty-second clip is a transport unit and it cuts wherever thirty
+   seconds landed, which is usually mid-sentence -- so one thing somebody
+   said arrives as two or three rows with the label repeated on each.
+   Measured over this archive, 7,557 lines are 2,769 utterances: two thirds
+   of the rows are an artefact of where the recorder stopped.
+
+   The line view stays, and stays the default. Naming and editing work on a
+   line, playback works on a line, and this view is for reading -- so it is
+   a toggle rather than a replacement, and it says which one you are in. */
+let thoughtsMode = false;
+try{ thoughtsMode = localStorage.getItem("boswell_thoughts") === "1"; }catch(e){}
+
+function syncThoughtsButton(){
+  const b = $("cvThoughts");
+  if (!b) return;
+  b.setAttribute("aria-pressed", thoughtsMode ? "true" : "false");
+  b.textContent = thoughtsMode ? "Read as lines" : "Read as thoughts";
+}
+
+async function renderThoughts(conv){
+  const box = $("cvSegs");
+  if (!box || !conv) return;
+  box.innerHTML = '<div class="empty">joining…</div>';
+  let d;
+  try{
+    const r = await fetch("/api/conversation/threads", {method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({names: conv.clips})});
+    if (!r.ok) throw new Error("bad response");
+    d = await r.json();
+  }catch(e){
+    box.innerHTML = '<div class="empty">could not join this conversation</div>';
+    return;
+  }
+  const secs = d.sections || [];
+  if (!secs.length){
+    /* Say which kind of empty this is. "Nothing to read" over a conversation
+       recorded four minutes ago reads as a fault, when the truth is that the
+       transcriber has not reached it yet -- the line view already tells
+       these two apart and this must not be vaguer than what it sits beside. */
+    box.innerHTML = (d.transcribed)
+      ? '<div class="empty">No speech detected in this conversation.</div>'
+      : `<div class="empty">None of these ${conv.clips.length} clips are `
+        + 'transcribed yet.</div>';
+    return;
+  }
+
+  /* Colour by resolved identity, the same as the line view: the same
+     diarized id means different people in different clips. */
+  const keyOf = u => u.name || `${u.clip}:${u.speaker}`;
+  assignSpeakerColors([...new Set((d.units || []).map(keyOf))]);
+
+  box.innerHTML = "";
+  secs.forEach((sec, i) => {
+    /* A heading only where something actually changed. The first section is
+       just where the conversation started and saying so adds nothing. */
+    if (i > 0){
+      const h = document.createElement("div");
+      h.className = "daygroup";
+      h.style.marginTop = "18px";
+      const mins = Math.round((sec.seconds || 0) / 60);
+      h.textContent = (sec.why === "silence" ? "AFTER A PAUSE" : "NEW SUBJECT")
+        + (mins >= 1 ? ` · ${mins} min` : "");
+      box.appendChild(h);
+    }
+    for (const u of sec.units){
+      const line = document.createElement("div");
+      line.className = "cvline";
+      const col = u.speaker ? colorOf(spkColors[keyOf(u)]) : "var(--faint)";
+
+      /* The first line of the unit is what plays and what the timestamp
+         points at -- the parts are kept precisely so this still reaches the
+         audio rather than an approximation of it. */
+      const first = (u.parts && u.parts[0]) || u;
+      const t = document.createElement("button");
+      t.className = "cvt";
+      t.textContent = u.at ? fmtClockSec(u.at) : "";
+      t.title = "Play from here";
+      t.onclick = () => cvPlayFrom({clip: first.clip, index: first.index,
+                                    start: first.start, end: first.end,
+                                    text: u.text}, line);
+
+      const bodyEl = document.createElement("div");
+      bodyEl.className = "cvbody";
+      if (u.speaker){
+        const w = document.createElement("button");
+        w.className = "cvwho" + (u.name ? "" : " unnamed") + (u.shaky ? " shaky" : "");
+        w.style.color = col;
+        w.textContent = (u.name || u.speaker) + (u.shaky ? "?" : "");
+        w.title = u.name ? `Rename ${u.name}` : "Who is this? Click to name";
+        w.onclick = (e) => {
+          e.stopPropagation();
+          nameSpeaker(first.clip, u.speaker, u.name || "",
+                      () => renderThoughts(conv));
+        };
+        bodyEl.appendChild(w);
+      }
+      const txt = document.createElement("span");
+      txt.className = "cvtext";
+      txt.textContent = u.text;
+      /* Not editable here. An edit belongs to one line, and this row is
+         several of them joined -- offering it would either write the whole
+         utterance back over the first line or quietly drop the rest. The
+         line view is a click away and edits there work as they always did. */
+      if (u.lines > 1){
+        txt.title = `${u.lines} lines joined — switch to lines to edit`;
+      }
+      bodyEl.appendChild(txt);
+
+      line.appendChild(t);
+      line.appendChild(bodyEl);
+      box.appendChild(line);
+    }
+  });
+}
+
+on("cvThoughts", "click", () => {
+  thoughtsMode = !thoughtsMode;
+  try{ localStorage.setItem("boswell_thoughts", thoughtsMode ? "1" : "0"); }catch(e){}
+  syncThoughtsButton();
+  if (thoughtsMode) renderThoughts(cvCurrent);
+  else if (cvCurrent) openConversation(cvCurrent);
+});
 
 /* Plays ONE line, and stops at the end of it.
    
