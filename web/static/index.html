@@ -534,8 +534,9 @@ button.who.wholine{cursor:pointer;font-family:var(--mono)}
 .person h3{font-size:17px;font-weight:600;margin:0 0 2px;display:flex;
   justify-content:space-between;align-items:baseline;gap:10px}
 .person .cnt{font-family:var(--mono);font-size:12px;color:var(--muted);font-weight:400}
-.samp{display:flex;align-items:center;gap:10px;padding:8px 0;
-  border-top:1px solid var(--rule-2);font-family:var(--mono);font-size:12px}
+.samp{display:flex;align-items:center;gap:10px;padding:9px 0;
+  border-top:1px solid var(--rule-2);font-size:13.5px}
+.samp .s1{color:var(--ink)}
 .samp .s1{flex:1;min-width:0;color:var(--muted);overflow:hidden;text-overflow:ellipsis;
   white-space:nowrap}
 .samp button{flex:none;min-height:34px;padding:5px 10px;font-size:12px}
@@ -811,7 +812,7 @@ select.speed{min-height:0;padding:5px 26px 5px 9px;font-size:12.5px;
 .splitlist{display:flex;flex-direction:column;gap:5px;
   max-height:calc(100vh - 300px);overflow-y:auto;padding-right:2px}
 .splitdetail{max-height:calc(100vh - 260px);overflow-y:auto;
-  padding-right:4px}
+  padding-right:4px;font-size:14.5px;line-height:1.55}
 @media(max-width:900px){
   .split{grid-template-columns:1fr}
   .splitlist{max-height:32vh}
@@ -855,9 +856,8 @@ dialog.sheet .prow input:focus,dialog.sheet .prow textarea:focus{
   outline:2px solid var(--accent);outline-offset:-1px}
 dialog.sheet .prow textarea{font-family:var(--sans);resize:vertical}
 .psub{font-family:var(--mono);font-size:11px}
-.personfacts{font-size:12.5px;color:var(--muted);margin:2px 0 0;
-  font-family:var(--mono)}
-.personnote{font-size:13px;color:var(--ink);margin:6px 0 0;
+.personfacts{font-size:14px;color:var(--ink);margin:4px 0 0}
+.personnote{font-size:14px;color:var(--ink);margin:8px 0 0;
   white-space:pre-wrap;max-width:70ch}
 
 /* ---- audit findings: fades ---- */
@@ -3753,7 +3753,8 @@ function renderPersonDetail(){
     if (e.legacy) bits.push(`earlier labels (weight ${e.weight})`);
     if (e.clip) bits.push(e.clip);
     if (e.seconds) bits.push(`${e.seconds}s`);
-    if (e.score !== null && e.score !== undefined) bits.push(`match ${e.score}`);
+    if (e.score !== null && e.score !== undefined)
+      bits.push(`match ${Number(e.score).toFixed(2)}`);
     const s1 = document.createElement("span");
     s1.className = "s1";
     s1.textContent = bits.join(" · ") || "sample";
