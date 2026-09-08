@@ -27,16 +27,17 @@
 @font-face{font-family:"IBM Plex Mono";font-style:normal;font-weight:600;font-display:swap;src:url("/static/fonts/IBMPlexMono-SemiBold.woff2") format("woff2")}</style>
 <style>
 :root{
-  --paper:#F1F4F5; --surface:#FFF; --sunk:#E7ECEE;
-  --ink:#101619; --muted:#5C6B71; --faint:#93A4AA; --rule:#D2DBDE;
-  --accent:#12697A; --ok:#2C7A55; --warn:#A8761B; --bad:#A83C2C;
+  --paper:#EFF3F4; --surface:#FFFFFF; --sunk:#E4EBED;
+  --ink:#0E1417; --muted:#57666C; --faint:#8FA1A7; --rule:#D5DEE1;
+  --accent:#0E6B7E; --ok:#2C7A55; --warn:#A8761B; --bad:#A83C2C;
+  --navw:212px;
   --sans:"IBM Plex Sans",system-ui,sans-serif;
   --mono:"IBM Plex Mono",ui-monospace,monospace;
 }
 @media (prefers-color-scheme:dark){:root:not([data-theme=light]){
-  --paper:#0C1215; --surface:#141C20; --sunk:#0F171A;
-  --ink:#E8EFF1; --muted:#8DA0A7; --faint:#67787F; --rule:#263338;
-  --accent:#46AEC2; --ok:#4FB37F; --warn:#D3A03F; --bad:#DB6B57;
+  --paper:#0A1013; --surface:#121A1F; --sunk:#0E161A;
+  --ink:#E6EDEF; --muted:#8CA0A8; --faint:#64757D; --rule:#22303A;
+  --accent:#4FB3C6; --ok:#4FB37F; --warn:#D3A03F; --bad:#DB6B57;
 }}
 *{box-sizing:border-box}
 /* Thin, theme-aware scrollbars everywhere; the default grey bars broke the
@@ -76,7 +77,7 @@ body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);
   grid-template-areas:"top top" "side main"}
 header{grid-area:top;
   display:flex;align-items:baseline;justify-content:space-between;gap:12px;
-  padding:16px 0 14px;border-bottom:2px solid var(--ink);margin-bottom:20px;
+  padding:12px 0 10px;border-bottom:1px solid var(--rule);margin-bottom:18px;
   position:sticky;top:0;z-index:20;background:var(--paper)}
 main#main{grid-area:main;min-width:0}
 @media(max-width:900px){
@@ -84,9 +85,9 @@ main#main{grid-area:main;min-width:0}
   header{padding-top:20px}
   .sidebar{display:contents}
 }
-.brand{display:flex;align-items:center;gap:11px}
-.mark{width:23px;height:23px;flex:none;border-radius:6px}
-h1{font-size:25px;font-weight:600;letter-spacing:-.02em;margin:0;line-height:1}
+.brand{display:flex;align-items:center;gap:10px}
+.mark{width:21px;height:21px;flex:none;border-radius:6px}
+h1{font-size:21px;font-weight:600;letter-spacing:-.02em;margin:0;line-height:1}
 .ver{font-family:var(--mono);font-size:11px;color:var(--faint)}
 .topstate{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
 .topstate .pill{font-family:var(--mono);font-size:11.5px;color:var(--muted);
@@ -95,9 +96,11 @@ h1{font-size:25px;font-weight:600;letter-spacing:-.02em;margin:0;line-height:1}
 .topstate .pill b{font-weight:600}
 .grid{display:grid;gap:14px;grid-template-columns:1fr}
 @media(min-width:700px){.grid{grid-template-columns:1fr 1fr}.span2{grid-column:1/-1}}
-.card{background:var(--surface);border:1px solid var(--rule);border-radius:8px;padding:16px}
+.card{background:var(--surface);border:1px solid var(--rule);border-radius:10px;
+  padding:14px 16px}
 .card h2{font-family:var(--mono);font-size:10.5px;font-weight:600;letter-spacing:.14em;
-  text-transform:uppercase;color:var(--accent);margin:0 0 12px}
+  text-transform:uppercase;color:var(--accent);margin:0 0 12px;
+  padding-bottom:8px;border-bottom:1px solid color-mix(in srgb,var(--rule) 55%,transparent)}
 
 /* status */
 .status{display:flex;align-items:center;gap:12px}
@@ -108,7 +111,7 @@ h1{font-size:25px;font-weight:600;letter-spacing:-.02em;margin:0;line-height:1}
 .dot.drain{background:var(--accent);box-shadow:0 0 0 4px color-mix(in srgb,var(--accent) 22%,transparent)}
 .dot.idle{background:var(--bad)}
 .dot.off{background:var(--faint)}
-.stxt{font-weight:600;font-size:17px}
+.stxt{font-weight:600;font-size:19px}
 .ssub{font-family:var(--mono);font-size:12px;color:var(--muted)}
 
 /* meter */
@@ -130,12 +133,13 @@ dd{margin:0;font-family:var(--mono);font-size:13.5px;text-align:right;
 
 /* controls */
 .btns{display:flex;flex-wrap:wrap;gap:8px}
-button{font-family:var(--sans);font-size:15px;font-weight:500;padding:12px 16px;
-  min-height:46px;border-radius:6px;border:1px solid var(--rule);
-  background:var(--sunk);color:var(--ink);cursor:pointer;flex:1 1 auto}
+button{font-family:var(--sans);font-size:14px;font-weight:500;padding:9px 14px;
+  min-height:40px;border-radius:7px;border:1px solid var(--rule);
+  background:var(--surface);color:var(--ink);cursor:pointer;flex:1 1 auto}
 button:hover{border-color:var(--accent)}
 button:active{transform:translateY(1px)}
-button.pri{background:var(--accent);border-color:var(--accent);color:#fff}
+button.pri{background:var(--accent);border-color:var(--accent);color:#fff;
+  font-weight:600}
 button.dang{background:transparent;border-color:var(--bad);color:var(--bad)}
 button:disabled{opacity:.45;cursor:not-allowed}
 button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
@@ -162,14 +166,20 @@ input[type=range]{flex:1;accent-color:var(--accent);height:34px}
 .err{color:var(--bad);font-family:var(--mono);font-size:12.5px;margin-top:10px}
 
 /* tabs */
-nav.tabs{grid-area:side;display:flex;flex-direction:column;gap:4px;
-  background:var(--sunk);padding:4px;border-radius:8px;
+nav.tabs{grid-area:side;display:flex;flex-direction:column;gap:2px;
+  background:transparent;padding:0;border-radius:8px;
   /* Sticky under the header, so the section switcher is reachable from
      anywhere in a 1300-clip list without scrolling back up. */
-  position:sticky;top:74px;align-self:start;margin-bottom:18px}
-nav.tabs button{min-height:42px;padding:9px 12px;border:none;background:transparent;
-  border-radius:6px;font-weight:600;font-size:14.5px;color:var(--muted);
-  text-align:left;width:100%;display:flex;align-items:center;gap:8px}
+  position:sticky;top:72px;align-self:start;margin-bottom:18px}
+nav.tabs button{min-height:40px;padding:8px 12px;border:none;background:transparent;
+  border-radius:8px;font-weight:600;font-size:14px;color:var(--muted);
+  text-align:left;width:100%;display:flex;align-items:center;gap:11px;
+  position:relative}
+nav.tabs button .ni{width:17px;height:17px;fill:currentColor;flex:none;opacity:.85}
+nav.tabs button[aria-selected=true]{background:var(--surface);color:var(--ink);
+  box-shadow:0 1px 3px #0002}
+nav.tabs button[aria-selected=true]::before{content:"";position:absolute;
+  left:-8px;top:7px;bottom:7px;width:3px;border-radius:2px;background:var(--accent)}
 @media(max-width:900px){
   nav.tabs{flex-direction:row;position:static;margin-bottom:18px;
     /* Six sections do not fit a phone's width, and wrapping put "Clear out"
@@ -238,8 +248,8 @@ nav.tabs button[aria-selected=true]{background:var(--surface);color:var(--ink);
 .search svg{position:absolute;left:10px;width:15px;height:15px;fill:var(--faint);
   pointer-events:none}
 .search input{width:100%;font-family:var(--sans);font-size:15px;
-  padding:9px 30px 9px 31px;border-radius:7px;border:1px solid var(--rule);
-  background:var(--surface);color:var(--ink);min-height:40px}
+  padding:9px 30px 9px 31px;border-radius:8px;border:1px solid var(--rule);
+  background:var(--surface);color:var(--ink);min-height:38px}
 .search input:focus{outline:2px solid var(--accent);outline-offset:-1px;
   border-color:var(--accent)}
 /* Suppress the native search clear so it does not sit beside our own. */
@@ -265,7 +275,9 @@ select.filter:focus{outline:2px solid var(--accent);outline-offset:-1px}
 .clip{display:flex;gap:12px;align-items:center;width:100%;text-align:left;
   padding:13px 12px;background:var(--surface);border:1px solid var(--rule);
   border-radius:8px;margin-bottom:8px;min-height:auto}
-.clip:hover{border-color:var(--accent)}
+.clip:hover{border-color:var(--accent);
+  background:color-mix(in srgb,var(--accent) 3%,var(--surface))}
+.conv:hover{background:color-mix(in srgb,var(--accent) 3%,var(--surface))}
 /* Skip layout and paint for rows that are scrolled out of sight.
  *
  * The recordings list can return a thousand rows and builds every one of
@@ -552,7 +564,7 @@ dialog.sheet .hint{font-family:var(--mono);font-size:12px;color:var(--muted);
 /* ---- device tab hierarchy ----
    Status is looked at daily; tap firmness is set once a year. A closed
    summary row is the difference between those two living in one list. */
-.hero .stxt{font-size:21px}
+.hero .stxt{font-size:22px}
 .hero .status{margin:2px 0 10px}
 .hero .btns{margin-top:14px}
 .hero .btns button{min-height:48px;font-size:15.5px}
@@ -856,10 +868,11 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
 .battspark .val{display:block;margin-top:2px;font-size:10.5px}
 
 /* ---- archive footer under the navigation ---- */
-.sidebar{grid-area:side;
+.sidebar{grid-area:side;display:flex;flex-direction:column;
   /* Full column height, so the sticky nav inside it has room to travel --
      align-self:start shrank this wrapper to its content, and a sticky
      element inside a content-sized box cannot stick at all. */}
+.archivefoot{margin-top:auto;padding-bottom:6px}
 .archivefoot{font-family:var(--mono);
   font-size:11px;color:var(--faint);padding:10px 4px 0;line-height:1.6}
 .archivefoot[hidden]{display:none}
@@ -922,17 +935,17 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
   <div class="sidebar">
   <nav class="tabs" role="tablist" aria-label="Sections"
        aria-orientation="vertical">
-    <button id="tabDev" type="button" role="tab" aria-controls="viewDev" aria-selected="true" tabindex="0">Device
+    <button id="tabDev" type="button" role="tab" aria-controls="viewDev" aria-selected="true" tabindex="0"><svg class="ni" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M7 4h10a3 3 0 0 1 3 3v10a3 3 0 0 1-3 3H7a3 3 0 0 1-3-3V7a3 3 0 0 1 3-3zm2 3h6v2H9V7zm0 4h6v2H9v-2zm0 4h6v2H9v-2z"/></svg><span>Recorders</span>
       <span class="tbadge" id="badgeDev" hidden></span></button>
-    <button id="tabRec" type="button" role="tab" aria-controls="viewRec" aria-selected="false" tabindex="-1">Recordings
+    <button id="tabRec" type="button" role="tab" aria-controls="viewRec" aria-selected="false" tabindex="-1"><svg class="ni" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3 3 8l9 5 9-5-9-5zm-6.5 8.6L3 13l9 5 9-5-2.5-1.4L12 15.6 5.5 11.6zm0 4.5L3 17.5l9 5 9-5-2.5-1.4L12 20.1 5.5 16.1z"/></svg><span>Archive</span>
       <span class="tbadge" id="badgeRec" hidden></span></button>
-    <button id="tabPpl" type="button" role="tab" aria-controls="viewPpl" aria-selected="false" tabindex="-1">People
+    <button id="tabPpl" type="button" role="tab" aria-controls="viewPpl" aria-selected="false" tabindex="-1"><svg class="ni" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M9 4a3.5 3.5 0 1 1 0 7 3.5 3.5 0 0 1 0-7zm7 1a3 3 0 1 1 0 6 3 3 0 0 1 0-6zM9 12.5c3.6 0 6.5 1.8 6.5 4v.5h-13v-.5c0-2.2 2.9-4 6.5-4zm7.5.6c2.1.5 3.5 1.8 3.5 3.4v.5h-4.2c0-1.6-.9-3-2.3-3.9h3z"/></svg><span>People</span>
       <span class="tbadge" id="badgePpl" hidden></span></button>
-    <button id="tabNotes" type="button" role="tab" aria-controls="viewNotes" aria-selected="false" tabindex="-1">Notes
+    <button id="tabNotes" type="button" role="tab" aria-controls="viewNotes" aria-selected="false" tabindex="-1"><svg class="ni" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M6 3h9l4 4v14H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zm8 1.5V8h3.5L14 4.5zM8 11h8v1.6H8V11zm0 3.5h8v1.6H8v-1.6zm0 3.5h5v1.6H8V18z"/></svg><span>Notes</span>
       <span class="tbadge" id="badgeNotes" hidden></span></button>
-    <button id="tabHeard" type="button" role="tab" aria-controls="viewHeard" aria-selected="false" tabindex="-1">Heard</button>
-    <button id="tabTidy" type="button" role="tab" aria-controls="viewTidy" aria-selected="false" tabindex="-1">Clear out</button>
-    <button id="tabSet" type="button" role="tab" aria-controls="viewSet" aria-selected="false" tabindex="-1">Settings</button>
+    <button id="tabHeard" type="button" role="tab" aria-controls="viewHeard" aria-selected="false" tabindex="-1"><svg class="ni" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 10h2v4H4v-4zm3.5-4h2v12h-2V6zM11 3h2v18h-2V3zm3.5 4h2v12h-2V6zM18 10h2v4h-2v-4z"/></svg><span>Sounds</span></button>
+    <button id="tabTidy" type="button" role="tab" aria-controls="viewTidy" aria-selected="false" tabindex="-1"><svg class="ni" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M9 3h6v2h5v2H4V5h5V3zm-3 6h2l1 12h6l1-12h2l-1.1 13.2a2 2 0 0 1-2 1.8H9.1a2 2 0 0 1-2-1.8L6 9zm4 2v9h1.5v-9H10zm3 0v9h1.5v-9H13z"/></svg><span>Clean up</span></button>
+    <button id="tabSet" type="button" role="tab" aria-controls="viewSet" aria-selected="false" tabindex="-1"><svg class="ni" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 8.5a3.5 3.5 0 1 1 0 7 3.5 3.5 0 0 1 0-7zm-2-5.5h4l.6 2.5 2.2.9 2.2-1.3 2.8 2.8-1.3 2.2.9 2.2 2.5.6v4l-2.5.6-.9 2.2 1.3 2.2-2.8 2.8-2.2-1.3-2.2.9-.6 2.5h-4l-.6-2.5-2.2-.9-2.2 1.3-2.8-2.8 1.3-2.2-.9-2.2L2 14v-4l2.5-.6.9-2.2L4.1 5l2.8-2.8L9.1 3.5l2.2-.9L12 3z"/></svg><span>Settings</span></button>
   </nav>
   <div class="archivefoot" id="archiveFoot" hidden></div>
   </div>
@@ -1480,6 +1493,7 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
         <option value="json">Data (.json)</option>
       </select>
         <button type="button" id="bSplit">Split by voice</button>
+        <button type="button" id="dRevert" hidden>Revert edits</button>
         <button type="button" class="dang" id="bDelete">Delete</button>
       </div>
       <div id="dMsg" role="status" style="font-family:var(--mono);font-size:12px;color:var(--muted);
@@ -1503,6 +1517,7 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
         <details class="moremenu" id="voiceMore">
           <summary>More</summary>
           <div class="menupanel">
+            <button type="button" id="bRematch">Rematch clips to voices</button>
             <button type="button" id="bVoiceScan">Scan for new voices</button>
             <button type="button" id="bConsolidateAll">Re-detect speakers everywhere</button>
             <button type="button" id="bVoiceRecheck">Recheck against named people</button>
@@ -1522,6 +1537,7 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
         <span class="count" id="voiceNearCount"></span>
         <button type="button" id="bVoiceConfirmAll" hidden></button>
       </div>
+      <p class="note" id="calibNote" hidden style="margin-top:2px"></p>
       <p class="note" id="voiceKbdHint" hidden>Keyboard, working down from
         the first voice: <b>space</b> plays it, <b>1</b> and <b>2</b> confirm
         the closest names, <b>n</b> types a name, <b>v</b> marks it as media,
@@ -1537,23 +1553,6 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
         takes the closest single voiceprint, so each one you add covers a condition
         the others do not. Remove one if it was the wrong person.</p>
       <div id="pplList"><div class="empty">loading…</div></div>
-    </div>
-
-    <div class="card">
-      <h2>Custom words</h2>
-      <p class="intro" style="font-size:14px;color:var(--muted);margin:0 0 12px">
-        Names, jargon, drug names — anything the transcriber gets wrong. These are
-        boosted while it listens and corrected afterwards, so
-        <em>met form in</em> comes back as the real word. Enrolled people are
-        included automatically. One per line.</p>
-      <textarea id="vocabBox" rows="7" aria-label="Custom words, one per line"
-        placeholder="Metformin&#10;Vinod&#10;nRF52840"
-        spellcheck="false" autocapitalize="off" style="width:100%"></textarea>
-      <div class="btns" style="margin-top:10px">
-        <button type="button" class="pri" id="bVocabSave">Save Word List</button>
-      </div>
-      <div id="vocabMsg" role="status" style="font-family:var(--mono);font-size:12px;
-           color:var(--muted);min-height:16px;margin-top:8px"></div>
     </div>
   </div>
 
@@ -1576,6 +1575,9 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
       </div>
       <label class="row" style="margin-top:0">Review conversations automatically
         <button type="button" class="switch" id="agentOn" role="switch" aria-checked="true"></button>
+      </label>
+      <label class="row">Group clips into conversations automatically
+        <button type="button" class="switch" id="convAuto" role="switch" aria-checked="true"></button>
       </label>
       <label class="row">Thinking with
         <select class="filter" id="agentBackend" aria-label="Where the agent runs">
@@ -1695,7 +1697,24 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
       <div id="settrans"><p class="note">loading…</p></div>
     </div>
 
-    <div class="card">
+        <div class="card">
+      <h2>Custom words</h2>
+      <p class="note" style="font-size:14px;margin:0 0 12px">
+        Names, jargon, drug names — anything the transcriber gets wrong. These are
+        boosted while it listens and corrected afterwards, so
+        <em>met form in</em> comes back as the real word. Enrolled people are
+        included automatically. One per line.</p>
+      <textarea id="vocabBox" rows="7" aria-label="Custom words, one per line"
+        placeholder="Metformin&#10;Vinod&#10;nRF52840"
+        spellcheck="false" autocapitalize="off" style="width:100%"></textarea>
+      <div class="btns" style="margin-top:10px">
+        <button type="button" class="pri" id="bVocabSave">Save Word List</button>
+      </div>
+      <div id="vocabMsg" role="status" style="font-family:var(--mono);font-size:12px;
+           color:var(--muted);min-height:16px;margin-top:8px"></div>
+    </div>
+
+<div class="card">
       <h2>API keys</h2>
       <p class="note">Kept on this machine, in <code>data/secrets.json</code>,
         readable only by you. A key entered here is never sent back to this
@@ -1709,6 +1728,7 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
     <div class="card">
       <h2>Archive</h2>
       <div id="setstats" class="note">loading…</div>
+      <div id="setmaint" style="margin-top:12px"></div>
     </div>
 
     <div class="card">
@@ -1849,6 +1869,7 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
 </dialog>
 
 <script>
+
 
 
 
@@ -3167,9 +3188,10 @@ function showTab(which){
   }
   if (which === "rec"){ loadClips(); loadPulse(); if ($("pulseCard").open) drawPulse(); }
   if (which === "dev") loadBattery();
-  if (which === "ppl"){ loadPeople(); loadVocab(); loadVoices(); pollBulk(); }
+  if (which === "ppl"){ loadPeople(); loadVoices(); pollBulk(); loadCalibration(); }
   if (which === "set") loadSettings();
-  if (which === "notes"){ loadAgent(); loadItems(); loadTopics(); loadDuplicates(); }
+  if (which === "notes"){ loadAgent(); loadItems(); loadTopics(); loadDuplicates(); loadConvAuto(); }
+  if (which === "set"){ loadSettings(); loadVocab(); }
   if (which === "heard") loadHeard();
   if (which === "tidy") loadTidy();
   currentTab = which;
@@ -4290,6 +4312,44 @@ on("bVoiceRecheck", "click", async () => {
   }catch(e){ log("recheck failed"); }
   finally{ b.disabled = false; b.textContent = "Recheck against named people"; }
 });
+/* Re-run matching from the stored voiceprints over the named clips. The
+   references have improved since some clips were labelled; this carries the
+   improvement backwards. */
+on("bRematch", "click", async () => {
+  const b = $("bRematch");
+  b.disabled = true; b.textContent = "rematching…";
+  try{
+    const r = await (await fetch("/api/rematch", {method: "POST",
+      headers: {"Content-Type": "application/json"}, body: "{}"})).json();
+    log(`rematched ${r.rematched ?? 0} clip(s) against the current voiceprints`);
+    loadVoices(); loadPeople();
+  }catch(e){ log("rematch failed"); }
+  finally{ b.disabled = false; b.textContent = "Rematch clips to voices"; }
+});
+
+/* What matching has learned, said once on the People tab: the thresholds
+   are argued from measurements, and this is where the measurements show. */
+async function loadCalibration(){
+  const el = $("calibNote");
+  if (!el) return;
+  try{
+    const c = await (await fetch("/api/calibration")).json();
+    if (!c.ready){
+      el.hidden = !(c.same_pairs || c.different_pairs);
+      if (el.hidden) return;
+      el.textContent = `Matching calibration: ${c.same_pairs || 0} same-voice `
+        + `and ${c.different_pairs || 0} different-voice pairs measured — `
+        + `not enough yet to trust thresholds against.`;
+    } else {
+      el.hidden = false;
+      el.textContent = `Matching calibration from ${c.same_pairs} same-voice `
+        + `and ${c.different_pairs} different-voice pairs: same-voice scores `
+        + `typically ${c.same?.p10 ?? "?"}–${c.same?.p90 ?? "?"} `
+        + `(median ${c.same?.median ?? "?"}), different-voice `
+        + `${c.different?.p90 ?? "?"}.`;
+    }
+  }catch(e){ el.hidden = true; }
+}
 on("bVoiceScan", "click", async () => {
   const b = $("bVoiceScan");
   b.disabled = true; b.textContent = "scanning…";
@@ -4664,7 +4724,12 @@ async function loadBattery(force){
   }
   g.stroke();
   const hrs = Math.min(48, Math.round((t1 - s[0].t) / 360) / 10);
-  $("battSparkNote").textContent = `battery, last ${hrs} hr`;
+  let curve = "";
+  try{
+    const c = await (await fetch("/api/battery/curve")).json();
+    if (c.samples) curve = ` · ${c.samples} calibration samples`;
+  }catch(e){}
+  $("battSparkNote").textContent = `battery, last ${hrs} hr${curve}`;
 }
 
 /* ---- archive at a glance ----
@@ -5599,6 +5664,8 @@ async function convOf(name){
 async function openClip(name){
   current = name;
   followIdx = -1;
+  armRevert = false;
+  $("dRevert").textContent = "Revert edits";
   miniDismissed = false;
   $("clipList").hidden = true;
   $("detail").hidden = false;
@@ -5613,6 +5680,10 @@ async function openClip(name){
   $("dFile").textContent = name;
   try{
     const m = await (await fetch("/api/clip/" + encodeURIComponent(name) + "/meta")).json();
+    /* A server that answers but has nothing usable in the answer (an older
+       build, an error object) is the same as no answer: the filename stays
+       the title rather than becoming "Invalid Date". */
+    if (typeof m.started !== "number" && typeof m.modified !== "number") throw 0;
     const when = m.time_known === false || !m.started
         ? new Date(m.modified * 1000).toLocaleString() + " — time unknown"
         : new Date(m.started * 1000).toLocaleString();
@@ -6515,11 +6586,14 @@ new ResizeObserver(() => drawWave()).observe($("wcanvas"));
 
 async function renderTranscript(name){
   const r = await fetch("/api/transcript/" + encodeURIComponent(name));
+  $("dRevert").hidden = true;
   if (!r.ok){
     $("dSegs").innerHTML = '<div class="empty">Not transcribed yet — press Transcribe.</div>';
     return;
   }
   const t = await r.json();
+  /* The button only exists when there is something to undo. */
+  $("dRevert").hidden = !t.edited;
   waveSegs = t.segments.map(s => ({start: s.start, end: s.end, speaker: s.speaker}));
   assignSpeakerColors([...new Set(t.segments.map(x => x.speaker).filter(Boolean))]);
   drawWave();
@@ -6764,6 +6838,34 @@ async function renderTranscript(name){
     hitAt = null;
   }
 }
+
+/* ---- reverting corrections ----
+   Every edit somebody makes is kept, which also means mistakes are kept.
+   This puts a clip's transcript back to what the model first produced --
+   two taps, because it discards work rather than creating it. */
+let armRevert = false;
+$("dRevert").onclick = async () => {
+  if (!current) return;
+  if (!armRevert){
+    armRevert = true;
+    $("dRevert").textContent = "Discard my corrections?";
+    msg("This puts every corrected line back to what the model first produced.", true);
+    setTimeout(() => { armRevert = false;
+      $("dRevert").textContent = "Revert edits"; }, 5000);
+    return;
+  }
+  armRevert = false;
+  $("dRevert").textContent = "Revert edits";
+  try{
+    const r = await fetch("/api/transcript/" + encodeURIComponent(current) + "/edits",
+                          {method: "DELETE"});
+    if (r.ok){
+      toast("Corrections reverted to the original transcript", "ok");
+      log(`reverted my edits on ${current}`);
+      renderTranscript(current);
+    } else msg((await r.json().catch(() => ({}))).detail || "could not revert", true);
+  }catch(e){ msg("could not reach the server", true); }
+};
 
 /* ---- the profile editor ----
    One sheet per person: who they are, how the name is said, what else they
@@ -7704,11 +7806,88 @@ async function loadKeys(){
   el.appendChild(foot);
 }
 
+/* The maintenance row pair: what the search layers hold, and the two
+   rebuilds that fix them when they drift. Both rebuilds are safe to run
+   while recording -- they read files and write derived data. */
+async function loadArchiveMaint(){
+  const el = $("setmaint");
+  let ix = null, sem = null;
+  try{ ix = await (await fetch("/api/index")).json(); }catch(e){}
+  try{ sem = await (await fetch("/api/search/semantic/stats")).json(); }catch(e){}
+  el.replaceChildren();
+  const row = (title, note, btnLabel, fn) => {
+    const d = document.createElement("div");
+    d.style.cssText = "padding:9px 0;border-top:1px solid var(--rule)";
+    const head = document.createElement("div");
+    head.style.cssText = "display:flex;gap:10px;align-items:center";
+    const b = document.createElement("button");
+    b.type = "button"; b.className = "pri";
+    b.style.cssText = "flex:0 0 auto;min-height:0;padding:6px 12px;font-size:13px";
+    b.textContent = btnLabel;
+    head.append(Object.assign(document.createElement("b"), {textContent: title}), b);
+    const p = document.createElement("p");
+    p.className = "note"; p.style.margin = "3px 0 0";
+    p.textContent = note;
+    d.append(head, p);
+    b.onclick = async () => {
+      b.disabled = true; b.textContent = "working…";
+      try{ await fn(); } finally { loadArchiveMaint(); }
+    };
+    d.append(head, p);
+    el.appendChild(d);
+  };
+  if (sem && sem.sqlite_vec){
+    row("Meaning search",
+      `${sem.lines.toLocaleString()} lines embedded across `
+      + `${sem.clips.toLocaleString()} clips`,
+      "Embed what is missing", async () => {
+        jobStart("embed", "embedding lines for meaning search…");
+        toast("Embedding started — this runs until every line is done", "info");
+        try{
+          const r = await fetch("/api/search/semantic/rebuild", {method: "POST"});
+          const d = await r.json();
+          toast(`Meaning search embedding finished: ${d.indexed ?? "?"} line(s)`, "ok");
+        }catch(e){ toast("Embedding could not finish — run it again", "bad"); }
+        jobEnd("embed");
+      });
+  } else if (sem){
+    row("Meaning search", "no vector store on this install", null, null);
+  }
+  if (ix){
+    row("Search index",
+      `${ix.clips.toLocaleString()} clips · ${ix.segments.toLocaleString()} segments`,
+      "Rebuild from files", async () => {
+        const d = await (await fetch("/api/index/rebuild", {method:"POST"})).json();
+        toast(`Index rebuilt: ${d.total ?? "?"} clip(s)`, "ok");
+        loadArchiveFoot();
+      });
+  }
+}
+
+/* Whether clips are gathered into conversations on their own. */
+async function loadConvAuto(){
+  try{
+    const a = await (await fetch("/api/conversation/auto")).json();
+    $("convAuto").setAttribute("aria-checked", String(!!a.enabled));
+  }catch(e){}
+}
+$("convAuto").onclick = async () => {
+  const on = $("convAuto").getAttribute("aria-checked") !== "true";
+  $("convAuto").setAttribute("aria-checked", String(on));
+  try{
+    await fetch("/api/conversation/auto", {method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({enabled: on})});
+    log(`automatic conversation grouping ${on ? "on" : "off"}`);
+  }catch(e){ log("could not reach the server"); }
+};
+
 async function loadSettings(){
   // First, and not behind the fetch below: the archive failing to load is no
   // reason to leave somebody unable to enter the key that would fix it.
   loadKeys();
   loadTranscriber();
+  loadArchiveMaint();
   let d;
   try { d = await (await fetch("/api/devices")).json(); }
   catch(e){ $("setdevices").innerHTML = "<p class=note>could not read the archive</p>"; return; }
@@ -8584,6 +8763,7 @@ loadBattery();
 $("pulseCard").open = pulseWanted();
 if (pulseWanted()) loadPulse();
 addEventListener("resize", () => { if ($("pulseCard").open) drawPulse(); });
+
 
 
 
