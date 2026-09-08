@@ -173,6 +173,35 @@ def searching():
     return on
 
 
+# Set when the device reports its own long press, which is the one gesture
+# their firmware acts on: turnoff_all(), mic and transport down. A recorder
+# that was switched off deliberately is not a recorder that failed, and the
+# difference is the whole point -- the daemon otherwise hunts a device that
+# is not coming back and the interface says "lost the link", which reads as
+# a fault somebody should chase.
+switched_off = {"at": None}
+
+MOMENTS = os.path.join(clipwriter.DATA, "moments.jsonl")
+
+
+def note_moment(kind, device_id=None, clip=None):
+    """A press, kept with the time it happened.
+
+    Every event is written, not only the interesting ones. "Did I turn it
+    off, or did it drop?" was unanswerable for two days, and the device knew
+    the whole time; a line per press costs nothing and settles it.
+    """
+    rec = {"at": time.time(), "kind": kind,
+           "device_id": device_id, "clip": clip}
+    try:
+        os.makedirs(clipwriter.DATA, exist_ok=True)
+        with open(MOMENTS, "a") as f:
+            f.write(json.dumps(rec) + "\n")
+    except OSError as e:
+        print(f"moment: {type(e).__name__}: {e}", flush=True)
+    return rec
+
+
 async def one_session(address, quiet=False, dev=None):
     """Catch up, then stream, until the link goes."""
     device_id = omi_capture.norm_id(address)
@@ -359,8 +388,35 @@ async def one_session(address, quiet=False, dev=None):
     began = time.time()
     pulse = asyncio.create_task(heartbeat())
     clipper = None
+
+    def on_button(code):
+        """What the device says about its own button.
+
+        Every press is written down. Only the long press changes what the
+        daemon does, because it is the only one the firmware itself acts on:
+        turnoff_all(), mic and transport down. Saying "switched off at 21:14"
+        instead of hunting a device that is not coming back is the whole
+        reason this is subscribed to.
+        """
+        name = omi_capture.BUTTON_EVENTS.get(code, f"button {code}")
+        # Press and release bracket every tap, so filing them too would make
+        # three lines out of one gesture and bury the gesture.
+        if code in (omi_capture.BTN_PRESS, omi_capture.BTN_RELEASE):
+            return
+        # No clip name: capture() returns the clipper when the session ends,
+        # so during the session there is nothing here to ask, and the clip
+        # being written has no name until it is flushed anyway. The time is
+        # the anchor -- every clip carries the span it covers, so the clip a
+        # moment fell inside is a lookup rather than something to store.
+        note_moment(name, device_id=device_id)
+        print(f"button: {name}", flush=True)
+        if code == omi_capture.TAP_LONG:
+            switched_off["at"] = time.time()
+            publish(state="switched off", address=address, stats=stats)
+
     try:
         clipper = await omi_capture.capture(address, quiet=quiet, dev=dev,
+                                            on_button=on_button,
                                             on_progress=beat.update,
                                             # Off means off now, not at the
                                             # end of whatever this is: the
@@ -590,10 +646,17 @@ async def run(address=None, quiet=False):
             try:
                 await one_session(addr, quiet=quiet, dev=sighted)
                 tries = 0            # a session that ran is a success
-                publish(state="waiting", address=addr)
+                publish(state=("switched off" if switched_off["at"]
+                               else "waiting"), address=addr)
             except Exception as e:
                 print(f"session: {type(e).__name__}: {e}", flush=True)
-                publish(state="lost", address=addr, error=str(e)[:120])
+                # A device that told us it was powering down did not fail.
+                # Reporting "lost the link" for a deliberate long press is
+                # how somebody comes to chase a fault that is a switch.
+                if switched_off["at"]:
+                    publish(state="switched off", address=addr)
+                else:
+                    publish(state="lost", address=addr, error=str(e)[:120])
         else:
             publish(state="not found")
 
@@ -611,6 +674,13 @@ async def run(address=None, quiet=False):
             if sighted is not None:
                 print("saw it advertise -- connecting now", flush=True)
                 tries = 0
+                # Advertising again means somebody switched it back on. The
+                # flag has to clear here rather than on the next successful
+                # session, or one long press would mark the recorder off for
+                # the rest of the daemon's life.
+                if switched_off["at"]:
+                    print("back on after a long press", flush=True)
+                    switched_off["at"] = None
         else:
             await asyncio.sleep(wait)
 

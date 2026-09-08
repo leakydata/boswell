@@ -597,7 +597,8 @@ def test_recording_is_claimed_only_once_audio_arrives():
 def test_connecting_does_not_count_as_connected():
     # Otherwise the panel, the badge and the diagnosis all inherit the lie.
     src = read_file("web/server.py")
-    away = src[src.index("_AWAY = "):src.index("_AWAY = ") + 320]
+    away = src[src.index("_AWAY = "):]
+    away = away[:away.index("\n\n\ndef ")]
     assert '"connecting"' in away
 
 
@@ -768,7 +769,12 @@ def test_connected_means_notifications_are_running():
     # and cannot subscribe has no audio path and is not a working link.
     src = read_file("host/omi_capture.py")
     i = src.index("await client.start_notify(OMI_AUDIO, on_frame)")
-    assert "on_connected" in src[i:i + 400]
+    # Ordering, not proximity: other things may reasonably happen on the
+    # connection in between -- the button subscribes here too -- and a fixed
+    # window turns adding one into a failing test about something else.
+    rest = src[i:]
+    assert "on_connected()" in rest
+    assert rest.index("on_connected()") < rest.index("started = time.time()")
 
 
 def test_a_recorder_that_was_just_seen_is_not_looked_for_again():

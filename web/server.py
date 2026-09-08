@@ -1937,6 +1937,11 @@ async def api_envelope(name: str):
 # had a diagnosis panel report a recorder as connected two hours after it
 # stopped recording, which is the exact failure that panel exists to prevent.
 _AWAY = ("not found", "looking", "lost", "waiting", "stopped", "not paired",
+         # Off because somebody held the button for three seconds, which
+         # their firmware acts on by shutting the microphone and the radio
+         # down. Not connected, and -- unlike every other state here -- not
+         # a thing to worry about either.
+         "switched off",
          # Trying, and not there yet. Counting this as connected is how a
          # failing session came to be reported as a working one.
          "connecting")
@@ -2963,6 +2968,37 @@ async def api_transcribe_all():
 async def api_queue():
     return {"pending": worker.q.qsize(), "busy": worker.busy,
             "auto": auto_transcribe}
+
+
+@app.get("/api/moments")
+async def api_moments(limit: int = 200):
+    """Button presses on the recorder, newest first.
+
+    The device reports every press and nothing was listening, so "did I turn
+    it off, or did it drop?" was unanswerable for two days while the device
+    knew the whole time. A double tap is a bookmark; a long press is the
+    firmware powering itself down.
+
+    No clip is stored against a press. Every clip carries the span it covers,
+    so which clip a moment fell inside is a lookup, and one that stays right
+    when a clip is re-transcribed or split.
+    """
+    path = os.path.join(DATA, "moments.jsonl")
+    out = []
+    try:
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    out.append(json.loads(line))
+                except ValueError:
+                    pass
+    except FileNotFoundError:
+        return {"moments": []}
+    out.reverse()
+    return {"moments": out[:limit]}
 
 
 @app.get("/api/ui_version")

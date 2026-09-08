@@ -63,6 +63,22 @@ OMI_FEATURES   = "19b10021-e8f2-537e-4f6c-d104768a1214"   # capability bits
 OMI_TIME_READ  = "19b10032-e8f2-537e-4f6c-d104768a1214"   # its clock, epoch
 OMI_TIME_WRITE = "19b10031-e8f2-537e-4f6c-d104768a1214"   # set its clock
 
+# The button. Their firmware notifies an eight-byte payload whose first
+# little-endian int is the event -- omi/src/lib/core/button.c, which is also
+# where the timings come from: a tap is under 300 ms, a double tap closes
+# inside 600 ms, and a long press is three seconds.
+#
+# Only the long press does anything on the device, and what it does is
+# turnoff_all(): mic off, transport off, speaker and accelerometer off. A
+# real power-down, not a sleep. Single and double tap notify and nothing
+# more -- the recording toggle people remember was the phone app acting on
+# these, so with the app gone they had nowhere to go.
+OMI_BUTTON = "23ba7925-0000-1000-7450-346eac492e92"
+TAP_SINGLE, TAP_DOUBLE, TAP_LONG, BTN_PRESS, BTN_RELEASE = 1, 2, 3, 4, 5
+BUTTON_EVENTS = {TAP_SINGLE: "tap", TAP_DOUBLE: "double tap",
+                 TAP_LONG: "long press", BTN_PRESS: "press",
+                 BTN_RELEASE: "release"}
+
 BATTERY   = "00002a19-0000-1000-8000-00805f9b34fb"
 MODEL     = "00002a24-0000-1000-8000-00805f9b34fb"
 FIRMWARE  = "00002a26-0000-1000-8000-00805f9b34fb"
@@ -358,7 +374,7 @@ async def bluez_device(address):
 
 async def capture(address, seconds=None, quiet=False, on_progress=None,
                   should_stop=None, on_stats=None, stats_every=60,
-                  on_tick=None, on_connected=None, dev=None):
+                  on_tick=None, on_connected=None, dev=None, on_button=None):
     """Stream from one Omi until interrupted, filing clips as it goes.
 
     `on_stats` is handed the readings that change while it runs -- battery
@@ -408,6 +424,28 @@ async def capture(address, seconds=None, quiet=False, on_progress=None,
                 reboots[0] += 1
 
         await client.start_notify(OMI_AUDIO, on_frame)
+
+        # The button, on the connection that is already open.
+        #
+        # Wrapped, and never fatal: this is a convenience, and a recorder
+        # that streams audio but cannot report its own button is worth far
+        # more than one that refuses to start because a characteristic was
+        # missing. Older firmware may not carry the service at all.
+        if on_button:
+            def _on_button(_h, data):
+                if len(data) < 4:
+                    return
+                code = int.from_bytes(bytes(data[:4]), "little")
+                try:
+                    on_button(code)
+                except Exception:
+                    pass
+            try:
+                await client.start_notify(OMI_BUTTON, _on_button)
+            except Exception as e:
+                if not quiet:
+                    print(f"button: {type(e).__name__}: {e}", flush=True)
+
         # Only now is there a link. Anything published before this describes
         # an intention, not a connection, and saying so is how a device that
         # was never reached came to be reported as connecting.
