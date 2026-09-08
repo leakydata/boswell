@@ -133,9 +133,15 @@ dd{margin:0;font-family:var(--mono);font-size:13.5px;text-align:right;
 
 /* controls */
 .btns{display:flex;flex-wrap:wrap;gap:8px}
-button{font-family:var(--sans);font-size:14px;font-weight:500;padding:9px 14px;
-  min-height:40px;border-radius:7px;border:1px solid var(--rule);
+button{font-family:var(--sans);font-size:13.5px;font-weight:500;padding:6px 11px;
+  min-height:34px;border-radius:7px;border:1px solid var(--rule);
   background:var(--surface);color:var(--ink);cursor:pointer;flex:1 1 auto}
+/* Phones keep full-size targets; a mouse does not need a button the size
+   of a fingertip. */
+@media (pointer:coarse){
+  button{min-height:42px;padding:10px 15px;font-size:14.5px}
+  .card{padding:16px}
+}
 button:hover{border-color:var(--accent)}
 button:active{transform:translateY(1px)}
 button.pri{background:var(--accent);border-color:var(--accent);color:#fff;
@@ -268,7 +274,7 @@ select.filter{font-family:var(--sans);font-size:14px;padding:9px 30px 9px 11px;
   background-size:5px 5px,5px 5px;background-repeat:no-repeat}
 select.filter:focus{outline:2px solid var(--accent);outline-offset:-1px}
 .toolbar2{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:14px}
-.toolbar2 button{flex:0 0 auto;min-height:38px;padding:8px 14px;font-size:14px}
+.toolbar2 button{flex:0 0 auto;min-height:34px;padding:6px 12px;font-size:13.5px}
 .count{font-family:var(--mono);font-size:12px;color:var(--muted);margin-right:auto}
 
 /* clip list */
@@ -794,6 +800,46 @@ select.speed{min-height:0;padding:5px 26px 5px 9px;font-size:12.5px;
   .setcols{grid-template-columns:1fr 1fr;align-items:start}
   .setcols .card:first-child{grid-column:1/-1}
 }
+
+/* ---- People: two-pane workspace ----
+   A queue you work and a directory you consult, each master on the left
+   and detail on the right. One voice on screen at a time is the point:
+   the stacked-card version made twenty voices two and a half screens of
+   chrome before any of them was heard. */
+.split{display:grid;grid-template-columns:minmax(230px,300px) minmax(0,1fr);
+  gap:14px;align-items:start}
+.splitlist{display:flex;flex-direction:column;gap:5px;
+  max-height:calc(100vh - 300px);overflow-y:auto;padding-right:2px}
+.splitdetail{max-height:calc(100vh - 260px);overflow-y:auto;
+  padding-right:4px}
+@media(max-width:900px){
+  .split{grid-template-columns:1fr}
+  .splitlist{max-height:32vh}
+  .splitdetail{max-height:none}
+}
+.vrow{display:flex;flex-direction:column;gap:1px;align-items:flex-start;
+  min-height:0;padding:8px 11px;text-align:left;width:100%}
+.vrow .vname{font-weight:600;font-size:14px;color:var(--ink)}
+.vrow .vmeta,.vrow .vscore{font-family:var(--mono);font-size:11.5px;
+  color:var(--muted)}
+.vrow.on{border-color:var(--accent);
+  background:color-mix(in srgb,var(--accent) 8%,var(--surface))}
+.vhead{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;margin-bottom:6px}
+.vhead h3{margin:0;font-size:17px}
+.vclosest{font-family:var(--mono);font-size:12px;color:var(--muted);
+  margin:0 0 8px}
+.vtext{font-size:13px;color:var(--muted);line-height:1.5;max-height:60px;
+  overflow:hidden;margin:0 0 8px}
+.candrow{display:flex;gap:10px;align-items:center;padding:6px 0;
+  border-bottom:1px solid var(--rule)}
+.candname{font-weight:600;flex:1}
+.candscore{font-family:var(--mono);font-size:11.5px;color:var(--faint)}
+.namerow{display:flex;gap:8px;align-items:center;margin-top:10px}
+.namerow input{flex:1;min-width:120px;padding:8px 10px;border-radius:7px;
+  border:1px solid var(--rule);background:var(--paper);color:var(--ink)}
+.vmsg{font-family:var(--mono);font-size:11.5px;color:var(--muted);flex:none}
+.asidebar{display:flex;gap:8px;margin-top:10px}
+.asidebar .aux{min-height:0;padding:5px 10px;font-size:12.5px}
 
 /* ---- people profile editor ---- */
 dialog.sheet .prow{display:flex;flex-direction:column;gap:4px;margin-bottom:11px;
@@ -1542,7 +1588,12 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
         the first voice: <b>space</b> plays it, <b>1</b> and <b>2</b> confirm
         the closest names, <b>n</b> types a name, <b>v</b> marks it as media,
         <b>i</b> sets it aside.</p>
-      <div id="voiceQueue"><div class="empty">loading…</div></div>
+      <!-- A queue you work, not a wall you scroll: the list is one line per
+           voice, the right side is everything about the voice being worked. -->
+      <div class="split">
+        <div class="splitlist" id="voiceList"><div class="empty">loading…</div></div>
+        <div class="splitdetail" id="voiceDetail"><div class="empty">loading…</div></div>
+      </div>
     </div>
 
     <div class="card">
@@ -1552,7 +1603,10 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
         different in a quiet room, outdoors, or over a bad connection, and matching
         takes the closest single voiceprint, so each one you add covers a condition
         the others do not. Remove one if it was the wrong person.</p>
-      <div id="pplList"><div class="empty">loading…</div></div>
+      <div class="split">
+        <div class="splitlist" id="peopleList"><div class="empty">loading…</div></div>
+        <div class="splitdetail" id="peopleDetail"><div class="empty">loading…</div></div>
+      </div>
     </div>
   </div>
 
@@ -1869,6 +1923,8 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
 </dialog>
 
 <script>
+
+
 
 
 
@@ -3529,180 +3585,211 @@ function fmtMins(sec){
 }
 
 async function loadPeople(){
-  const el = $("pplList");
-  skeleton(el, 2, "skelcard");
+  const list = $("peopleList"), detail = $("peopleDetail");
+  skeleton(list, 6, "skelrow");
   try{
     const people = await (await fetch("/api/speakers")).json();
     loadArchiveFoot();
+    peopleRows = people;
     if (!people.length){
-      el.innerHTML = '<div class="empty">Nobody enrolled yet. Name a speaker on a recording.</div>';
+      list.innerHTML = '<div class="empty">Nobody enrolled yet. Name a speaker on a recording.</div>';
+      detail.replaceChildren();
+      const d = document.createElement("div");
+      d.className = "empty";
+      d.textContent = "Nobody enrolled yet.";
+      detail.appendChild(d);
       return;
     }
-    el.innerHTML = "";
-    for (const p of people){
-      const d = document.createElement("div");
-      d.className = "person";
-      /* Built as nodes, not markup. A speaker name is typed by a person and
-         goes straight into the page; interpolating it into innerHTML made
-         the one field a user actually authors the one field that was not
-         escaped. The clip name comes off the filesystem, which is no safer. */
-      const h = document.createElement("h3");
-      h.textContent = p.name;
-      const cnt = document.createElement("span");
-      cnt.className = "cnt";
-      cnt.textContent = `${p.count} voiceprint${p.count === 1 ? "" : "s"}`
-                      + (p.kind === "media" ? " · media" : "")
-                      + (p.role ? ` · ${p.role}` : "");
-      h.appendChild(cnt);
-      d.appendChild(h);
-
-      /* A named voice can still be something off a screen. Tagging it stops
-         it competing for identity against the people actually in the room --
-         a YouTube narrator sat under a real name here for weeks -- while its
-         words stay searchable and its voiceprints stay as the only
-         cross-condition reference data in the archive. */
-      /* A profile starts as a name and gains the rest whenever somebody
-         feels like it. Asking for a role and a note at naming time would put
-         two optional questions in front of the one that matters, and the
-         answer to "who is this" is usually just a name.
-         Renaming here carries the new name out to every recording that
-         mentions the old one -- the transcripts hold a copy, so without that
-         the store and the archive would disagree about who somebody is. */
-      const prof = document.createElement("div");
-      prof.className = "samp";
-      const rename = document.createElement("button");
-      rename.textContent = "Rename";
-      rename.title = "Changes the name here and on every clip that says it";
-      rename.onclick = async () => {
-        const to = prompt(`Rename ${p.name} to:`, p.name);
-        if (!to || to.trim() === p.name) return;
-        const r = await fetch(`/api/voices/${p.person_id}/name`, {
-          method: "POST", headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({name: to.trim()})});
-        const b = await r.json().catch(() => ({}));
-        if (r.ok) log(`renamed to ${b.name}`
-                      + (b.renamed_clips ? ` on ${b.renamed_clips} clip(s)` : ""));
-        else log(b.detail || "could not rename");
-        loadPeople(); loadVoices();
-      };
-      /* The profile is more than the role now — pronunciation, the names
-         somebody also goes by, notes — which is a sheet's worth of fields,
-         not a row. What is known shows on the card; the rest is one press
-         away. */
-      const facts = [p.role, p.pronunciation ? `says: ${p.pronunciation}` : null,
-                     p.aliases && p.aliases.length
-                       ? `also: ${p.aliases.join(", ")}` : null]
-        .filter(Boolean);
-      if (facts.length){
-        const f = document.createElement("p");
-        f.className = "personfacts";
-        f.textContent = facts.join(" · ");
-        d.appendChild(f);
-      }
-      if (p.note){
-        const n = document.createElement("p");
-        n.className = "personnote";
-        n.textContent = p.note;
-        d.appendChild(n);
-      }
-      const editProf = document.createElement("button");
-      editProf.textContent = "Profile";
-      editProf.title = "Role, pronunciation, other names, notes";
-      editProf.onclick = () => openProfileEditor(p);
-      prof.append(rename, editProf);
-      d.appendChild(prof);
-
-      const kind = document.createElement("button");
-      kind.textContent = p.kind === "media" ? "Treat as a person" : "It's a video";
-      kind.style.cssText = "margin-right:8px";
-      kind.title = p.kind === "media"
-        ? "Let this voice be matched against people again"
-        : "Off a screen, not in the room: keep the transcripts, stop the matching";
-      kind.onclick = async () => {
-        kind.disabled = true;
-        await fetch(`/api/voices/${p.person_id}/kind`, {
-          method:"POST", headers:{"Content-Type":"application/json"},
-          body: JSON.stringify({kind: p.kind === "media" ? "person" : "media"})});
-        log(`${p.name}: ${p.kind === "media" ? "treated as a person" : "tagged as media"}`);
-        loadPeople();
-      };
-      d.appendChild(kind);
-      /* References that arrived as one named cluster, described as a group
-         with a way back. Naming is one click that can attach hundreds of
-         voiceprints; undoing it should not mean deleting them one at a time. */
-      for (const g of (p.groups || [])){
-        const row = document.createElement("div");
-        row.className = "samp";
-        const s1 = document.createElement("span");
-        s1.textContent = `${g.count} voiceprint${g.count === 1 ? "" : "s"} `
-          + (g.untracked ? "acquired by naming a voice"
-                         : `from unidentified voice #${g.source_cluster}`)
-          + (g.seconds ? ` · ${fmtMins(g.seconds)} across ${g.clips} clip`
-                       + `${g.clips === 1 ? "" : "s"}` : "");
-        const undo = document.createElement("button");
-        undo.textContent = "Not them";
-        undo.title = "Put these back as an unidentified voice. Nothing is deleted.";
-        undo.onclick = async () => {
-          undo.disabled = true;
-          const r = await fetch(`/api/speaker/${p.person_id}/ungroup/${g.source_cluster}`,
-                                {method:"POST"});
-          const b = await r.json().catch(() => ({}));
-          if (r.ok) log(`put ${b.moved} voiceprint(s) back as voice #${b.cluster}`);
-          loadPeople(); loadVoices();
-        };
-        row.appendChild(s1); row.appendChild(undo);
-        d.appendChild(row);
-      }
-      if (p.singles_total > p.samples.length){
-        const note = document.createElement("div");
-        note.className = "samp";
-        note.style.color = "var(--muted)";
-        note.textContent = `showing the ${p.samples.length} most recent of `
-                         + `${p.singles_total} individually added`;
-        d.appendChild(note);
-      }
-      for (const e of p.samples){
-        const row = document.createElement("div");
-        row.className = "samp";
-        const bits = [];
-        if (e.legacy) bits.push(`earlier labels (weight ${e.weight})`);
-        if (e.clip) bits.push(e.clip);
-        if (e.seconds) bits.push(`${e.seconds}s`);
-        if (e.score !== null && e.score !== undefined) bits.push(`match ${e.score}`);
-        const s1 = document.createElement("span");
-        s1.className = "s1";
-        s1.textContent = bits.join(" · ") || "sample";
-        row.appendChild(s1);
-        const rm = document.createElement("button");
-        rm.textContent = "Remove";
-        rm.onclick = async () => {
-          await fetch(`/api/speaker/${encodeURIComponent(p.name)}/sample/${e.id}`,
-                      {method:"DELETE"});
-          log(`removed a sample from ${p.name}`);
-          loadPeople();
-        };
-        row.appendChild(rm);
-        d.appendChild(row);
-      }
-      const del = document.createElement("button");
-      del.className = "dang";
-      del.style.marginTop = "12px";
-      del.textContent = `Forget ${p.name}`;
-      let armed = false;
-      del.onclick = async () => {
-        if (!armed){ armed = true; del.textContent = "Tap again to forget";
-          setTimeout(() => { armed = false; del.textContent = `Forget ${p.name}`; }, 4000);
-          return; }
-        await fetch(`/api/speaker/${encodeURIComponent(p.name)}`, {method:"DELETE"});
-        log(`forgot ${p.name}`);
-        loadPeople();
-      };
-      d.appendChild(del);
-      el.appendChild(d);
-    }
-  }catch(e){ el.innerHTML = '<div class="empty">could not load people</div>'; }
+    peopleCursor = Math.max(0, Math.min(peopleCursor, people.length - 1));
+    list.replaceChildren();
+    people.forEach((p, i) => {
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = "vrow";
+      row.innerHTML =
+        `<span class="vname">${esc(p.name)}${p.kind === "media" ? " 📺" : ""}</span>`
+        + `<span class="vmeta">${p.count} voiceprint${p.count === 1 ? "" : "s"}`
+        + `${p.role ? " · " + esc(p.role) : ""}</span>`;
+      row.onclick = () => selectPerson(i);
+      list.appendChild(row);
+    });
+    selectPerson(peopleCursor);
+  }catch(e){ console.error("loadPeople:", e);
+             list.innerHTML = '<div class="empty">could not load people</div>'; }
 }
 
+/* One person, whole: identity, the references behind it, and the ways in
+   and out. Everything here acts on the selected person and then re-renders
+   both panes. */
+function renderPersonDetail(){
+  const el = $("peopleDetail");
+  const p = peopleRows[peopleCursor];
+  el.replaceChildren();
+  if (!p){
+    const d = document.createElement("div");
+    d.className = "empty"; d.textContent = "Select a person on the left.";
+    el.appendChild(d);
+    return;
+  }
+  const d = document.createElement("div");
+  d.className = "person";
+
+  const h = document.createElement("h3");
+  h.textContent = p.name;
+  const cnt = document.createElement("span");
+  cnt.className = "cnt";
+  cnt.textContent = `${p.count} voiceprint${p.count === 1 ? "" : "s"}`
+                  + (p.kind === "media" ? " · media" : "")
+                  + (p.role ? ` · ${p.role}` : "");
+  h.appendChild(cnt);
+  d.appendChild(h);
+
+  const facts = [p.pronunciation ? `says: ${p.pronunciation}` : null,
+                 p.aliases && p.aliases.length ? `also: ${p.aliases.join(", ")}` : null]
+    .filter(Boolean);
+  if (facts.length){
+    const f = document.createElement("p");
+    f.className = "personfacts";
+    f.textContent = facts.join(" · ");
+    d.appendChild(f);
+  }
+  if (p.note){
+    const n = document.createElement("p");
+    n.className = "personnote";
+    n.textContent = p.note;
+    d.appendChild(n);
+  }
+
+  /* Renaming carries the new name out to every recording that mentions the
+     old one -- the transcripts hold a copy, so without that the store and
+     the archive would disagree about who somebody is. */
+  const prof = document.createElement("div");
+  prof.className = "samp";
+  const rename = document.createElement("button");
+  rename.textContent = "Rename";
+  rename.title = "Changes the name here and on every clip that says it";
+  rename.onclick = async () => {
+    const to = prompt(`Rename ${p.name} to:`, p.name);
+    if (!to || to.trim() === p.name) return;
+    const r = await fetch(`/api/voices/${p.person_id}/name`, {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({name: to.trim()})});
+    const b = await r.json().catch(() => ({}));
+    if (r.ok) log(`renamed to ${b.name}`
+                  + (b.renamed_clips ? ` on ${b.renamed_clips} clip(s)` : ""));
+    else log(b.detail || "could not rename");
+    loadPeople(); loadVoices();
+  };
+  const editProf = document.createElement("button");
+  editProf.textContent = "Profile";
+  editProf.title = "Role, pronunciation, other names, notes";
+  editProf.onclick = () => openProfileEditor(p);
+  prof.append(rename, editProf);
+  d.appendChild(prof);
+
+  /* A named voice can still be something off a screen. Tagging it stops it
+     competing for identity against the people actually in the room, while
+     its words stay searchable. */
+  const kind = document.createElement("button");
+  kind.textContent = p.kind === "media" ? "Treat as a person" : "It's a video";
+  kind.title = p.kind === "media"
+    ? "Let this voice be matched against people again"
+    : "Off a screen, not in the room: keep the transcripts, stop the matching";
+  kind.onclick = async () => {
+    kind.disabled = true;
+    await fetch(`/api/voices/${p.person_id}/kind`, {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({kind: p.kind === "media" ? "person" : "media"})});
+    log(`${p.name}: ${p.kind === "media" ? "treated as a person" : "tagged as media"}`);
+    loadPeople();
+  };
+  d.appendChild(kind);
+
+  /* References that arrived as one named cluster, described as a group with
+     a way back. Naming is one click that can attach hundreds of voiceprints;
+     undoing it should not mean deleting them one at a time. */
+  for (const g of (p.groups || [])){
+    const row = document.createElement("div");
+    row.className = "samp";
+    const s1 = document.createElement("span");
+    s1.textContent = `${g.count} voiceprint${g.count === 1 ? "" : "s"} `
+      + (g.untracked ? "acquired by naming a voice"
+                     : `from unidentified voice #${g.source_cluster}`)
+      + (g.seconds ? ` · ${fmtMins(g.seconds)} across ${g.clips} clip`
+                   + `${g.clips === 1 ? "" : "s"}` : "");
+    const undo = document.createElement("button");
+    undo.textContent = "Not them";
+    undo.title = "Put these back as an unidentified voice. Nothing is deleted.";
+    undo.onclick = async () => {
+      undo.disabled = true;
+      const r = await fetch(`/api/speaker/${p.person_id}/ungroup/${g.source_cluster}`,
+                            {method:"POST"});
+      const b = await r.json().catch(() => ({}));
+      if (r.ok) log(`put ${b.moved} voiceprint(s) back as voice #${b.cluster}`);
+      loadPeople(); loadVoices();
+    };
+    row.appendChild(s1); row.appendChild(undo);
+    d.appendChild(row);
+  }
+  if (p.singles_total > p.samples.length){
+    const note = document.createElement("div");
+    note.className = "samp";
+    note.style.color = "var(--muted)";
+    note.textContent = `showing the ${p.samples.length} most recent of `
+                     + `${p.singles_total} individually added`;
+    d.appendChild(note);
+  }
+  for (const e of p.samples){
+    const row = document.createElement("div");
+    row.className = "samp";
+    const bits = [];
+    if (e.legacy) bits.push(`earlier labels (weight ${e.weight})`);
+    if (e.clip) bits.push(e.clip);
+    if (e.seconds) bits.push(`${e.seconds}s`);
+    if (e.score !== null && e.score !== undefined) bits.push(`match ${e.score}`);
+    const s1 = document.createElement("span");
+    s1.className = "s1";
+    s1.textContent = bits.join(" · ") || "sample";
+    row.appendChild(s1);
+    const rm = document.createElement("button");
+    rm.textContent = "Remove";
+    rm.onclick = async () => {
+      await fetch(`/api/speaker/${encodeURIComponent(p.name)}/sample/${e.id}`,
+                  {method:"DELETE"});
+      log(`removed a sample from ${p.name}`);
+      loadPeople();
+    };
+    row.appendChild(rm);
+    d.appendChild(row);
+  }
+  const del = document.createElement("button");
+  del.className = "dang";
+  del.style.marginTop = "12px";
+  del.textContent = `Forget ${p.name}`;
+  let armed = false;
+  del.onclick = async () => {
+    if (!armed){ armed = true; del.textContent = "Tap again to forget";
+      setTimeout(() => { armed = false; del.textContent = `Forget ${p.name}`; }, 4000);
+      return; }
+    await fetch(`/api/speaker/${encodeURIComponent(p.name)}`, {method:"DELETE"});
+    log(`forgot ${p.name}`);
+    peopleCursor = 0;
+    loadPeople(); loadVoices();
+  };
+  d.appendChild(del);
+  el.appendChild(d);
+}
+
+function selectPerson(i){
+  peopleCursor = Math.max(0, Math.min(peopleRows.length - 1, i));
+  [...$("peopleList").children].forEach((row, k) =>
+    row.classList.toggle("on", k === peopleCursor));
+  const row = $("peopleList").children[peopleCursor];
+  if (row) row.scrollIntoView({block: "nearest"});
+  renderPersonDetail();
+}
+let peopleRows = [];
+let peopleCursor = 0;
 /* ---- unidentified voices ---- */
 
 /* Media is hidden by default. Knowing a voice came off a screen is a complete
@@ -3762,9 +3849,9 @@ function syncVoiceNear(){
 let voiceCards = [];
 
 async function loadVoices(){
-  const el = $("voiceQueue");
+  const list = $("voiceList"), detail = $("voiceDetail");
   voiceCards = [];
-  skeleton(el, 3, "skelcard");
+  skeleton(list, 7, "skelrow");
   try{
     const q = await (await fetch(
       `/api/voices/queue?limit=40&include_media=${showMedia}`
@@ -3772,13 +3859,18 @@ async function loadVoices(){
       + `&days=${recentOnly ? 2 : 0}`)).json();
     $("voiceCount").textContent = q.length
       ? `${q.length} unnamed voice${q.length === 1 ? "" : "s"}` : "";
+    const emptyMsg = showIgnored ? 'Nothing has been set aside yet.'
+      : showMedia ? 'Nothing tagged as media yet.'
+      : recentOnly ? 'Nobody new in the last two days. Nothing to do.'
+      : 'No unidentified voices. Run a scan if new recordings have come in.';
     if (!q.length){
-      el.innerHTML = '<div class="empty">'
-        + (showIgnored ? 'Nothing has been set aside yet.'
-           : showMedia ? 'Nothing tagged as media yet.'
-           : recentOnly ? 'Nobody new in the last two days. Nothing to do.'
-           : 'No unidentified voices. Run a scan if new recordings have come in.')
-        + '</div>';
+      list.innerHTML = `<div class="empty">${emptyMsg}</div>`;
+      detail.replaceChildren();
+      const d = document.createElement("div");
+      d.className = "empty"; d.textContent = emptyMsg;
+      detail.appendChild(d);
+      $("voiceKbdHint").hidden = true;
+      badge("badgePpl", 0);
       return;
     }
     /* The names the queue is actually near, built from the queue itself so it
@@ -3804,172 +3896,208 @@ async function loadVoices(){
     voiceNearShown = voiceNear ? shown : [];
     syncVoiceNear();
 
-    el.innerHTML = "";
-    for (const v of shown){
-      const d = document.createElement("div");
-      d.className = "row kcard";
-      d.style.cssText = "flex-direction:column;align-items:stretch;gap:8px";
-
-      const head = document.createElement("div");
-      head.style.cssText = "display:flex;gap:10px;align-items:baseline;flex-wrap:wrap";
-      const who = document.createElement("strong");
-      who.textContent = (v.kind === "ignored" ? "Set aside · voice #"
-                         : v.kind === "media" ? "Media · voice #"
-                         : "Unknown voice #") + v.person_id;
-      const stat = document.createElement("span");
-      stat.className = "count";
-      stat.textContent = `${fmtMins(v.seconds)} across ${v.clips} clip`
-                       + `${v.clips === 1 ? "" : "s"}`;
-      head.appendChild(who); head.appendChild(stat);
-      d.appendChild(head);
-
-      /* The closest named people, with their scores. A near-miss is the most
-         valuable thing on this page: confirming one is a single click and it
-         adds a reference for a condition that had none. */
-      if (v.candidates.length){
-        const c = document.createElement("div");
-        c.style.cssText = "font-family:var(--mono);font-size:12px;color:var(--muted)";
-        c.textContent = "closest: " + v.candidates
-          .map(x => `${x.name}${x.kind === "media" ? " (media)" : ""} `
-                  + x.score.toFixed(2)).join("  ·  ");
-        d.appendChild(c);
-      }
-
-      /* Say before the click, not after, when the audio this voice was built
-         from would not hold still. Naming it is still allowed -- someone
-         listening can hear what the model cannot -- but it should be a
-         deliberate choice. */
-      if (v.shaky){
-        const w = document.createElement("div");
-        w.style.cssText = "font-family:var(--mono);font-size:12px;color:var(--warn,#d08a3e)";
-        w.textContent = `⚠ this voice does not hold together (${v.coherence}) — `
-          + "it may be more than one person, or audio too poor to voiceprint";
-        d.appendChild(w);
-      }
-
-      if (v.text){
-        const t = document.createElement("div");
-        t.style.cssText = "font-size:13px;color:var(--muted);line-height:1.5;"
-          + "max-height:60px;overflow:hidden";
-        t.textContent = v.text;
-        d.appendChild(t);
-      }
-
-      const au = document.createElement("audio");
-      au.className = "voiceclip";
-      au.controls = true; au.preload = "metadata";
-      au.src = `/api/voices/${v.person_id}/audio`;
-      d.appendChild(au);
-      const card = {au, input: null, media: null, skip: null, cands: []};
-
-      const bar = document.createElement("div");
-      bar.style.cssText = "display:flex;gap:8px;flex-wrap:wrap";
-      const input = document.createElement("input");
-      input.placeholder = "Who is this?";
-      input.setAttribute("aria-label", `Name for unknown voice ${v.person_id}`);
-      input.style.cssText = "flex:1;min-width:140px;padding:7px 9px;border-radius:7px;"
-        + "border:1px solid var(--rule);background:var(--paper);color:var(--ink)";
-      const save = document.createElement("button");
-      save.className = "pri"; save.textContent = "Name";
-      const msg = document.createElement("span");
-      msg.style.cssText = "font-family:var(--mono);font-size:12px;color:var(--muted)";
-
-      const submit = async () => {
-        const name = input.value.trim();
-        if (!name) return;
-        save.disabled = true; msg.textContent = "naming…";
-        try{
-          const r = await fetch(`/api/voices/${v.person_id}/name`, {
-            method:"POST", headers:{"Content-Type":"application/json"},
-            body: JSON.stringify({name})});
-          const b = await r.json().catch(() => ({}));
-          if (!r.ok){ msg.textContent = b.detail || "failed"; save.disabled = false; return; }
-          log(`named ${b.voiceprints} voiceprint(s) as ${name}`
-              + (b.clips_relabelled ? `, relabelled ${b.clips_relabelled} clip(s)` : ""));
-          loadVoices(); loadPeople();
-        }catch(e){ msg.textContent = "could not reach the server"; save.disabled = false; }
-      };
-      save.onclick = submit;
-      input.onkeydown = (e) => { if (e.key === "Enter") submit(); };
-
-      /* "It came off a screen" is an answer in itself, and usually the only
-         one available -- you can recognise a video without recognising anyone
-         in it. Tagging retires the voice and stops it competing for identity;
-         its words stay searchable. */
-      const media = document.createElement("button");
-      media.classList.add("aux");
-      media.textContent = v.kind === "media" ? "Not a video" : "It's a video";
-      media.title = v.kind === "media"
-        ? "Put this back in the queue as an unidentified person"
-        : "Tag as something off a screen — no name needed";
-      media.onclick = async () => {
-        media.disabled = true;
-        try{
-          await fetch(`/api/voices/${v.person_id}/kind`, {
-            method:"POST", headers:{"Content-Type":"application/json"},
-            body: JSON.stringify({kind: v.kind === "media" ? null : "media"})});
-          log(v.kind === "media" ? `voice #${v.person_id} back in the queue`
-                                 : `voice #${v.person_id} tagged as media`);
-          loadVoices();
-        }catch(e){ media.disabled = false; }
-      };
-      bar.appendChild(media);
-
-      /* The third answer, and the one that was missing.
-         "It's a video" is for a voice worth recognising again -- a channel
-         you watch, whose words are worth having. This is for the rest: a
-         television in the next room, a video scrolled past, somebody else's
-         phone call. There is nobody to name and there never will be, and
-         without a way to say so those voices came back every day asking.
-         Nothing is deleted: the voiceprints stay, so one dismissed today can
-         be named next month with all its evidence intact. */
-      const skip = document.createElement("button");
-      skip.classList.add("aux");
-      const wasIgnored = v.kind === "ignored";
-      skip.textContent = wasIgnored ? "Put back in the queue" : "Not worth naming";
-      skip.title = wasIgnored
-        ? "Return this voice to the queue with everything it has collected"
-        : "A TV, a video, a stranger — no name now, and none later. "
-          + "Keeps the recordings, adds no person, makes no voiceprint.";
-      skip.onclick = async () => {
-        skip.disabled = true;
-        try{
-          await fetch(`/api/voices/${v.person_id}/kind`, {
-            method:"POST", headers:{"Content-Type":"application/json"},
-            body: JSON.stringify({kind: wasIgnored ? null : "ignored"})});
-          log(wasIgnored ? `voice #${v.person_id} back in the queue`
-                         : `voice #${v.person_id} set aside — not worth naming`);
-          loadVoices();
-        }catch(e){ skip.disabled = false; }
-      };
-      bar.appendChild(skip);
-
-      /* One click for a candidate the matcher already thinks is likely. */
-      for (const cand of v.candidates.slice(0, 2)){
-        const b = document.createElement("button");
-        b.textContent = cand.name;
-        b.title = `Confirm as ${cand.name} (scored ${cand.score.toFixed(2)})`
-                + (cand.kind === "media" ? " — tagged as media" : "");
-        b.onclick = () => { input.value = cand.name; submit(); };
-        bar.appendChild(b);
-        card.cands.push(b);
-      }
-      bar.appendChild(input); bar.appendChild(save); bar.appendChild(msg);
-      d.appendChild(bar);
-      card.input = input; card.media = media; card.skip = skip;
-      voiceCards.push({el: d, card});
-      el.appendChild(d);
-    }
-    if (voiceCards.length){
-      voiceCursor = Math.min(voiceCursor, voiceCards.length - 1);
-      voiceCards[voiceCursor].el.classList.add("kbd-target");
-    }
+    list.replaceChildren();
+    shown.forEach((v, i) => {
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = "vrow";
+      const c0 = (v.candidates || [])[0];
+      row.innerHTML =
+        `<span class="vname">${v.kind === "ignored" ? "set aside #"
+          : v.kind === "media" ? "media #" : "voice #"}${v.person_id}${v.shaky ? " ⚠" : ""}</span>`
+        + `<span class="vmeta">${fmtMins(v.seconds)} · ${v.clips} clip${v.clips === 1 ? "" : "s"}</span>`
+        + `<span class="vscore">${c0 ? `${esc(c0.name)} ${c0.score.toFixed(2)}` : "no candidates"}</span>`;
+      row.title = c0 ? `closest: ${c0.name} at ${c0.score.toFixed(2)}` : "";
+      row.onclick = () => selectVoice(i);
+      list.appendChild(row);
+      voiceCards.push({row, v, card: {}});
+    });
+    voiceCursor = Math.max(0, Math.min(voiceCursor, voiceCards.length - 1));
+    selectVoice(voiceCursor);
     $("voiceKbdHint").hidden = !voiceCards.length;
     if (!showMedia && !showIgnored) badge("badgePpl", q.length);
-  }catch(e){ el.innerHTML = '<div class="empty">could not load voices</div>'; }
+  }catch(e){ list.innerHTML = '<div class="empty">could not load voices</div>'; }
 }
 
-on("fVoiceNear", "change", () => { voiceNear = $("fVoiceNear").value; loadVoices(); });
+/* The right side of the queue: everything about the voice being worked.
+   Naming it removes it from the queue and the next voice takes its place,
+   which is the whole rhythm of this page. */
+function renderVoiceDetail(){
+  const el = $("voiceDetail");
+  const item = voiceCards[voiceCursor];
+  el.replaceChildren();
+  if (!item){
+    const d = document.createElement("div");
+    d.className = "empty"; d.textContent = "Select a voice on the left.";
+    el.appendChild(d);
+    return;
+  }
+  const v = item.v;
+  const d = document.createElement("div");
+
+  const head = document.createElement("div");
+  head.className = "vhead";
+  const who = document.createElement("h3");
+  who.textContent = (v.kind === "ignored" ? "Set aside · voice #"
+                     : v.kind === "media" ? "Media · voice #"
+                     : "Unknown voice #") + v.person_id;
+  const stat = document.createElement("span");
+  stat.className = "count";
+  stat.textContent = `${fmtMins(v.seconds)} across ${v.clips} clip`
+                   + `${v.clips === 1 ? "" : "s"}`;
+  head.append(who, stat);
+  d.appendChild(head);
+
+  /* The closest named people, with their scores. A near-miss is the most
+     valuable thing on this page: confirming one is a single click and it
+     adds a reference for a condition that had none. */
+  if (v.candidates.length){
+    const c = document.createElement("div");
+    c.className = "vclosest";
+    c.textContent = "closest: " + v.candidates
+      .map(x => `${x.name}${x.kind === "media" ? " (media)" : ""} `
+              + x.score.toFixed(2)).join("  ·  ");
+    d.appendChild(c);
+  }
+
+  /* Say before the click, not after, when the audio this voice was built
+     from would not hold still. Naming it is still allowed -- someone
+     listening can hear what the model cannot -- but it should be a
+     deliberate choice. */
+  if (v.shaky){
+    const w = document.createElement("p");
+    w.className = "note";
+    w.style.color = "var(--warn)";
+    w.textContent = `This voice does not hold together (${v.coherence}) — it may `
+      + "be more than one person, or audio too poor to voiceprint.";
+    d.appendChild(w);
+  }
+
+  if (v.text){
+    const t = document.createElement("p");
+    t.className = "vtext";
+    t.textContent = v.text;
+    d.appendChild(t);
+  }
+
+  const au = document.createElement("audio");
+  au.className = "voiceclip";
+  au.controls = true; au.preload = "metadata";
+  au.src = `/api/voices/${v.person_id}/audio`;
+  d.appendChild(au);
+
+  const card = {au, input: null, media: null, skip: null, cands: []};
+
+  /* One confirm row per candidate: the name, what the matcher thought, and
+     the single press that settles it. */
+  for (const cand of v.candidates.slice(0, 2)){
+    const crow = document.createElement("div");
+    crow.className = "candrow";
+    const lab = document.createElement("span");
+    lab.className = "candname";
+    lab.textContent = cand.name;
+    const sc = document.createElement("span");
+    sc.className = "candscore";
+    sc.textContent = `scored ${cand.score.toFixed(2)}`
+      + (cand.kind === "media" ? " · media" : "");
+    const b = document.createElement("button");
+    b.className = "pri";
+    b.style.minHeight = "0";
+    b.textContent = "Confirm";
+    b.title = `Name this voice ${cand.name}`;
+    b.onclick = () => { card.input.value = cand.name; submit(); };
+    crow.append(lab, sc, b);
+    card.cands.push(b);
+    d.appendChild(crow);
+  }
+
+  const bar = document.createElement("div");
+  bar.className = "namerow";
+  const input = document.createElement("input");
+  input.placeholder = "Who is this?";
+  input.setAttribute("aria-label", `Name for unknown voice ${v.person_id}`);
+  const save = document.createElement("button");
+  save.className = "pri"; save.textContent = "Name";
+  const msg = document.createElement("span");
+  msg.className = "vmsg";
+
+  const submit = async () => {
+    const name = input.value.trim();
+    if (!name) return;
+    save.disabled = true; msg.textContent = "naming…";
+    try{
+      const r = await fetch(`/api/voices/${v.person_id}/name`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({name})});
+      const b = await r.json().catch(() => ({}));
+      if (!r.ok){ msg.textContent = b.detail || "failed"; save.disabled = false; return; }
+      log(`named ${b.voiceprints} voiceprint(s) as ${name}`
+          + (b.clips_relabelled ? `, relabelled ${b.clips_relabelled} clip(s)` : ""));
+      loadVoices(); loadPeople();
+    }catch(e){ msg.textContent = "could not reach the server"; save.disabled = false; }
+  };
+  save.onclick = submit;
+  input.onkeydown = (e) => { if (e.key === "Enter") submit(); };
+  bar.append(input, save, msg);
+  d.appendChild(bar);
+
+  /* The two answers that are not a name. Rare actions, deliberately quiet. */
+  const aside = document.createElement("div");
+  aside.className = "asidebar";
+  const media = document.createElement("button");
+  media.classList.add("aux");
+  media.textContent = v.kind === "media" ? "Not a video" : "It's a video";
+  media.title = v.kind === "media"
+    ? "Put this back in the queue as an unidentified person"
+    : "Tag as something off a screen — no name needed";
+  media.onclick = async () => {
+    media.disabled = true;
+    try{
+      await fetch(`/api/voices/${v.person_id}/kind`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({kind: v.kind === "media" ? null : "media"})});
+      log(v.kind === "media" ? `voice #${v.person_id} back in the queue`
+                             : `voice #${v.person_id} tagged as media`);
+      loadVoices();
+    }catch(e){ media.disabled = false; }
+  };
+  aside.appendChild(media);
+
+  const skip = document.createElement("button");
+  skip.classList.add("aux");
+  const wasIgnored = v.kind === "ignored";
+  skip.textContent = wasIgnored ? "Put back in the queue" : "Not worth naming";
+  skip.title = wasIgnored
+    ? "Return this voice to the queue with everything it has collected"
+    : "A TV, a video, a stranger — no name now, and none later. "
+      + "Keeps the recordings, adds no person, makes no voiceprint.";
+  skip.onclick = async () => {
+    skip.disabled = true;
+    try{
+      await fetch(`/api/voices/${v.person_id}/kind`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({kind: wasIgnored ? null : "ignored"})});
+      log(wasIgnored ? `voice #${v.person_id} back in the queue`
+                     : `voice #${v.person_id} set aside — not worth naming`);
+      loadVoices();
+    }catch(e){ skip.disabled = false; }
+  };
+  aside.appendChild(skip);
+  d.appendChild(aside);
+
+  el.appendChild(d);
+  /* Wired last: every control this card promises the keyboard exists by now. */
+  card.input = input; card.media = media; card.skip = skip;
+  item.card = card;
+}
+
+function selectVoice(i){
+  voiceCursor = Math.max(0, Math.min(voiceCards.length - 1, i));
+  voiceCards.forEach((item, k) => item.row.classList.toggle("on", k === voiceCursor));
+  const row = voiceCards[voiceCursor] && voiceCards[voiceCursor].row;
+  if (row) row.scrollIntoView({block: "nearest"});
+  renderVoiceDetail();
+}on("fVoiceNear", "change", () => { voiceNear = $("fVoiceNear").value; loadVoices(); });
 
 let voiceConfirmArmed = false;
 on("bVoiceConfirmAll", "click", async () => {
@@ -8659,11 +8787,7 @@ function paintListCursor(rows){
   if (el) el.scrollIntoView({block: "nearest"});
 }
 
-function paintVoiceCursor(){
-  voiceCards.forEach((v, i) => v.el.classList.toggle("kbd-target", i === voiceCursor));
-  const v = voiceCards[voiceCursor];
-  if (v) v.scrollIntoView({block: "nearest", behavior: "instant"});
-}
+function paintVoiceCursor(){ selectVoice(voiceCursor); }
 
 addEventListener("keydown", e => {
   if ((e.ctrlKey || e.metaKey) && (e.key === "k" || e.key === "K")){
@@ -8717,9 +8841,7 @@ addEventListener("keydown", e => {
   if (down || up){
     if (!$("viewPpl").hidden && voiceCards.length){
       e.preventDefault();
-      voiceCursor = Math.max(0, Math.min(voiceCards.length - 1,
-        voiceCursor + (down ? 1 : -1)));
-      paintVoiceCursor();
+      selectVoice(voiceCursor + (down ? 1 : -1));
       return;
     }
     const rows = listRows();
@@ -8763,6 +8885,8 @@ loadBattery();
 $("pulseCard").open = pulseWanted();
 if (pulseWanted()) loadPulse();
 addEventListener("resize", () => { if ($("pulseCard").open) drawPulse(); });
+
+
 
 
 
