@@ -2514,3 +2514,28 @@ def test_clearing_the_hidden_recorder_notice_is_remembered():
     assert "loadClips()" in fn
 
 
+
+
+def test_a_recorder_that_never_stops_still_gets_separate_conversations():
+    """The gap rule assumes the device stops when the talking stops. That was
+    true while the Omi kept dropping out, and stopped being true the day it
+    held a link: 4.74 hours of audio in a 4.68 hour span, 347 gaps between
+    clips, the longest 130 seconds. Nothing was quiet for five minutes, so an
+    evening arrived as one conversation.
+    """
+    import os as _os, sys as _sys
+    _sys.path.insert(0, _os.path.join(_os.path.dirname(__file__), "..", "web"))
+    import index_db
+    assert index_db.CONVERSATION_GAP <= 120, \
+        "a continuously-recording device will never leave a gap this long"
+
+
+def test_the_gap_is_defined_once():
+    """It was written into the route's own signature as well, so the two
+    could drift and the interface would group differently from everything
+    else reading the same archive."""
+    src = _read("web/server.py")
+    fn = src[src.index('@app.get("/api/conversations")'):]
+    fn = fn[:fn.index("\n@app.")]
+    assert "gap: int = 0" in fn, "the route pins its own copy of the default"
+    assert "index_db.CONVERSATION_GAP" in fn

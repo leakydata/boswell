@@ -3392,11 +3392,14 @@ async def api_semantic_rebuild():
 
 
 @app.get("/api/conversations")
-async def api_conversations(gap: int = 300, limit: int = 400,
+async def api_conversations(gap: int = 0, limit: int = 400,
                             device: str = ""):
     """`device` is a recorder id, or "none" for the clips that name no
-    recorder."""
-    return index_db.conversations(gap, limit, device=device or None)
+    recorder. `gap` is how long the recorder must hear nothing before this
+    counts as a different sitting; 0 takes the measured default rather than
+    pinning a second copy of it here."""
+    return index_db.conversations(gap or index_db.CONVERSATION_GAP, limit,
+                                  device=device or None)
 
 
 @app.get("/api/export/{name}")

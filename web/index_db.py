@@ -540,7 +540,24 @@ def search(query, limit=200, device=None):
                   reverse=True)
 
 
-def conversations(gap_seconds=300, limit=400, device=None):
+# How long the recorder has to hear nothing before this counts as a
+# different sitting.
+#
+# Five minutes, until it was measured against a recorder that actually
+# works. A gap rule assumes the device stops when the talking stops, which
+# was true while the Omi kept dropping out -- and stopped being true the day
+# it held a link: 4.74 hours of audio in a 4.68 hour span, 347 gaps between
+# clips, and the longest of them 130 seconds. Nothing was ever quiet for five
+# minutes, so an entire evening arrived as one conversation.
+#
+# Measured over this archive: 300s gives 67 conversations with the longest
+# running 4.68 hours and nine over an hour; 60s gives 177, the longest 1.86
+# hours and three over an hour. Sixty seconds of silence is somebody leaving
+# the room, which is the boundary being looked for.
+CONVERSATION_GAP = 60
+
+
+def conversations(gap_seconds=CONVERSATION_GAP, limit=400, device=None):
     """Group clips into conversations.
 
     A 30-second clip is a storage unit, not a human one. What someone
