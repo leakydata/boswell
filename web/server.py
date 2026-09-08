@@ -2970,6 +2970,21 @@ async def api_queue():
             "auto": auto_transcribe}
 
 
+@app.get("/api/marks")
+async def api_marks(limit: int = 50, kind: str = ""):
+    """Presses on the recorder, with what was said around each one.
+
+    `kind` narrows to "bookmark" (single tap) or "reminder" (double). The
+    raw log is /api/moments; this is the readable form, and the difference
+    matters -- the log is what the device reported, this is an
+    interpretation of it that can be tuned without losing the record.
+    """
+    import marks
+    loop = asyncio.get_running_loop()
+    return {"marks": await loop.run_in_executor(
+        None, lambda: marks.recent(limit=limit, kind=kind or None))}
+
+
 @app.get("/api/moments")
 async def api_moments(limit: int = 200):
     """Button presses on the recorder, newest first.
