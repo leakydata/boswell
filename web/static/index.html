@@ -353,16 +353,27 @@ select.filter:focus{outline:2px solid var(--accent);outline-offset:-1px}
   border:none;cursor:pointer}
 .cvline .cvt:hover{color:var(--accent)}
 .cvline .cvbody{flex:1;min-width:0}
+/* No underline at rest. It marked the name as clickable, which is worth
+   saying once and not four hundred times: a dotted rule under every speaker
+   on every line reads as ruling rather than as an affordance, and the thing
+   it points at is already the most prominent word on the row. It comes back
+   on hover and on keyboard focus, where it is actually answering a question.
+
+   Nothing is lost by dropping it at rest. A shaky attribution still carries
+   its "?" in the text and its explanation in the title, so the one meaning
+   the border encoded survives without it. */
 .cvline .cvwho{font-size:11.5px;font-weight:600;margin-right:7px;
   background:none;border:0;padding:0;font-family:inherit;cursor:pointer;
-  border-bottom:1px dotted currentColor}
-.cvline .cvwho:hover,.cvline .cvwho:focus-visible{border-bottom-style:solid;
-  outline:none}
+  border-bottom:1px solid transparent}
+.cvline .cvwho:hover,.cvline .cvwho:focus-visible{
+  border-bottom-color:currentColor;outline:none}
 .cvline .cvwho.unnamed{opacity:.75;font-weight:500}
 /* Named, but from a slot whose own turns disagreed. Shown, because the match is
    confident and hiding it left thousands of lines reading SPEAKER_00; marked,
    because the slot behind it is untidy. */
 .cvline .cvwho.shaky{border-bottom-style:dashed;opacity:.85}
+/* Reserved on the row so revealing it on hover cannot shift the text. */
+.cvline .cvwho{line-height:1.35}
 /* The same mark on a plain speaker chip: named, but the matcher itself said
    the margin was too thin to call it a fact. */
 .who.shaky{border-style:dashed;opacity:.92}
