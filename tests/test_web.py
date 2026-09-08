@@ -2539,3 +2539,46 @@ def test_the_gap_is_defined_once():
     fn = fn[:fn.index("\n@app.")]
     assert "gap: int = 0" in fn, "the route pins its own copy of the default"
     assert "index_db.CONVERSATION_GAP" in fn
+
+
+def test_transcribe_missing_reports_what_is_waiting_not_what_it_added():
+    """submit() refuses a clip already queued or running, and the background
+    sweep queues on its own every minute -- so most of a backlog is usually
+    in flight already. Counting only the newly added ones told somebody with
+    a hundred clips outstanding that four were queued, which reads as "four
+    was all there was".
+    """
+    src = _read("web/server.py")
+    fn = src[src.index('@app.post("/api/transcribe_all")'):]
+    fn = fn[:fn.index("\n@app.")]
+    assert "already" in fn, "clips already queued are still counted as nothing"
+    assert '"waiting": waiting' in fn, "the total outstanding is not reported"
+
+    html = _read("web/static/index.html")
+    click = html[html.index('$("bAll").onclick'):]
+    click = click[:click.index("pollQueue();")]
+    assert "r.waiting" in click, "the button still reports only what it added"
+    # And it still works against a server that predates the field.
+    assert "r.waiting === undefined" in click
+
+
+def test_the_recorder_tabs_open_on_the_omi():
+    """Most people arriving at this own an Omi and no handmade board, so the
+    default order should open on the one recorder they have. It is only a
+    default -- the tabs are draggable and the choice is remembered."""
+    html = _read("web/static/index.html")
+    line = html[html.index("const DEV_KINDS ="):]
+    line = line[:line.index("\n")]
+    assert line.index('"omi"') < line.index('"boswell"'), \
+        "the handmade board is still the first tab"
+
+
+def test_the_page_opens_on_the_first_tab_not_a_named_favourite():
+    """Which recorder is first is the answer to "which one matters here", and
+    naming one in a second place meant the page could open on a tab that was
+    not the first."""
+    html = _read("web/static/index.html")
+    fn = html[html.index("function applyDevSegment"):]
+    fn = fn[:fn.index("\n}")]
+    assert 'devSeg = orderedKinds(kinds)[0]' in fn
+    assert 'kinds.includes("boswell") ? "boswell"' not in fn

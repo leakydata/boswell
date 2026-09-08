@@ -2931,19 +2931,32 @@ async def api_card_ingest():
 
 @app.post("/api/transcribe_all")
 async def api_transcribe_all():
-    """Queue every clip that has no transcript yet."""
+    """Queue every clip that has no transcript yet.
+
+    Reports what is waiting, not only what this call added. submit() refuses
+    a clip already queued or running, so with the background sweep doing its
+    rounds most of a backlog is usually in flight already -- and counting
+    only the newly added ones told somebody with a hundred clips outstanding
+    that four were queued, which reads as "four was all there was". Both
+    numbers are true and only one of them is the answer to the question the
+    button asks.
+    """
     os.makedirs(DATA, exist_ok=True)
-    queued = []
+    queued, already = [], 0
     for f in sorted(os.listdir(DATA)):
         if not f.endswith(".wav"):
             continue
-        tp = pipeline.transcript_path(f)
-        if os.path.exists(tp):
+        if os.path.exists(pipeline.transcript_path(f)):
             continue
         if worker.submit(f):
             queued.append(f)
-    device.event("log", text=f"queued {len(queued)} clip(s) for transcription")
-    return {"queued": len(queued)}
+        else:
+            already += 1
+    waiting = len(queued) + already
+    device.event("log", text=f"{waiting} clip(s) waiting for transcription"
+                            + (f", {len(queued)} newly queued"
+                               if already else ""))
+    return {"queued": len(queued), "already": already, "waiting": waiting}
 
 
 @app.get("/api/queue")

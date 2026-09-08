@@ -2183,7 +2183,12 @@ let firstLookDone = false;
    neither can stomp the other -- recrow's own route logic underneath keeps
    working exactly as before. */
 let devSeg = null;
-const DEV_KINDS = ["boswell", "omi"];
+/* Omi first. The order here is only the default -- it is what somebody sees
+   before they have dragged anything -- and most people arriving at this will
+   own an Omi and no handmade board, so opening on the one recorder they have
+   is the right first impression. Anyone who prefers otherwise drags a tab and
+   their choice is remembered. */
+const DEV_KINDS = ["omi", "boswell"];
 
 function devKindsPaired(){
   return DEV_KINDS.filter(k => paired.some(r => r.kind === k));
@@ -2288,7 +2293,11 @@ function applyDevSegment(){
   const kinds = devKindsPaired();
   if (!kinds.length){ devSeg = "mgr"; }
   else if (devSeg !== "mgr" && !kinds.includes(devSeg)){
-    devSeg = kinds.includes("boswell") ? "boswell" : kinds[0];
+    /* The first tab, whatever it is, rather than a named favourite: the
+       order is the answer to "which recorder matters here", and naming one
+       in a second place meant the page could open on a tab that was not the
+       first one. */
+    devSeg = orderedKinds(kinds)[0];
   }
   const hasAny = kinds.length > 0;
   $("devtabs").hidden = !hasAny;
@@ -7618,9 +7627,16 @@ $("namerInput").addEventListener("keydown", e => {
 
 $("bAll").onclick = async () => {
   const r = await (await fetch("/api/transcribe_all", {method:"POST"})).json();
-  log(`queued ${r.queued} clip(s)`);
-  toast(r.queued ? `Queued ${r.queued} recording(s) for transcription`
-                 : "Nothing was waiting to be transcribed", r.queued ? "ok" : "info");
+  /* What is waiting, not what this click added. The sweep queues on its own
+     every minute, so most of a backlog is usually already in flight and the
+     newly-added count is a small number that reads as the whole answer --
+     "Queued 4 recordings" with a hundred outstanding. */
+  const waiting = (r.waiting === undefined) ? r.queued : r.waiting;
+  log(`${waiting} clip(s) waiting for transcription`);
+  toast(waiting
+        ? `${waiting} recording(s) waiting for transcription`
+          + (r.already ? ` — ${r.already} were already in the queue` : "")
+        : "Nothing was waiting to be transcribed", waiting ? "ok" : "info");
   pollQueue();
 };
 $("bRefresh").onclick = () => loadClips();
