@@ -2206,6 +2206,45 @@ async def api_recorders_diagnose(seconds: float = 8.0):
         adapter["detail"] = "bluetoothctl not installed; skipping this check"
     checks.append(adapter)
 
+    # 1b. Has the operating system bonded a recorder? It should never have.
+    #
+    #     These devices connect with no pairing and no authentication, so a
+    #     bond buys nothing and breaks two ways. BlueZ auto-connects a trusted
+    #     device, a connected peripheral stops advertising, and this program
+    #     finds devices by scanning -- so every attempt fails with "not found"
+    #     while the recorder sits connected to this very machine. And when the
+    #     recorder reboots and clears its own bonding table, the host's stored
+    #     key goes stale: the link then dies at service discovery, which cost
+    #     nine hours of capture on 2026-09-08 and reads like a dead device.
+    #
+    #     Neither is guessable from the outside, and pairing it in the
+    #     desktop's Bluetooth settings is a reasonable-looking thing to do.
+    #     So the check exists to say plainly that it is wrong.
+    if shutil.which("bluetoothctl"):
+        bonded = []
+        for r in recorders.load(seed=_seed_recorders):
+            addr = r.get("address")
+            if not addr:
+                continue
+            try:
+                out = subprocess.run(["bluetoothctl", "info", addr],
+                                     capture_output=True, text=True,
+                                     timeout=8).stdout
+            except Exception:
+                continue
+            if "Paired: yes" in out or "Bonded: yes" in out:
+                bonded.append(r.get("name") or addr)
+        checks.append({
+            "name": "Recorder pairing",
+            "ok": not bonded,
+            "detail": ("no recorder is bonded, which is correct"
+                       if not bonded else
+                       f"{', '.join(bonded)} is paired in the system's "
+                       "Bluetooth settings. These recorders need no pairing, "
+                       "and a bond stops this program reaching them."),
+            "fix": None if not bonded else "unbond",
+        })
+
     # 2. Can this program see anything at all? A scan that returns nothing
     #    when the adapter says it is on means the radio is not really working,
     #    which is a different fault from a device being away.

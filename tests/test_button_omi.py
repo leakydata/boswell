@@ -121,3 +121,23 @@ def test_the_presses_can_be_read_back():
     fn = fn[:fn.index("\n@app.")]
     assert "out.reverse()" in fn, "oldest first is the wrong end of a log"
     assert "FileNotFoundError" in fn, "no presses yet is not an error"
+
+
+def test_the_troubleshooter_notices_a_bonded_recorder():
+    """Pairing the Omi in the desktop's Bluetooth settings is a
+    reasonable-looking thing to do and it breaks capture two ways: BlueZ
+    auto-connects the trusted device so it stops advertising and this program
+    can never find it, and when the recorder reboots and clears its own
+    bonding table the host's stored key goes stale and the link dies at
+    service discovery. The second cost nine hours on 2026-09-08.
+
+    Neither is guessable from outside, so the troubleshooter has to say it.
+    """
+    src = read_file("web/server.py")
+    fn = src[src.index("async def api_recorders_diagnose"):]
+    fn = fn[:fn.index("\n@app.")]
+    assert '"Recorder pairing"' in fn, "nothing checks for a bond"
+    assert '"Paired: yes" in out' in fn
+    assert '"unbond"' in fn, "it reports the fault with no way to act on it"
+    # Green when nothing is bonded, which is the normal state.
+    assert '"ok": not bonded' in fn
