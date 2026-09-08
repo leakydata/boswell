@@ -3649,6 +3649,33 @@ async def api_rematch(body: dict | None = None):
     return {"rematched": changed}
 
 
+@app.post("/api/conversation/threads")
+async def api_conversation_threads(body: dict):
+    """One conversation as things people said, rather than as clip rows.
+
+    A thirty-second clip cuts wherever thirty seconds landed, so one sentence
+    arrives as two or three lines with the same speaker on each. This joins
+    them back -- same voice, small gap, nothing suspect in between -- and
+    then marks where the subject changed, using the sentence embeddings the
+    archive already holds. Measured over this archive: 7,557 lines become
+    2,769 units, 63% fewer rows to read.
+
+    Computed per request rather than cached. The whole archive takes eleven
+    seconds and the largest single conversation just over one, so a cache
+    would buy nothing and would need invalidating every time a line was
+    edited, a name applied or a clip retranscribed -- and a cache that goes
+    stale without saying so is the exact failure this project keeps finding.
+    """
+    names = body.get("names") or []
+    if not isinstance(names, list) or not names:
+        raise HTTPException(400, "need a list of clip names")
+    for name in names:
+        safe_clip(name)
+    import threads
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, threads.for_conversation, names)
+
+
 @app.post("/api/conversation")
 async def api_conversation(body: dict):
     """Every transcribed line of one conversation, in order.
