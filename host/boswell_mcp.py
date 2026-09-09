@@ -24,9 +24,21 @@ involving people who never agreed to be transcribed, let alone uploaded. Over
 stdio the audio never leaves the machine. Over HTTP it goes wherever the client
 is, and there is no taking it back.
 
-Read-only by design. There is no tool here that writes, renames, deletes, or
-enrols anything. A model summarising your week has no business editing what it
-is summarising, and a mistake it makes should not be able to change the record.
+It is no longer read-only, and the line that used to say so outlived the fact
+by some months. Everything Boswell does can be reached from here: searching and
+reading, recording what a conversation was worth, naming a voice or marking it
+as something off a screen, checking why a recorder is not recording, clearing a
+transcription backlog, rebuilding an index, running the reviewing pass, and
+deleting a clip.
+
+What is deliberately *not* here is anything that starts recording. There is no
+tool to connect, arm, or unmute a device. A disarmed recorder is almost always
+a decision somebody made about the room they are in, and a model should not be
+able to reverse that decision on its own -- so `diagnose_recorder` will tell
+you the radio is off and will not turn it on.
+
+The same tools are a shell command each, through host/boswell_cli.py, which
+reflects over the registry below rather than restating it.
 """
 
 import argparse
@@ -60,13 +72,43 @@ server = MCPServer(
         "record_note, label it with tag_conversation, then mark_reviewed. "
         "Always pass the clips an item came from. Speech by anyone whose "
         "kind is media in list_people was audio playing nearby -- never "
-        "record it as something the user said, planned or committed to."
+        "record it as something the user said, planned or committed to. "
+        "A speaker shown as SPEAKER_xx has not been identified: that label "
+        "means a different voice in every recording, so it is never the "
+        "subject of a fact -- and it is where the media filter leaks, "
+        "because that filter works by name and an un-named podcast host "
+        "arrives looking like somebody in the room. When you meet one, "
+        "set_voice_kind('media') or name_voice fixes it for every later "
+        "review too. Prefer search_units over search: a transcript line is "
+        "whatever fell inside one 30-second clip, median seven words, while "
+        "a unit is the sentence with the clip boundary undone. list_marks "
+        "is where the user pressed the button on purpose, which is worth "
+        "more attention than anything you find by searching."
     ),
 )
 
 
 def _fmt_time(ts):
     return time.strftime("%Y-%m-%d %H:%M", time.localtime(ts)) if ts else "?"
+
+
+def _when(clip, ts=None):
+    """When a clip was recorded, asked of the index when the caller has no
+    timestamp to hand. Results that arrived by meaning rather than by keyword
+    carry no `modified`, and "?" for the date of everything it found is the
+    difference between a usable answer and a list of quotes."""
+    if ts:
+        return _fmt_time(ts)
+    if not clip:
+        return "?"
+    try:
+        import index_db
+        r = index_db._conn().execute(
+            "SELECT COALESCE(started, modified) t FROM clips WHERE name=?",
+            (clip,)).fetchone()
+        return _fmt_time(r["t"] if r else None)
+    except Exception:
+        return "?"
 
 
 @server.tool(description="Overview of the archive: how many recordings, over "
@@ -119,18 +161,34 @@ def search_by_meaning(query: str, limit: int = 25) -> list:
     import semantic
     keyword = index_db.search(query, limit=200)
     try:
-        hits = semantic.hybrid(query, keyword, limit=limit)
+        fused = semantic.hybrid(query, keyword, limit=limit)
     except Exception as e:
         return [{"error": f"semantic search unavailable: {e}",
                  "hint": "keyword search via `search` still works"}]
+    # `hybrid` answers {"hits": [...], "error": ...} and each hit is a *clip*
+    # with its matching lines nested under "hits" -- the same shape `search`
+    # flattens. This read it as a flat list of lines, so it iterated the dict,
+    # got the string "hits", and called .get() on it: the tool raised for
+    # every query it was ever given. It failed as an exception out of the tool
+    # rather than as a wrong answer, which is why nothing here caught it.
+    if isinstance(fused, dict):
+        if fused.get("error") and not fused.get("hits"):
+            return [{"error": str(fused["error"]),
+                     "hint": "keyword search via `search` still works"}]
+        fused = fused.get("hits") or []
     out = []
-    for h in hits:
-        clip = h.get("clip") or h.get("name")
-        out.append({"clip": clip, "when": _fmt_time(h.get("modified")),
-                    "at": round(h.get("start") or 0, 1),
-                    "speaker": _resolve(clip, h.get("speaker")),
-                    "text": h.get("text") or h.get("snippet"),
-                    "score": h.get("score")})
+    for clip in fused:
+        name = clip.get("clip") or clip.get("name")
+        for h in clip.get("hits") or [clip]:
+            out.append({"clip": name, "when": _when(name, clip.get("modified")),
+                        "at": round(h.get("start") or 0, 1),
+                        "speaker": _resolve(name, h.get("speaker")),
+                        "text": (h.get("text") or h.get("snippet") or "")
+                                .replace("<mark>", "").replace("</mark>", ""),
+                        "score": clip.get("score"),
+                        "found_by": clip.get("found_by")})
+            if len(out) >= limit:
+                return out
     return out
 
 
@@ -325,7 +383,28 @@ def recorded_items(kind: str = "notes", limit: int = 50) -> list:
     import agent_runner
     if kind not in agent_runner.KINDS:
         return [{"error": f"kind must be one of {list(agent_runner.KINDS)}"}]
-    return agent_runner.load_items(kind, limit=limit)
+    return [_trim_clips(i) for i in agent_runner.load_items(kind, limit=limit)]
+
+
+# How many clip names an item shows before they are counted instead.
+#
+# Provenance is required on every write and a widened conversation can run to
+# three hundred clips, so a list of ten tasks came back as two thousand file
+# names around the sentences that mattered. Unreadable on a terminal and
+# expensive in a context window, for a list nobody reads -- what is wanted is
+# where it came from, and `get_conversation` on the first clip answers that.
+SHOW_CLIPS = 4
+
+
+def _trim_clips(item):
+    clips = item.get("_clips") or []
+    if len(clips) <= SHOW_CLIPS:
+        return item
+    out = dict(item)
+    out["_clips"] = clips[:SHOW_CLIPS]
+    out["_clips_total"] = len(clips)
+    out["_conversation"] = clips[0]
+    return out
 
 
 # ---------------------------------------------------------------- writing
@@ -440,6 +519,22 @@ def delete_recorded(kind: str, item_id: str) -> dict:
             "error": None if ok else "no item with that id"}
 
 
+# How far back the review queue looks, in clips.
+#
+# It was 400, which is the last two or three hours on a recorder that never
+# stops -- so a queue meant for working through the archive only ever showed
+# today, and a clip from this afternoon was already outside it. The whole
+# archive at 6,000 clips groups in under a second, and the queue is not on any
+# hot path.
+SCAN_CLIPS = 20000
+
+# How much of a conversation must already be read for it to leave the queue.
+# Below this it comes back: a conversation that has grown since it was reviewed
+# is genuinely new speech, and re-reading the whole thing is cheap next to
+# missing the part that was added.
+REVIEWED_SHARE = 0.6
+
+
 @server.tool(description="Conversations nobody has reviewed yet, oldest first. "
                          "This is the queue to work through; mark_reviewed "
                          "takes one off it.")
@@ -447,15 +542,30 @@ def unreviewed_conversations(limit: int = 20) -> list:
     import agent_runner, index_db
     done = agent_runner.reviewed_clips()
     out = []
-    for conv in reversed(index_db.conversations(300, 400)):
+    for conv in reversed(index_db.conversations(300, SCAN_CLIPS)):
         first = conv["clips"][0] if conv.get("clips") else None
-        if not first or first in done:
+        if not first:
             continue
+        # Coverage, not identity. On a recorder that never stops, the gap that
+        # separated two conversations fills in and yesterday's conversation is
+        # today's middle -- so keying the queue on the first clip showed the
+        # same speech again under a new name, forever. Anything still mostly
+        # unread comes back; a conversation that has grown a tail since it was
+        # read is worth re-reading.
+        clips = set(conv["clips"])
+        seen = len(clips & done)
+        if seen >= REVIEWED_SHARE * len(clips):
+            continue
+        partly = seen or None
         out.append({
             "first_clip": first,
             "start": _fmt_time(conv.get("start")),
             "minutes": round((conv.get("seconds") or 0) / 60.0, 1),
             "clips": len(conv["clips"]),
+            # Reviewing is per window, grouping is per gap, and the two are
+            # not the same size -- so a long conversation is worked through
+            # in pieces and the queue has to be able to say how far in it is.
+            "already_reviewed": partly,
             # Resolved names, so the queue shows at a glance whether a
             # conversation is the user or a video that happened to be playing.
             "speakers": conv.get("speakers") or [],
@@ -469,12 +579,341 @@ def unreviewed_conversations(limit: int = 20) -> list:
 @server.tool(description="Mark a conversation reviewed so it leaves the queue. "
                          "Call it after recording whatever was worth keeping -- "
                          "including when nothing was.")
-def mark_reviewed(clip: str, note: str = None) -> dict:
+def mark_reviewed(clip: str, note: str = None, clips: list = None) -> dict:
     import agent_runner
     try:
-        return {"ok": True, **agent_runner.mark_reviewed(_safe(clip), note=note)}
+        clip = _safe(clip)
+        covered = [_safe(c) for c in (clips or []) if c]
     except ValueError as e:
         return {"ok": False, "error": str(e)}
+    # Deliberately no guessing here. Resolving the clip to "its conversation"
+    # and marking all of that was tried and retired 412 clips on the strength
+    # of 79 having been read -- because the 300-second gap groups a whole
+    # evening of a never-stopping recorder into one conversation. Pass the
+    # clips the review actually covered; review_conversation returns them.
+    r = agent_runner.mark_reviewed(clip, note=note, clips=covered or [clip])
+    return {"ok": True, "clip": r["clip"], "clips_covered": len(r["clips"]),
+            "at": r["at"], "note": r.get("note")}
+
+
+# ---------------------------------------------------------------------------
+# The half of Boswell that only the running server can reach.
+#
+# This process reads the same files the web server does, which is enough for
+# searching and for everything the agent store holds. It is not enough for
+# anything live: the transcription queue is an object inside the server, the
+# Bluetooth link is a connection it owns, and the reviewing agent is a thread
+# in it. Reaching those from here means asking that server, not reimplementing
+# them -- a second process that loads Whisper to clear a backlog would fight
+# the first one for the card and for the same files.
+
+
+def _base():
+    return os.environ.get("BOSWELL_URL") or \
+        f"http://127.0.0.1:{os.environ.get('BOSWELL_PORT', '8000')}"
+
+
+def _api(path, body=None, method=None, timeout=120):
+    """One call to the running server, or a structured reason it failed.
+
+    A traceback tells a model nothing it can act on, and "connection refused"
+    tells it nothing about which program is not running.
+    """
+    import urllib.error
+    import urllib.request
+    url = _base().rstrip("/") + path
+    data = json.dumps(body).encode() if body is not None else None
+    headers = {"Content-Type": "application/json"}
+    tok = os.environ.get("BOSWELL_TOKEN", "").strip()
+    if tok:
+        headers["Authorization"] = "Bearer " + tok
+    req = urllib.request.Request(url, data=data, headers=headers,
+                                 method=method or ("POST" if data is not None else "GET"))
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.load(r)
+    except urllib.error.HTTPError as e:
+        detail = ""
+        try:
+            detail = (json.load(e) or {}).get("detail", "")
+        except Exception:
+            pass
+        if e.code == 401:
+            return {"ok": False, "error": "the server rejected the token",
+                    "hint": "set BOSWELL_TOKEN to the same value the server "
+                            "was started with"}
+        return {"ok": False, "error": f"{e.code} from {path}"
+                                      + (f": {str(detail)[:200]}" if detail else "")}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {str(e)[:140]}",
+                "hint": f"the Boswell server is not answering on {_base()}. "
+                        f"Start it with `uv run web/server.py`, or set "
+                        f"BOSWELL_URL if it is somewhere else."}
+
+
+# ---- searching what was actually said -------------------------------------
+
+
+@server.tool(description="Search by meaning over whole thoughts rather than "
+                         "transcript lines, with filters. A line is whatever "
+                         "fell inside one 30-second clip -- median seven words "
+                         "-- so this is usually the better search of the two. "
+                         "`person` is a speaker name, `sound` a situational "
+                         "tag from list_sounds, `since`/`until` are "
+                         "YYYY-MM-DD.")
+def search_units(query: str, limit: int = 15, person: str = None,
+                 sound: str = None, since: str = None,
+                 until: str = None) -> list:
+    import units
+
+    def epoch(d):
+        if not d:
+            return None
+        try:
+            return time.mktime(time.strptime(d[:10], "%Y-%m-%d"))
+        except ValueError:
+            return None
+
+    r = units.search(query, limit=limit, name=person, sound=sound,
+                     since=epoch(since), until=epoch(until))
+    if r.get("error"):
+        return [{"error": r["error"],
+                 "hint": "keyword search via `search` still works"}]
+    out = []
+    for h in r.get("hits", []):
+        out.append({
+            "clip": h["clip"], "when": _when(h["clip"], h.get("at")),
+            "speaker": h.get("name") or h.get("speaker"),
+            "words": h.get("words"), "sounds": h.get("sounds"),
+            "score": h.get("score"), "text": h.get("text"),
+        })
+    if not out:
+        return [{"error": "nothing matched",
+                 "hint": "the unit index may be stale or empty -- "
+                         "rebuild_index('units') builds it"}]
+    return out
+
+
+@server.tool(description="Presses on the recorder's button, with what was "
+                         "said around each one. A single tap is a bookmark and "
+                         "a double tap a reminder. These are the moments the "
+                         "user deliberately flagged, so they are worth more "
+                         "attention than anything found by search.")
+def list_marks(limit: int = 20, kind: str = None) -> list:
+    import marks
+    out = []
+    for m in marks.recent(limit=limit, kind=kind or None):
+        clips = m.get("clips") or []
+        out.append({"means": m.get("means"), "press": m.get("kind"),
+                    "when": _fmt_time(m.get("at")),
+                    # Every clip the surrounding speech was drawn from, because
+                    # a mark is an instant and the talk around it crosses clip
+                    # boundaries -- and record_* needs the whole list to be
+                    # able to trace an item back.
+                    "clips": clips, "first_clip": clips[0] if clips else None,
+                    "text": (m.get("text") or "")[:1500]})
+    return out or [{"note": "no button presses recorded"}]
+
+
+@server.tool(description="Subjects the archive has been labelled with, "
+                         "commonest first, and how many conversations carry "
+                         "each. Use one as a query to `search` to find them.")
+def list_topics(limit: int = 40) -> list:
+    r = _api("/api/topics")
+    if isinstance(r, dict) and r.get("ok") is False:
+        return [r]
+    out = []
+    for t in (r.get("topics") or [])[:limit]:
+        out.append({"topic": t.get("topic"), "conversations": t.get("count"),
+                    "first_clip": (t.get("clips") or [None])[0]})
+    return out
+
+
+@server.tool(description="Situational sound tags the archive carries -- "
+                         "typing, a dog, music -- usable as the `sound` filter "
+                         "on search_units.")
+def list_sounds(limit: int = 40) -> list:
+    r = _api("/api/sounds")
+    if isinstance(r, dict) and r.get("ok") is False:
+        return [r]
+    rows = r.get("sounds") if isinstance(r, dict) else r
+    return (rows or [])[:limit]
+
+
+# ---- who the voices are ---------------------------------------------------
+#
+# These matter more than they look. The agent refuses to record a fact about
+# an unnamed voice, and the [MEDIA] filter that keeps a podcast host's claims
+# out of the record works by name -- so an unidentified recurring voice is a
+# hole in both. Naming one, or marking it media, closes it for every future
+# review as well as this one.
+
+
+@server.tool(description="Put a name to a recurring voice, from the person_id "
+                         "in unidentified_voices. Every voiceprint gathered "
+                         "under that cluster becomes a labelled reference.")
+def name_voice(person_id: int, name: str) -> dict:
+    if not (name or "").strip():
+        return {"ok": False, "error": "need a name"}
+    return _api(f"/api/voices/{int(person_id)}/name", {"name": name.strip()})
+
+
+@server.tool(description="Say whether a voice is a person in the room, audio "
+                         "off a screen, or noise not worth recognising. kind "
+                         "is 'person', 'media' or 'ignored'. Marking a voice "
+                         "'media' stops anything it says being recorded as "
+                         "something the user said or committed to -- do that "
+                         "for a podcast host or a video, even without knowing "
+                         "who they are.")
+def set_voice_kind(person_id: int, kind: str) -> dict:
+    if kind not in ("person", "media", "ignored"):
+        return {"ok": False,
+                "error": "kind must be 'person', 'media' or 'ignored'"}
+    return _api(f"/api/voices/{int(person_id)}/kind", {"kind": kind})
+
+
+# ---- is it actually recording, and is it transcribed? ---------------------
+
+
+@server.tool(description="The recorders this install knows and whether each "
+                         "is connected right now.")
+def recorders() -> dict:
+    r = _api("/api/recorders")
+    if isinstance(r, dict) and r.get("ok") is False:
+        return r
+    return {"recorders": [
+        {"name": d.get("name"), "kind": d.get("kind"), "id": d.get("id"),
+         "address": d.get("address"), "connected": d.get("connected")}
+        for d in (r.get("recorders") or [])]}
+
+
+@server.tool(description="Why is a recorder not recording? Checks the radio, "
+                         "the bond, and whether the device is advertising, and "
+                         "says which of those is the problem. Read-only -- it "
+                         "does not connect or disconnect anything.")
+def diagnose_recorder(seconds: float = 8.0) -> dict:
+    return _api("/api/recorders/diagnose", {}, timeout=max(30, seconds * 4))
+
+
+@server.tool(description="How much of the archive is transcribed, and what is "
+                         "queued or running now. A silent backlog here is the "
+                         "usual reason a search finds nothing.")
+def transcription_status() -> dict:
+    import index_db
+    q = _api("/api/queue")
+    s = index_db.stats()
+    out = {"clips": s.get("clips"), "with_speech": s.get("with_speech"),
+           "segments": s.get("segments")}
+    if isinstance(q, dict) and q.get("ok") is False:
+        out["queue"] = q            # keep the reason, do not swallow it
+    else:
+        out.update(queued=q.get("pending"), running=q.get("busy"),
+                   automatic=q.get("auto"))
+    return out
+
+
+@server.tool(description="Queue every clip that has no transcript yet. Returns "
+                         "how many are waiting in total, not only what this "
+                         "call added -- most of a backlog is usually already "
+                         "in flight.")
+def transcribe_missing() -> dict:
+    return _api("/api/transcribe_all", {})
+
+
+@server.tool(description="Rebuild a search index. 'units' is the meaning index "
+                         "search_units uses and nothing rebuilds it on a "
+                         "schedule, so it goes stale after new recordings; "
+                         "'keyword' re-syncs the clip index; 'meaning' embeds "
+                         "any transcript line not yet indexed.")
+def rebuild_index(which: str = "units") -> dict:
+    if which == "units":
+        import units
+        n = units.rebuild()
+        return {"ok": True, "index": "units", "units": n}
+    if which == "keyword":
+        return {"ok": True, "index": "keyword", **(_api("/api/index/rebuild", {}) or {})}
+    if which == "meaning":
+        return {"ok": True, "index": "meaning",
+                **(_api("/api/search/semantic/rebuild", {}, timeout=1800) or {})}
+    return {"ok": False,
+            "error": "which must be 'units', 'keyword' or 'meaning'"}
+
+
+# ---- the reviewing pass ---------------------------------------------------
+
+
+@server.tool(description="Run the reviewing agent over one conversation now, "
+                         "rather than waiting for it to fire on silence. Pass "
+                         "the clip names; it widens them to the whole "
+                         "conversation itself. This is the same pass that "
+                         "writes tasks, facts, events and topic tags.")
+def review_conversation(clips: list) -> dict:
+    if isinstance(clips, str):
+        clips = [clips]
+    try:
+        clips = [_safe(c) for c in (clips or []) if c]
+    except ValueError as e:
+        return {"ok": False, "error": str(e)}
+    if not clips:
+        return {"ok": False, "error": "need at least one clip name"}
+    r = _api("/api/agent/review", {"names": clips}, timeout=900)
+    if isinstance(r, dict) and isinstance(r.get("clips"), list):
+        # The list stays, because it is the argument to mark_reviewed: what
+        # the agent widened to is exactly what has now been read, and it is
+        # not the same thing as "the conversation" -- grouping is much
+        # coarser than one review's window.
+        r = dict(r, clips_read=len(r["clips"]),
+                 conversation=r["clips"][0] if r["clips"] else None)
+    return r
+
+
+@server.tool(description="What the reviewing agent is set to and whether it "
+                         "can reach its model: which backend, which model, "
+                         "and how much is waiting to be read.")
+def agent_status() -> dict:
+    r = _api("/api/agent")
+    if isinstance(r, dict) and r.get("ok") is False:
+        return r
+    out = {k: r.get(k) for k in
+           ("enabled", "backend", "model", "backend_ready",
+            "pending_clips", "pending_chars", "busy")}
+    # A backend and a model from different worlds is this project's favourite
+    # kind of fault: nothing is broken until the next conversation ends, and
+    # then it fails in a log nobody reads. Found in exactly that state --
+    # backend `openrouter`, model `gpt-oss:20b`, which is an Ollama tag no
+    # hosted provider serves.
+    import llm
+    model = out.get("model") or ""
+    if out.get("backend") == "local" and "/" in model:
+        out["warning"] = f"{model!r} is a hosted model name and the backend " \
+                         f"is Ollama on this machine"
+    elif out.get("backend") in ("openai", "openrouter") and "/" not in model:
+        out["warning"] = f"{model!r} looks like an Ollama tag, not a model " \
+                         f"{out['backend']} serves -- reviews will fail"
+    elif out.get("backend") == "anthropic" and model not in llm.CLAUDE_MODELS:
+        out["warning"] = f"{model!r} is not one of {list(llm.CLAUDE_MODELS)}"
+    if out.get("enabled") is False and out.get("pending_clips"):
+        out["note"] = (f"{out['pending_clips']} clip(s) are waiting and "
+                       f"automatic reviewing is off; review_conversation "
+                       f"still works on demand")
+    return out
+
+
+@server.tool(description="Delete clips and their transcripts -- a recording "
+                         "that is silence, a test, or audio that should never "
+                         "have been kept. Voiceprints are untouched. Names "
+                         "must be given in full; there is no pattern form, on "
+                         "purpose.")
+def delete_clips(clips: list) -> dict:
+    if isinstance(clips, str):
+        clips = [clips]
+    try:
+        clips = [_safe(c) for c in (clips or []) if c]
+    except ValueError as e:
+        return {"ok": False, "error": str(e)}
+    if not clips:
+        return {"ok": False, "error": "need at least one clip name"}
+    return _api("/api/clips/delete", {"names": clips})
 
 
 def _require_http_ack():

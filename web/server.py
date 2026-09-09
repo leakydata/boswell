@@ -4175,11 +4175,19 @@ async def api_agent_config(body: dict):
         if not llm.available(want):
             raise HTTPException(400, f"no key for {want} — Settings → API keys")
         agent.backend = want
-        # A model name from the backend being left behind is a name the new
+        # A model name left behind by the previous backend is a name the new
         # one has never heard of, and the failure reads as the backend being
-        # broken rather than as a stale field.
+        # broken rather than as a stale field. Found in exactly that state:
+        # prefs carrying backend `openrouter` beside model `gpt-oss:20b`, an
+        # Ollama tag no hosted provider serves. Nothing said so until a
+        # conversation ended.
         if want == "anthropic" and agent.model not in llm.CLAUDE_MODELS:
             agent.model = llm.CLAUDE_DEFAULT
+        elif want == "openrouter" and "/" not in (agent.model or ""):
+            agent.model = llm.CLAUDE_VIA_OPENROUTER[0]
+        elif want == "local" and "/" in (agent.model or ""):
+            import agent_runner as _ar
+            agent.model = _ar.DEFAULT_MODEL
         device.event("log", text=f"agent thinking with {want}")
     if "idle_seconds" in body:
         agent.idle_seconds = max(10.0, float(body["idle_seconds"]))

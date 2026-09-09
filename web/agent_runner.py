@@ -69,11 +69,24 @@ def _store_path(kind):
 REVIEWS = os.path.join(DATA, "agent", "reviews.jsonl")
 
 
-def mark_reviewed(clip, by=None, note=None):
-    """Record that the conversation starting at `clip` has been reviewed."""
+def mark_reviewed(clip, by=None, note=None, clips=None):
+    """Record that the conversation starting at `clip` has been reviewed.
+
+    `clips` is every clip the review actually covered, and it matters more
+    than it looks. The cursor was the first clip alone, and conversation
+    grouping is not stable on a recorder that never stops: clips keep
+    arriving, the gap that separated two conversations fills in, and what was
+    one conversation starting at 17:52 is now a longer one starting somewhere
+    else. Mark the old first clip and the same speech comes back in the queue
+    under a new name -- observed immediately, a 38-minute conversation
+    returning as a 36-minute one three clips later. Recording the whole span
+    survives the regrouping.
+    """
     if not clip or os.path.basename(clip) != clip:
         raise ValueError(f"bad clip name: {clip!r}")
-    rec = {"clip": clip, "by": by or "mcp", "note": note,
+    covered = [c for c in (clips or []) if c and os.path.basename(c) == c]
+    rec = {"clip": clip, "clips": covered or [clip],
+           "by": by or "mcp", "note": note,
            "at": time.strftime("%Y-%m-%d %H:%M:%S")}
     os.makedirs(os.path.dirname(REVIEWS), exist_ok=True)
     with _store_lock():
@@ -85,7 +98,11 @@ def mark_reviewed(clip, by=None, note=None):
 
 
 def reviewed_clips():
-    """The set of conversation-start clips already reviewed."""
+    """Every clip covered by a review, not only the ones a review started at.
+
+    Older entries carry a `clip` and no `clips`; they still count for exactly
+    the one clip they named, which is what they meant when they were written.
+    """
     if not os.path.exists(REVIEWS):
         return set()
     out = set()
@@ -94,10 +111,10 @@ def reviewed_clips():
         if not line:
             continue
         try:
-            c = json.loads(line).get("clip")
+            d = json.loads(line)
         except Exception:
             continue
-        if c:
+        for c in (d.get("clips") or ([d["clip"]] if d.get("clip") else [])):
             out.add(c)
     return out
 
@@ -143,6 +160,16 @@ RECALL_MIN_SCORE = 0.55
 # record" every time, so it produced nothing at all over a whole day. Batches
 # are widened to the surrounding conversation before the model sees them.
 CONTEXT_GAP = 300.0        # same gap the recordings view groups conversations by
+# How far back to look for the conversation a clip belongs to.
+#
+# This was 400 clips, which is the last two or three hours on a recorder that
+# never stops. Right for the scheduled path, where the batch is always the
+# thing that just happened; wrong for reviewing anything already recorded --
+# a conversation from this afternoon fell outside it, so widening found
+# nothing and the model was handed one thirty-second clip with no context and
+# asked what was worth keeping. It answered honestly and there was nothing.
+# The whole archive groups in under a second and this is not on a hot path.
+WIDEN_SCAN = 20000
 # A long conversation can run to tens of thousands of characters. Past a point
 # the model is not reading more, it is losing the beginning, so the tail is
 # kept -- the most recent talk is the part most likely to contain something
@@ -405,7 +432,7 @@ class ConversationAgent:
             return batch
         have = {c for c, _, _ in batch}
         try:
-            convs = index_db.conversations(int(CONTEXT_GAP), 400)
+            convs = index_db.conversations(int(CONTEXT_GAP), WIDEN_SCAN)
         except Exception:
             return batch
 

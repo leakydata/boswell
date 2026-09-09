@@ -84,9 +84,13 @@ places, and the writing side is the same in all of them.
 **On this machine (Ollama).** The default, and it stays the default: free,
 private, nothing leaves. It wants a GPU to be quick and a model on disk.
 
-**An API — OpenAI or OpenRouter.** For the machines that have neither.
-OpenRouter speaks OpenAI's protocol, so it is one adapter for both. Transcripts
-are sent to be read, which is the trade.
+**An API — Claude, OpenAI or OpenRouter.** For the machines that have neither.
+Claude is a real translation rather than a header swap and gets its own
+backend; OpenAI and OpenRouter share one adapter, and OpenRouter serves the
+same Claude models at the same per-token price if that is the key you already
+have. Transcripts are sent to be read, which is the trade. Measured on this
+archive, the fixed prefix — system prompt plus tool schemas — dominates: about
+five cents a conversation on Opus 5, roughly ten dollars for the whole archive.
 
 **Claude or Codex, over MCP.** `host/boswell_mcp.py` is already an MCP server
 and already writes: `record_fact`, `record_task`, `record_event`,
@@ -97,8 +101,32 @@ reading. Every writer takes the clips the item came from, and refuses without
 them: an item that cannot be traced back to what was said is how the store
 once ended up with 74 facts nobody could check.
 
-It reads the archive's databases directly rather than over HTTP, so an agent
-running on this machine needs no tunnel and no token.
+Reading and the agent store come straight from the archive's databases, so an
+agent on this machine needs no tunnel and no token. The half that only the
+running server can answer — whether a recorder is connected, what is queued for
+transcription, running a review — is asked of it over loopback, because the
+transcription queue is an object inside that process and a second one loading
+Whisper would fight the first for the card.
+
+**The same tools from a shell.** `host/boswell_cli.py` reflects over the MCP
+registry, so every tool is a command with the same name and arguments and there
+is no second list to drift:
+
+```bash
+uv run host/boswell_cli.py                      # what there is
+uv run host/boswell_cli.py unreviewed_conversations
+uv run host/boswell_cli.py search_units --query "what I owe someone" --person "Nathan Jones"
+uv run host/boswell_cli.py review_conversation --clips omi_1788904400.wav
+```
+
+Answers are JSON, and a tool that reports failure exits non-zero — a caller
+that cannot tell "nothing matched" from "the server is not running" treats both
+as an empty result.
+
+**What is deliberately missing.** Nothing here starts recording. There is no
+tool to connect, arm or unmute a device: a disarmed recorder is almost always a
+decision somebody made about the room they are in, and `diagnose_recorder` will
+tell you the radio is off without turning it on.
 
 Whichever is chosen, a model that cannot be reached is never fatal. The
 conversation is already transcribed and searchable; what is missed is a round
