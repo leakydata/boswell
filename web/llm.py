@@ -9,6 +9,22 @@ often have neither the card nor a 20B model sitting on disk.
 So the same loop can talk to an OpenAI-compatible endpoint instead. OpenRouter
 speaks that protocol too, which is one adapter for both.
 
+Claude is the third, and it is not that protocol. The Anthropic API keeps the
+system prompt out of the message list, describes a tool by `input_schema`
+rather than `function.parameters`, and answers with a list of content blocks
+instead of a string beside a list of calls. That is a real translation rather
+than a header swap, and it lives in `_for_claude` and `_from_claude` below so
+the agent loop keeps seeing exactly one message shape.
+
+One thing there is worth knowing about. When Claude thinks, the reasoning
+comes back as a block of its own, and a following turn in the same tool-use
+exchange has to carry those blocks back unchanged or the request is refused.
+Reconstructing them from the flattened Ollama shape is impossible -- the
+signature is gone -- so the raw blocks ride along on the returned message
+under `_claude` and are sent back verbatim. The agent loop appends whatever
+it is given and never looks inside, which is why this works without touching
+it.
+
 What differs between them is smaller than it looks. Both take `messages` and
 `tools`, and the tool schemas this project already uses are in OpenAI's
 `{"type": "function", "function": {...}}` shape, so they pass through
@@ -30,6 +46,29 @@ ENDPOINTS = {
     "openrouter": ("https://openrouter.ai/api/v1/chat/completions",
                    "OPENROUTER_API_KEY"),
 }
+CLAUDE_KEY = "ANTHROPIC_API_KEY"
+# Everything the agent may be pointed at. `ENDPOINTS` is no longer the whole
+# list, so anything validating a backend against it would silently refuse
+# Claude.
+BACKENDS = ("local",) + tuple(ENDPOINTS) + ("anthropic",)
+
+# The model list is short on purpose: these are the ones worth pointing at a
+# transcript, cheapest last. Opus reads a conversation the way a person would
+# -- it notices that a commitment was walked back two lines later -- and the
+# archive is small enough that the difference costs cents a day. Haiku is
+# there for somebody running this over a much larger archive who wants tags
+# more than judgement.
+CLAUDE_MODELS = ("claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5")
+CLAUDE_DEFAULT = "claude-opus-5"
+# The same models through OpenRouter, at the time of writing for the same
+# per-token price. Worth listing because a lot of people arriving at this
+# project already have an OpenRouter key and no Anthropic one, and this is
+# the difference between reading the next paragraph and not.
+CLAUDE_VIA_OPENROUTER = ("anthropic/claude-opus-5", "anthropic/claude-sonnet-5",
+                         "anthropic/claude-haiku-4.5")
+# Room for a full round of tool calls. Thinking is billed and counted inside
+# this, so it is not the size of the answer.
+CLAUDE_MAX_TOKENS = 16000
 
 
 class Unavailable(RuntimeError):
@@ -41,6 +80,8 @@ class Unavailable(RuntimeError):
 def available(backend):
     if backend == "local":
         return True          # decided by whether Ollama answers, not by a key
+    if backend == "anthropic":
+        return bool(secrets_store.get(CLAUDE_KEY))
     spec = ENDPOINTS.get(backend)
     return bool(spec and secrets_store.get(spec[1]))
 
@@ -72,6 +113,9 @@ def chat(backend, model, messages, tools, timeout=600):
     already consumes, and a loop that has been correct for months is not
     worth rewriting to suit a second provider.
     """
+    if backend == "anthropic":
+        return _claude(model, messages, tools, timeout)
+
     if backend == "local":
         d = _post(OLLAMA, {"model": model, "messages": messages,
                            "tools": tools, "stream": False,
@@ -132,3 +176,155 @@ def _for_openai(messages):
             m.setdefault("content", m.get("content") or "")
         out.append(m)
     return out
+
+
+# ---- Claude ---------------------------------------------------------------
+#
+# Three shapes have to line up: what the agent loop speaks (Ollama's), what
+# the Anthropic API takes, and what it gives back. Each direction is one
+# function below, and none of them knows anything about this project.
+
+
+def _claude(model, messages, tools, timeout):
+    """One turn on the Anthropic API, answered in Ollama's message shape."""
+    try:
+        import anthropic
+    except ImportError:
+        raise Unavailable("the anthropic package is not installed "
+                          "(pip install anthropic)")
+
+    key = secrets_store.get(CLAUDE_KEY)
+    if not key:
+        raise Unavailable("no key for anthropic — Settings → API keys")
+
+    client = anthropic.Anthropic(api_key=key, timeout=float(timeout))
+    system, convo = _for_claude(messages)
+    try:
+        r = client.messages.create(
+            model=model or CLAUDE_DEFAULT,
+            max_tokens=CLAUDE_MAX_TOKENS,
+            # The tools and the system prompt are identical on every review
+            # and the transcript is not, so the breakpoint goes at the end of
+            # the stable part. Caching is a prefix match and the order on the
+            # wire is tools, then system, then messages -- so one mark here
+            # covers both of the things that repeat.
+            system=[{"type": "text", "text": system,
+                     "cache_control": {"type": "ephemeral"}}] if system else None,
+            messages=convo,
+            tools=[_claude_tool(t) for t in tools] or None,
+            # Deciding what in an hour of talk is worth keeping, and whether
+            # it is already recorded, is the kind of judgement this is for.
+            thinking={"type": "adaptive"},
+        )
+    except anthropic.APIStatusError as e:
+        raise Unavailable(f"{e.status_code}: {str(getattr(e, 'message', e))[:140]}")
+    except anthropic.APIConnectionError as e:
+        raise Unavailable(f"{type(e).__name__}: {str(e)[:140]}")
+
+    # A decline is reported rather than routed around. Server-side fallbacks
+    # would rerun this on another model inside the same call, and an archive
+    # of somebody's own conversations is the wrong place for a silent change
+    # of author: what was recorded, and by which model, is the whole point.
+    if r.stop_reason == "refusal":
+        cat = getattr(r.stop_details, "category", None) if r.stop_details else None
+        raise Unavailable(f"declined this transcript ({cat or 'no category given'})")
+    return _from_claude(r)
+
+
+def _claude_tool(t):
+    """An OpenAI function schema as a Claude tool. Same fields, other names."""
+    fn = t.get("function", t)
+    return {"name": fn.get("name"),
+            "description": fn.get("description") or "",
+            "input_schema": fn.get("parameters")
+                            or {"type": "object", "properties": {}}}
+
+
+def _from_claude(r):
+    """A Claude response as the message the agent loop already consumes.
+
+    `_claude` carries the raw blocks. They are the thinking blocks and their
+    signatures, which cannot be rebuilt from anything else here and which the
+    next request in a tool-use exchange has to send back unchanged.
+    """
+    text, calls = [], []
+    for b in r.content:
+        if b.type == "text":
+            text.append(b.text)
+        elif b.type == "tool_use":
+            calls.append({"id": b.id, "type": "function",
+                          "function": {"name": b.name, "arguments": b.input}})
+    return {"role": "assistant", "content": "".join(text),
+            "tool_calls": calls,
+            "_claude": [b.model_dump() for b in r.content]}
+
+
+def _for_claude(messages):
+    """The loop's messages as (system, messages) for the Anthropic API.
+
+    Three differences to absorb:
+
+    - The system prompt is a parameter there, not a message. Every system
+      message is lifted out and joined.
+    - A tool result is a block inside a *user* message quoting the id of the
+      call it answers -- and every result for one assistant turn has to be in
+      the same message, so consecutive results are gathered rather than sent
+      one per turn. Ollama pairs by order, so the ids are recovered the same
+      way `_for_openai` does it.
+    - An assistant turn that came from Claude is replayed from its raw blocks
+      when they are there, which keeps thinking intact.
+    """
+    system, out, pending = [], [], []
+    for m in messages:
+        role = m.get("role")
+
+        if role == "system":
+            if m.get("content"):
+                system.append(m["content"])
+            continue
+
+        if role == "tool":
+            cid = pending.pop(0) if pending else None
+            block = {"type": "tool_result",
+                     "tool_use_id": cid or "unknown",
+                     "content": m.get("content") or ""}
+            last = out[-1] if out else None
+            if (last and last["role"] == "user"
+                    and isinstance(last["content"], list)
+                    and last["content"][0].get("type") == "tool_result"):
+                last["content"].append(block)
+            else:
+                out.append({"role": "user", "content": [block]})
+            continue
+
+        if role == "assistant":
+            for i, c in enumerate(m.get("tool_calls") or []):
+                pending.append(c.get("id") or f"call_{len(out)}_{i}")
+            raw = m.get("_claude")
+            if raw:
+                out.append({"role": "assistant", "content": raw})
+                continue
+            blocks = []
+            if (m.get("content") or "").strip():
+                blocks.append({"type": "text", "text": m["content"]})
+            for i, c in enumerate(m.get("tool_calls") or []):
+                fn = c.get("function", {})
+                args = fn.get("arguments")
+                if isinstance(args, str):
+                    try:
+                        args = json.loads(args)
+                    except ValueError:
+                        args = {}
+                blocks.append({"type": "tool_use",
+                               "id": c.get("id") or f"call_{len(out)}_{i}",
+                               "name": fn.get("name"),
+                               "input": args or {}})
+            # An assistant turn with nothing in it is rejected, and there is
+            # nothing to replay anyway.
+            if blocks:
+                out.append({"role": "assistant", "content": blocks})
+            continue
+
+        out.append({"role": "user", "content": m.get("content") or ""})
+
+    return "\n\n".join(system), out

@@ -739,6 +739,7 @@ uv pip install numpy scipy pyserial bleak soundfile requests intelhex
 uv pip install fastapi "uvicorn[standard]"
 uv pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu128
 uv pip install whisperx
+uv pip install anthropic          # only to have Claude do the reviewing
 
 # 2. firmware
 arduino-cli core install Seeeduino:nrf52

@@ -1663,6 +1663,7 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
       <label class="row">Thinking with
         <select class="filter" id="agentBackend" aria-label="Where the agent runs">
           <option value="local">On this machine (Ollama)</option>
+          <option value="anthropic">Claude (Anthropic)</option>
           <option value="openai">OpenAI</option>
           <option value="openrouter">OpenRouter</option>
         </select>
@@ -3479,31 +3480,35 @@ async function loadAgent(){
     const a = await (await fetch("/api/agent")).json();
     $("agentOn").setAttribute("aria-checked", !!a.enabled);
     paintAgentState(a);
-    $("agentBackend").value = a.backend || "local";
-    /* The model list comes from Ollama, so it is only the right list when
-       Ollama is the one answering. Offering local model names to a hosted
-       provider would be a list of things that cannot work. */
+    const backend = a.backend || "local";
+    $("agentBackend").value = backend;
+    /* Whose model names these are changes with the backend, so the list is
+       fetched per backend rather than once. Ollama's names offered to a
+       hosted provider would be a list of things that cannot work. */
     const sel = $("agentModel");
-    const isLocal = (a.backend || "local") === "local";
-    sel.hidden = !isLocal;
-    if (isLocal){
-      if (!sel.options.length){
-        const m = await (await fetch("/api/models")).json();
-        for (const name of (m.models || [])){
-          const o = document.createElement("option");
-          o.value = o.textContent = name;
-          sel.appendChild(o);
-        }
+    if (sel.dataset.backend !== backend){
+      sel.dataset.backend = backend;
+      sel.textContent = "";
+      const m = await (await fetch("/api/models?backend=" + encodeURIComponent(backend))).json();
+      for (const name of (m.models || [])){
+        const o = document.createElement("option");
+        o.value = o.textContent = name;
+        sel.appendChild(o);
       }
-      sel.value = a.model;
     }
-    $("agentBackendNote").textContent = isLocal
+    sel.hidden = !sel.options.length;
+    if (!sel.hidden) sel.value = a.model;
+    $("agentBackendNote").textContent = backend === "local"
       ? "Nothing leaves the machine. Needs Ollama running, and a card to be "
         + "quick about it."
-      : (a.backend_ready
-          ? `Transcripts are sent to ${a.backend} to be read. Set the model `
-            + `name below.`
-          : `No key for ${a.backend} — Settings → API keys.`);
+      : (!a.backend_ready
+          ? `No key for ${backend} — Settings → API keys.`
+          : backend === "anthropic"
+            ? "Finished conversations are sent to Anthropic to be read. Claude "
+              + "writes the tasks, facts, dates and topic tags, and can see "
+              + "what it recorded before, so it says \u201calready known\u201d "
+              + "rather than recording it twice."
+            : `Transcripts are sent to ${backend} to be read.`);
   }catch(e){}
 }
 

@@ -4170,11 +4170,16 @@ async def api_agent_config(body: dict):
         agent.model = str(body["model"])
     if "backend" in body:
         want = str(body["backend"])
-        if want not in ("local",) + tuple(llm.ENDPOINTS):
+        if want not in llm.BACKENDS:
             raise HTTPException(400, "unknown backend " + want)
         if not llm.available(want):
             raise HTTPException(400, f"no key for {want} — Settings → API keys")
         agent.backend = want
+        # A model name from the backend being left behind is a name the new
+        # one has never heard of, and the failure reads as the backend being
+        # broken rather than as a stale field.
+        if want == "anthropic" and agent.model not in llm.CLAUDE_MODELS:
+            agent.model = llm.CLAUDE_DEFAULT
         device.event("log", text=f"agent thinking with {want}")
     if "idle_seconds" in body:
         agent.idle_seconds = max(10.0, float(body["idle_seconds"]))
@@ -4257,8 +4262,24 @@ async def api_clear_items(kind: str | None = None):
 
 
 @app.get("/api/models")
-async def api_models():
-    """Ollama models that support tool calling."""
+async def api_models(backend: str = "local"):
+    """The models the chosen backend can be pointed at.
+
+    It used to answer for Ollama and nothing else, which was right while
+    Ollama was the only backend with names worth listing. A hosted provider
+    offered that list would be offered a list of things that cannot work.
+    """
+    if backend == "anthropic":
+        return {"models": list(llm.CLAUDE_MODELS), "default": llm.CLAUDE_DEFAULT}
+    if backend == "openrouter":
+        # OpenRouter carries hundreds of models and this is not a shopping
+        # list -- it is the shortest route to Claude reviewing conversations
+        # for somebody who already has this key and no Anthropic one. Any
+        # other model can still be set through the API.
+        return {"models": list(llm.CLAUDE_VIA_OPENROUTER),
+                "default": llm.CLAUDE_VIA_OPENROUTER[0]}
+    if backend != "local":
+        return {"models": []}
     try:
         import requests as rq
         r = rq.get("http://localhost:11434/api/tags", timeout=5)

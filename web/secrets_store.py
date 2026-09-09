@@ -41,6 +41,14 @@ KEYS = {
                 "is transcribed with nobody in it, and no voice can be named.",
         "url": "https://huggingface.co/settings/tokens",
     },
+    "ANTHROPIC_API_KEY": {
+        "label": "Anthropic (Claude)",
+        "help": "Lets Claude read finished conversations and write the tasks, "
+                "facts, dates and topic tags -- the reviewing this project "
+                "otherwise does with a 20B model on your own card. Needed "
+                "only if you have no GPU, or want the better reader.",
+        "url": "https://console.anthropic.com/settings/keys",
+    },
     "OPENAI_API_KEY": {
         "label": "OpenAI",
         "help": "Not used yet. For transcription on a machine with no GPU, "

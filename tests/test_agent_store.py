@@ -159,3 +159,26 @@ class TestMergeItems:
         before = (store / "tasks.jsonl").read_text()
         assert not t.merge_items("tasks", "a", [])["ok"]
         assert (store / "tasks.jsonl").read_text() == before
+
+
+def test_a_fact_cannot_be_filed_under_a_diarizer_label():
+    """SPEAKER_00 is a position in one recording, not a person.
+
+    The first review this project ever ran recorded "Is a firmware engineer
+    by trade" about SPEAKER_00 -- a claim made by a YouTube video playing
+    near the microphone. The [MEDIA] filter that exists to stop exactly that
+    matches on names, so a host nobody has named yet arrives unmarked. This
+    closes the half that can be closed at the store: a fact whose subject is
+    an unresolved label cannot be found again under any name and should not
+    be written.
+    """
+    import sys, os
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "host"))
+    import tools_impl
+    for label in ("SPEAKER_00", "SPEAKER_12", "speaker_3", "  SPEAKER_01 "):
+        r = tools_impl.remember_fact(label, "is a firmware engineer")
+        assert r["ok"] is False, f"{label} was accepted as a person"
+        assert "add_note" in r["error"], "it does not say what to do instead"
+    # A person, or a project, is still a subject.
+    for good in ("Nathan", "Boswell", "SPEAKER SYSTEM", "Speaker Corp"):
+        assert not tools_impl.UNRESOLVED.match(good)

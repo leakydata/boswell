@@ -92,3 +92,119 @@ def test_a_model_that_cannot_be_reached_is_not_fatal():
                             "web", "agent_runner.py")).read()
     assert "except llm.Unavailable" in src
     assert "break" in src[src.index("except llm.Unavailable"):][:400]
+
+
+# ---- Claude ---------------------------------------------------------------
+#
+# The Anthropic API is not the OpenAI protocol wearing a different hostname,
+# so unlike OpenRouter it needed a real translation. These pin the three
+# places that translation can be wrong without failing loudly.
+
+
+def test_claude_is_a_backend_the_server_will_accept():
+    # `ENDPOINTS` stopped being the list of backends when Claude arrived, and
+    # anything still validating against it refuses Claude with "unknown
+    # backend" -- a message that sends you looking in the wrong file.
+    assert "anthropic" in llm.BACKENDS
+    assert "anthropic" not in llm.ENDPOINTS
+    src = open(os.path.join(os.path.dirname(__file__), "..",
+                            "web", "server.py")).read()
+    assert "tuple(llm.ENDPOINTS)" not in src
+
+
+def test_the_system_prompt_is_lifted_out_of_the_messages():
+    # It is a parameter there, not a message. Left in the list it is either
+    # rejected or read as something the user said.
+    system, msgs = llm._for_claude([
+        {"role": "system", "content": "you review transcripts"},
+        {"role": "user", "content": "here is one"}])
+    assert system == "you review transcripts"
+    assert msgs == [{"role": "user", "content": "here is one"}]
+
+
+def test_a_tool_result_quotes_the_call_it_answers():
+    """Ollama pairs a result to its call by order; Claude pairs by id, and a
+    result whose id does not match is an error rather than a mismatch you can
+    see in the output."""
+    system, msgs = llm._for_claude([
+        {"role": "user", "content": "u"},
+        {"role": "assistant", "content": "",
+         "tool_calls": [{"id": "toolu_1", "function":
+                         {"name": "tag_topics", "arguments": {"topics": ["x"]}}}]},
+        {"role": "tool", "name": "tag_topics", "content": '{"ok": true}'}])
+    assert msgs[-1]["role"] == "user"
+    block = msgs[-1]["content"][0]
+    assert block["type"] == "tool_result"
+    assert block["tool_use_id"] == "toolu_1"
+
+
+def test_results_for_one_turn_arrive_in_one_message():
+    # Every result answering a single assistant turn has to be in the same
+    # user message. Split across two, the second has no call left to answer.
+    _, msgs = llm._for_claude([
+        {"role": "user", "content": "u"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "a", "function": {"name": "add_note", "arguments": {}}},
+            {"id": "b", "function": {"name": "tag_topics", "arguments": {}}}]},
+        {"role": "tool", "name": "add_note", "content": "{}"},
+        {"role": "tool", "name": "tag_topics", "content": "{}"}])
+    assert len(msgs) == 3, "the two results were sent as separate turns"
+    assert [b["tool_use_id"] for b in msgs[-1]["content"]] == ["a", "b"]
+
+
+def test_thinking_is_replayed_rather_than_rebuilt():
+    """A following turn in a tool-use exchange has to carry the thinking
+    blocks back unchanged, signature included. Nothing in the flattened
+    message shape can reconstruct one, so the raw blocks ride along on the
+    message and are sent back verbatim."""
+    raw = [{"type": "thinking", "thinking": "", "signature": "sig..."},
+           {"type": "tool_use", "id": "toolu_1", "name": "add_note", "input": {}}]
+    _, msgs = llm._for_claude([
+        {"role": "user", "content": "u"},
+        {"role": "assistant", "content": "", "_claude": raw,
+         "tool_calls": [{"id": "toolu_1",
+                         "function": {"name": "add_note", "arguments": {}}}]}])
+    assert msgs[-1]["content"] is raw
+
+
+def test_an_empty_assistant_turn_is_dropped_not_sent():
+    # A message with no content at all is rejected, and there was nothing in
+    # it to replay.
+    _, msgs = llm._for_claude([{"role": "user", "content": "u"},
+                               {"role": "assistant", "content": ""}])
+    assert msgs == [{"role": "user", "content": "u"}]
+
+
+def test_a_tool_schema_survives_the_rename():
+    t = {"type": "function", "function": {
+        "name": "add_task", "description": "save one",
+        "parameters": {"type": "object", "properties": {"text": {"type": "string"}}}}}
+    got = llm._claude_tool(t)
+    assert got["name"] == "add_task"
+    assert got["input_schema"] == t["function"]["parameters"]
+    assert "parameters" not in got
+
+
+def test_a_decline_is_reported_not_routed_around():
+    """Server-side fallbacks would rerun a refused review on another model
+    inside the same call. For an archive of somebody's own conversations that
+    is the wrong trade: what was recorded, and by which model, is the point.
+    """
+    src = open(os.path.join(os.path.dirname(__file__), "..", "web", "llm.py")).read()
+    fn = src[src.index("def _claude("):]
+    fn = fn[:fn.index("\ndef ")]
+    assert 'r.stop_reason == "refusal"' in fn
+    assert "fallbacks=" not in fn
+
+
+def test_claude_needs_a_key_like_any_other_hosted_backend():
+    import secrets_store, tempfile
+    secrets_store.PATH = os.path.join(tempfile.mkdtemp(), "secrets.json")
+    saved = os.environ.pop("ANTHROPIC_API_KEY", None)
+    try:
+        assert llm.available("anthropic") is False
+        secrets_store.set_key("ANTHROPIC_API_KEY", "sk-ant-x")
+        assert llm.available("anthropic") is True
+    finally:
+        if saved is not None:
+            os.environ["ANTHROPIC_API_KEY"] = saved

@@ -172,6 +172,15 @@ Rules:
   podcast, music -- not people in the room. Never record a task, fact or
   event from them, and never attribute anything to a [MEDIA] speaker. They
   are shown only so you can follow what the real speakers are reacting to.
+- A speaker shown as SPEAKER_xx has not been identified. That label is a
+  position in this recording only and means a different voice in the next
+  one, so it is never the subject of a fact and never the owner of a task.
+  It is also where the [MEDIA] marking above fails: marking works by name,
+  so a podcast host nobody has named yet arrives unmarked and looking like a
+  person in the room. Treat an unnamed voice making broadcast-sounding
+  claims -- addressing an audience, selling something, explaining at length
+  with no one answering -- as media, and record it as a note about what was
+  playing, if at all.
 
 You may be shown ALREADY KNOWN entries retrieved from earlier conversations.
 They are what you have recorded before. Use them:

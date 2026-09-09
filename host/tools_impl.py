@@ -8,6 +8,7 @@ import contextlib
 import fcntl
 import json
 import os
+import re
 import time
 
 # Derived from this file, not from the working directory. As a relative path
@@ -121,8 +122,33 @@ def add_calendar_event(title, start, end=None, attendees=None):
     return {"ok": True, "saved": "event", "title": r["title"], "start": r["start"]}
 
 
+# A diarizer label, which is a position in one conversation and not a person.
+#
+# SPEAKER_00 is whoever the clustering happened to number first in *this*
+# recording; tomorrow it is somebody else. A durable fact filed under it is
+# worse than no fact -- it reads as knowledge about a named person and points
+# at nobody.
+#
+# It is also where the media filter leaks. That filter marks lines as [MEDIA]
+# by matching the speaker's *name* against the people store, so a YouTube
+# host who has not been named yet is not filtered, and the first review of
+# this archive duly recorded "Is a firmware engineer by trade" about
+# SPEAKER_00 -- a claim made by a video playing near the microphone. The
+# model was not wrong about what it read; it should not have been shown it as
+# a person. Refusing the unresolved label closes the half of that which can
+# be closed here, and says why, so the model records the same thing as a note
+# instead of silently losing it.
+UNRESOLVED = re.compile(r"^\s*(SPEAKER|speaker)[ _-]?\d+\s*$")
+
+
 def remember_fact(subject, fact):
     """Save a durable fact about a person or project."""
+    if UNRESOLVED.match(subject or ""):
+        return {"ok": False, "error":
+                f"{subject!r} is a diarizer label, not a person -- it means a "
+                "different voice in every recording, so a fact filed under it "
+                "cannot be found again. Name the person, or if the voice is "
+                "unidentified use add_note instead."}
     r = _append("facts", {"subject": subject, "fact": fact})
     return {"ok": True, "saved": "fact", "subject": r["subject"]}
 
