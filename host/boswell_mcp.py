@@ -502,6 +502,61 @@ def _require_http_ack():
     )
 
 
+def _bearer_gate(app, token):
+    """Refuse anything without the token, before it reaches the archive.
+
+    Defence in depth, not the main lock. The main lock is that this binds to
+    loopback or to a tailnet address and is never public. But a tunnel
+    misconfigured, an access policy that lapses, or five minutes of
+    `--host 0.0.0.0` while testing something should not be the only thing
+    between a stranger and every conversation in the house. The tunnel
+    carrying the auth and the server carrying none is one mistake deep.
+
+    Compared with compare_digest so a wrong token cannot be found a character
+    at a time by timing the refusal.
+    """
+    import hmac
+
+    expected = f"Bearer {token}"
+
+    async def gated(scope, receive, send):
+        if scope.get("type") != "http":
+            return await app(scope, receive, send)
+        headers = {k.lower(): v for k, v in (scope.get("headers") or [])}
+        got = headers.get(b"authorization", b"").decode("utf-8", "replace")
+        if not hmac.compare_digest(got, expected):
+            await send({"type": "http.response.start", "status": 401,
+                        "headers": [(b"content-type", b"text/plain"),
+                                    (b"www-authenticate", b'Bearer realm="boswell"')]})
+            await send({"type": "http.response.body",
+                        "body": b"boswell: a bearer token is required\n"})
+            return
+        await app(scope, receive, send)
+
+    return gated
+
+
+def _http_token():
+    """The token HTTP mode requires, or exit saying how to set one.
+
+    Required rather than optional. An unauthenticated port is fine on
+    loopback and catastrophic the moment anything forwards to it, and the
+    difference between those two is a decision made elsewhere, later, by
+    somebody who may not remember this ran without a password.
+    """
+    token = os.environ.get("BOSWELL_MCP_TOKEN", "")
+    if len(token) >= 16:
+        return token
+    sys.exit(
+        "Refusing to serve the archive over HTTP without a token.\n\n"
+        "  Set one, at least 16 characters:\n"
+        "      export BOSWELL_MCP_TOKEN=\"$(openssl rand -hex 24)\"\n\n"
+        "  Clients send it as:  Authorization: Bearer <token>\n\n"
+        "  This is not the main protection -- bind to loopback or a tailnet\n"
+        "  address and keep the port off the public internet. It is what\n"
+        "  stands there when that goes wrong.")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--http", action="store_true",
@@ -512,9 +567,16 @@ def main():
     a = ap.parse_args()
     if a.http:
         _require_http_ack()
-        server.settings.host = a.host
-        server.settings.port = a.port
-        server.run(transport="streamable-http")
+        token = _http_token()
+        # host and port go to uvicorn, not to server.settings: mcp 2.x
+        # dropped those fields, and setting them raised
+        # `"Settings" object has no field "host"` -- so HTTP mode had been
+        # broken since that upgrade and nobody had run it to find out.
+        import uvicorn
+        print(f"boswell mcp on http://{a.host}:{a.port}/mcp  (bearer token required)",
+              file=sys.stderr, flush=True)
+        uvicorn.run(_bearer_gate(server.streamable_http_app(), token),
+                    host=a.host, port=a.port, log_level="warning")
     else:
         server.run(transport="stdio")
 

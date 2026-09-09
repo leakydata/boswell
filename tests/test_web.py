@@ -2582,3 +2582,35 @@ def test_the_page_opens_on_the_first_tab_not_a_named_favourite():
     fn = fn[:fn.index("\n}")]
     assert 'devSeg = orderedKinds(kinds)[0]' in fn
     assert 'kinds.includes("boswell") ? "boswell"' not in fn
+
+
+def test_the_mcp_refuses_http_without_a_token():
+    """An unauthenticated port is fine on loopback and catastrophic the
+    moment anything forwards to it -- and the forwarding decision is made
+    elsewhere, later, by somebody who may not remember this ran without a
+    password. So the token is required, not optional.
+    """
+    src = _read("host/boswell_mcp.py")
+    assert "def _http_token" in src, "HTTP mode can run unauthenticated"
+    fn = src[src.index("def _http_token"):]
+    fn = fn[:fn.index("\ndef ")]
+    assert "sys.exit(" in fn, "a missing token is a warning rather than a refusal"
+    assert "BOSWELL_MCP_TOKEN" in fn
+    # And the explicit acknowledgement still stands in front of it.
+    assert "_require_http_ack()" in src
+
+
+def test_the_token_check_is_constant_time():
+    # Otherwise a wrong token can be found a character at a time by timing
+    # how long the refusal takes.
+    src = _read("host/boswell_mcp.py")
+    fn = src[src.index("def _bearer_gate"):]
+    fn = fn[:fn.index("\ndef ")]
+    assert "hmac.compare_digest" in fn
+    assert "401" in fn
+
+
+def test_the_mcp_binds_to_loopback_by_default():
+    # Exposure is a deliberate act, not a default.
+    src = _read("host/boswell_mcp.py")
+    assert 'ap.add_argument("--host", default="127.0.0.1")' in src
