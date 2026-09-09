@@ -24,6 +24,7 @@ import asyncio
 import json
 import os
 import signal
+import subprocess
 import sys
 import time
 
@@ -82,6 +83,91 @@ LAST = {"stats": {}, "session": None}
 # that finds nothing waiting -- reaching the ring and being told it is empty
 # is a working sync.
 SYNC_FAIL = {"n": 0, "last": None, "at": None}
+
+# Resetting the host Bluetooth stack when sync alone is failing.
+#
+# 2026-09-09: 37 minutes recorded out of range buffered correctly to the ring,
+# and then every read of it failed for eighty minutes -- TimeoutError, "did
+# not answer the ring query", org.bluez.Error.InProgress, "failed to discover
+# services" -- while live capture kept writing clips the whole time. The
+# device was fine, the link was fine at -61 dBm, and the audio was fine. The
+# host's own connection state was stale: bluetoothd was logging "No matching
+# connection for device". A `systemctl restart bluetooth` fixed it in fifteen
+# seconds and the ring answered in 0.1 s. Nothing in this daemon noticed, so
+# it retried the identical failing call every ninety seconds until a person
+# looked.
+#
+# The gate matters more than the cure. Sync failing on its own is not enough
+# -- when the recorder is genuinely away, sync fails all day and resetting the
+# adapter every half hour would drop the owner's keyboard for nothing. The
+# signature of a wedged stack is specifically **live audio still arriving
+# while sync alone fails**: if the device were out of range, both would fail.
+# So a reset needs recent frames as well as repeated sync failures.
+HEAL_AFTER = 4                    # consecutive sync failures
+HEAL_EVERY = 30 * 60              # never more often than this
+HEAL_FRAMES_WITHIN = 20 * 60      # a session must have delivered audio since
+
+HEAL = {"at": None, "n": 0, "last": None}
+
+
+def _streaming_recently():
+    """Did a live session actually receive audio in the last few minutes?
+
+    This is the half of the signature that says the device is present and
+    the radio works, which is what makes a host-side reset the right answer
+    rather than a destructive guess.
+    """
+    last = LAST.get("session") or {}
+    if not last.get("frames"):
+        return False
+    ended = last.get("ended") or last.get("began")
+    return bool(ended) and (time.time() - ended) < HEAL_FRAMES_WITHIN
+
+
+def _should_heal():
+    if SYNC_FAIL["n"] < HEAL_AFTER:
+        return False
+    if HEAL["at"] and (time.time() - HEAL["at"]) < HEAL_EVERY:
+        return False
+    return _streaming_recently()
+
+
+def _heal_bluetooth():
+    """Restart the host Bluetooth stack, then bounce the adapter.
+
+    Deliberately blunt, and deliberately rare. It costs every other BLE
+    device on this machine a few seconds -- a keyboard blinks out and comes
+    back -- which is worth paying to keep hours of recorded audio
+    collectable, and not worth paying on a schedule.
+
+    Failure here is reported and otherwise ignored: a daemon that cannot
+    reset the adapter should carry on recording, not exit.
+    """
+    HEAL["at"] = time.time()
+    HEAL["n"] += 1
+    print(f"sync has failed {SYNC_FAIL['n']} times while audio kept "
+          f"arriving -- resetting the Bluetooth stack", flush=True)
+    for cmd in (["sudo", "-n", "systemctl", "restart", "bluetooth"],
+                ["sudo", "-n", "hciconfig", "hci0", "down"],
+                ["sudo", "-n", "hciconfig", "hci0", "up"]):
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            if r.returncode != 0:
+                HEAL["last"] = (f"{' '.join(cmd[2:])}: "
+                                f"{(r.stderr or '').strip()[:120]}")
+                print(f"  {cmd[2:]} -> {HEAL['last']}", flush=True)
+                # A failed restart is worth reporting; a failed adapter
+                # bounce after a good restart is not worth aborting for.
+                if "restart" in cmd:
+                    return False
+        except Exception as e:
+            HEAL["last"] = f"{type(e).__name__}: {e}"
+            print(f"  reset failed: {HEAL['last']}", flush=True)
+            return False
+        time.sleep(2)
+    HEAL["last"] = None
+    print("  Bluetooth stack reset; the next sync will retry", flush=True)
+    return True
 
 
 def _restore_last():
@@ -145,6 +231,11 @@ def publish(**fields):
                 "consecutive": SYNC_FAIL["n"],
                 "last_error": SYNC_FAIL["last"],
                 "since": SYNC_FAIL["at"],
+                # So the interface can say "it is being dealt with" rather
+                # than only "it is broken".
+                "healed": HEAL["n"],
+                "healed_at": HEAL["at"],
+                "heal_error": HEAL["last"],
             }
     except Exception:
         pass
@@ -349,6 +440,15 @@ async def one_session(address, quiet=False, dev=None):
         SYNC_FAIL["n"] += 1
         SYNC_FAIL["last"] = f"{type(e).__name__}: {e}".strip().rstrip(":")
         SYNC_FAIL["at"] = time.time()
+        # Counting the failures was the whole of the response until now: the
+        # figure went into the status file and the same call was retried
+        # forever. When live audio is still arriving, the fault is this
+        # machine's and it is fixable from here.
+        if _should_heal():
+            try:
+                await asyncio.to_thread(_heal_bluetooth)
+            except Exception as e:
+                print(f"heal: {type(e).__name__}: {e}", flush=True)
         # That handle is spent. A sighting names a D-Bus object BlueZ made
         # when it saw the device, and BlueZ drops the object once the device
         # goes -- so handing it to the stream after it has already failed

@@ -230,6 +230,12 @@ nav.tabs button[aria-selected=true]{background:var(--surface);color:var(--ink);
   padding:8px 14px;font-size:14px;border-radius:7px}
 /* The low-use filters live behind the toggle at every width; the four
    workflow filters stay out. On a phone the whole panel folds away. */
+.stuckbar{grid-column:1/-1;margin:0 0 10px;padding:10px 14px;
+  border:1px solid var(--bad);border-left:4px solid var(--bad);
+  border-radius:8px;background:color-mix(in srgb,var(--bad) 9%,var(--surface));
+  color:var(--ink);font-size:13px;line-height:1.5}
+.stuckbar b{color:var(--bad)}
+.stuckbar .sub{display:block;color:var(--muted);font-size:12px;margin-top:3px}
 .opt{display:none}
 #filterPanel.open .opt{display:inline-block}
 @media(max-width:900px){
@@ -1001,6 +1007,14 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
     </span>
   </header>
 
+  <!-- Audio that exists but has not been collected. This is the one failure
+       that looks exactly like nothing being wrong: capture keeps writing
+       clips, the panel keeps saying "recording", and meanwhile a morning is
+       sitting in the recorder unread because every sync is failing. It gets
+       a bar across the whole interface rather than a figure on the device
+       panel, because the question it answers -- "why are my clips not
+       showing?" -- is not asked on the device panel. -->
+  <div class="stuckbar" id="stuckAudio" hidden></div>
   <a class="skip" href="#main">Skip to content</a>
   <div class="sidebar">
   <nav class="tabs" role="tablist" aria-label="Sections"
@@ -8357,6 +8371,56 @@ async function loadSettings(){
     + `radio free.</p>`;
 }
 
+/* Audio recorded but not yet collected, said plainly.
+
+   Every sync failing is only alarming when there is something waiting to be
+   collected -- and the cruel part of this failure is that the ring figure
+   goes stale at exactly the moment it starts mattering, because the reading
+   comes from the sync that is failing. So the age of that reading is part
+   of the warning rather than a caveat hidden behind it: "35 minutes as of
+   two hours ago" is the honest sentence. */
+function paintStuck(s, st){
+  const bar = document.getElementById("stuckAudio");
+  if (!bar) return;
+  const f = s && s.sync_failing;
+  const ring = (st && st.storage) || null;
+  /* One failure is a missed advertisement window, which is ordinary. */
+  if (!f || (f.consecutive || 0) < 3){ bar.hidden = true; return; }
+
+  const mins = (sec) => sec == null ? null
+      : sec < 90 ? `${Math.round(sec)} seconds`
+      : sec < 5400 ? `${Math.round(sec / 60)} minutes`
+      : `${(sec / 3600).toFixed(1)} hours`;
+  const held = ring && ring.held_seconds ? mins(ring.held_seconds) : null;
+  const age  = ring && ring.age_seconds != null ? mins(ring.age_seconds) : null;
+
+  const since = f.since
+      ? `since ${new Date(f.since * 1000).toLocaleTimeString()}` : "";
+  let head = `<b>Recorded audio is not being collected.</b> `
+      + `${f.consecutive} sync attempts have failed ${since}.`;
+  if (held){
+    head += ` The recorder was holding <b>${held}</b> of unread audio`
+         + (age && ring.stale ? ` when it was last reachable, ${age} ago.`
+                              : `.`);
+  }
+  /* What was actually done about it, so a bar that stays up for a while is
+     not mistaken for one nobody is acting on. */
+  let sub = f.healed
+      ? `The Bluetooth stack has been reset ${f.healed} time`
+        + `${f.healed === 1 ? "" : "s"} to clear this automatically`
+        + (f.healed_at
+            ? `, last at ${new Date(f.healed_at * 1000).toLocaleTimeString()}.`
+            : ".")
+      : `Waiting for the recorder to come back in range.`;
+  if (f.heal_error) sub += ` Automatic reset failed: ${f.heal_error}`;
+  sub += ` Last error: ${f.last_error || "unknown"}.`;
+  if (f.consecutive >= 8 && !f.healed){
+    sub += ` If this persists, run: sudo systemctl restart bluetooth`;
+  }
+  bar.innerHTML = head + `<span class="sub">${sub}</span>`;
+  bar.hidden = false;
+}
+
 function st_ok(on){ return on ? "running" : "not running"; }
 
 // The second recorder. Polled rather than pushed: it is another process
@@ -8522,6 +8586,7 @@ async function omiPoll(){
 
   /* What the device is still holding. Only meaningful while something is
      connected to ask it -- the figure is read over the radio, not kept. */
+  paintStuck(s, st);
   const ring = st.storage;
   $("omirec").hidden = !known || !isPaired;
   // Not `mins` -- that name is already the session's minutes above.
