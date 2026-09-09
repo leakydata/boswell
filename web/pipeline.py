@@ -440,6 +440,24 @@ def labelling_queue(limit=50, include_media=False, since=None,
             if row is not None:
                 r = sdb.match(sdb._unpack(row["vec"]), c)
                 cands = [x for x in r.get("candidates", []) if x["name"]]
+                # Below MATCH_LOW there is no candidate, only an ordering.
+                #
+                # The queue was offering its top three whatever they scored,
+                # and measured on this archive that meant 0.35, 0.37, 0.47 --
+                # against a different-people p99 of 0.572 and a same-person
+                # p10 of 0.715. Voice 57's three closest were Nathan Jones,
+                # Dave Rubin and Sam Witteveen, which ranks nothing: it is the
+                # noise floor sorted. Presenting it as "closest named" invites
+                # a click that manufactures a reference, and a wrong reference
+                # is worse than an unnamed voice because everything after it
+                # inherits the mistake.
+                cands = [x for x in cands if x.get("score", 0) >= sdb.MATCH_LOW]
+                # And a voice off a screen is never a candidate for anybody's
+                # identity. It has no business competing to be the wearer.
+                kinds = {p["id"]: p.get("kind") for p in sdb.people(c)}
+                cands = [x for x in cands
+                         if kinds.get(x.get("person_id")) not in
+                         (sdb.KIND_MEDIA, sdb.KIND_IGNORED)]
             text = []
             for loc in locs[:6]:
                 tp = transcript_path(loc["clip"])

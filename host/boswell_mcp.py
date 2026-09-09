@@ -192,32 +192,95 @@ def search_by_meaning(query: str, limit: int = 25) -> list:
     return out
 
 
+# How far either side of a clip to look for the conversation it belongs to.
+#
+# Grouping the whole archive to answer "what conversation is this clip in" is
+# the wrong shape of query and gets slower every day. A window is bounded, and
+# it only has to be wide enough that no conversation reaches both edges: the
+# longest in this archive at the shared gap is 145 minutes.
+CONV_WINDOW = 12 * 3600
+
+
+def _clip_time(clip):
+    import index_db
+    r = index_db._conn().execute(
+        "SELECT COALESCE(started, modified) t FROM clips WHERE name=?",
+        (clip,)).fetchone()
+    return r["t"] if r else None
+
+
+def _conversation_of(clip):
+    """The conversation containing one clip, found by time rather than budget.
+
+    This used to group "the last 400 clips" and look for the clip in there.
+    400 clips is about three hours on a recorder that never stops, so a
+    conversation from this afternoon -- the most useful material of the day --
+    answered `no conversation contains omi_...`, while get_clip on the same
+    name returned its transcript in full. The data was never missing; the
+    grouping could not reach it.
+    """
+    import index_db
+    at = _clip_time(clip)
+    if at is None:
+        return None
+    for cv in index_db.conversations(index_db.CONVERSATION_GAP, SCAN_CLIPS,
+                                     since=at - CONV_WINDOW,
+                                     until=at + CONV_WINDOW):
+        if clip in (cv.get("clips") or []):
+            return cv
+    return None
+
+
+def _speaker_coverage(clips, sample=None):
+    """How much of a conversation is attributed to a name, in segments.
+
+    A boolean `identified` was worse than nothing. It went true the moment any
+    one line carried a name, and the field the server instructions tell a model
+    to check before attributing a quote read as solved on a block where 200
+    segments of 2,191 were named -- 9.1%. It was also computed from the first
+    40 clips of a 367-clip conversation, so it was 11% of the evidence
+    describing all of it.
+    """
+    named = unnamed = 0
+    who = set()
+    for name in (clips[:sample] if sample else clips):
+        t = _load_transcript(name)
+        if not t:
+            continue
+        table = t.get("speakers") or {}
+        for seg in t.get("segments") or []:
+            spk = seg.get("speaker")
+            label = seg.get("speaker_name") or (table.get(spk) or {}).get("name")
+            if label:
+                named += 1
+                who.add(label)
+            else:
+                unnamed += 1
+    total = named + unnamed
+    return {"named_segments": named, "unnamed_segments": unnamed,
+            "identified_fraction": round(named / total, 3) if total else None,
+            "speakers": sorted(who)}
+
+
 @server.tool(description="Recent conversations, newest first: when each one "
-                         "was, how long, how many clips, and who is in it.")
+                         "was, how long, how many clips, and how much of it is "
+                         "attributed to a name. `limit` counts conversations. "
+                         "`identified_fraction` is the share of segments "
+                         "carrying a name -- check it before quoting anyone, "
+                         "because most of this archive is unnamed voices.")
 def list_conversations(limit: int = 20) -> list:
     import index_db
-    convs = index_db.conversations(gap_seconds=300, limit=400)
+    convs = index_db.conversations(index_db.CONVERSATION_GAP, SCAN_CLIPS)
     out = []
     for cv in convs[:limit]:
-        speakers = set()
-        identified = False
-        for name in cv.get("clips", [])[:40]:
-            t = _load_transcript(name)
-            if not t:
-                continue
-            for spk, info in (t.get("speakers") or {}).items():
-                who = (info or {}).get("name")
-                if who:
-                    speakers.add(who)
-                    identified = True
+        clips = cv.get("clips") or []
         out.append({
             "start": _fmt_time(cv.get("start")),
             "end": _fmt_time(cv.get("end")),
             "minutes": round((cv.get("end", 0) - cv.get("start", 0)) / 60, 1),
-            "clips": len(cv.get("clips", [])),
-            "first_clip": (cv.get("clips") or [None])[0],
-            "speakers": sorted(speakers),
-            "identified": identified,
+            "clips": len(clips),
+            "first_clip": clips[0] if clips else None,
+            **_speaker_coverage(clips),
         })
     return out
 
@@ -256,37 +319,71 @@ def _safe(clip):
                          "speaker labels. Give it any clip name from that "
                          "conversation -- list_conversations returns one.")
 def get_conversation(clip: str, max_chars: int = 40000) -> dict:
-    import index_db
     _safe(clip)
-    convs = index_db.conversations(gap_seconds=300, limit=400)
-    match = next((cv for cv in convs if clip in (cv.get("clips") or [])), None)
+    match = _conversation_of(clip)
     if match is None:
-        return {"error": f"no conversation contains {clip}"}
+        return {"error": f"no conversation contains {clip}",
+                "hint": "get_clip works on any clip name; this means the clip "
+                        "is not in the index, not that it has no transcript"}
 
-    lines, names, truncated = [], set(), False
-    for name in match["clips"]:
+    clips = match.get("clips") or []
+    head = {
+        "start": _fmt_time(match.get("start")),
+        "minutes": round((match.get("end", 0) - match.get("start", 0)) / 60, 1),
+        "clips": len(clips),
+        **_speaker_coverage(clips),
+    }
+
+    # Sections, because the flat wall was the failure `threads` was written to
+    # prevent and it was never wired to this. One evening came back as 2,026
+    # lines over 193 minutes covering dogs, a trade show, a commentary channel,
+    # robotics tutorials and two AI videos, with nothing marking where one
+    # ended -- while threads.sections() found 28 clean breaks in the same
+    # material. It was computed and discarded.
+    try:
+        import threads
+        built = threads.for_conversation(clips)
+        secs = built.get("sections") or []
+    except Exception as e:
+        secs = []
+        head["sections_unavailable"] = str(e)[:120]
+
+    if secs:
+        out, used, truncated = [], 0, False
+        for i, sec in enumerate(secs):
+            body = []
+            for u in sec["units"]:
+                who = u.get("name") or u.get("speaker") or "?"
+                body.append(f"{who}: {(u.get('text') or '').strip()}")
+            text = "\n".join(body)
+            if used + len(text) > max_chars:
+                truncated = True
+                break
+            used += len(text)
+            out.append({"section": i, "at": _fmt_time(sec["units"][0].get("at"))
+                        if sec.get("units") else None,
+                        "units": len(sec["units"]), "text": text})
+        return dict(head, sections=out, sections_total=len(secs),
+                    truncated=truncated)
+
+    # No sections: a short conversation, or the embedder is down. The flat
+    # form is still the right answer for something that is genuinely one
+    # stretch of talk.
+    lines, truncated = [], False
+    for name in clips:
         t = _load_transcript(name)
         if not t:
             continue
         who = {k: (v or {}).get("name") for k, v in (t.get("speakers") or {}).items()}
         for seg in (t.get("segments") or []):
             label = who.get(seg.get("speaker")) or seg.get("speaker") or "?"
-            if who.get(seg.get("speaker")):
-                names.add(label)
             lines.append(f"{label}: {seg['text']}")
             if sum(len(x) for x in lines) > max_chars:
                 truncated = True
                 break
         if truncated:
             break
-    return {
-        "start": _fmt_time(match.get("start")),
-        "minutes": round((match.get("end", 0) - match.get("start", 0)) / 60, 1),
-        "clips": len(match.get("clips", [])),
-        "identified_speakers": sorted(names),
-        "truncated": truncated,
-        "text": "\n".join(lines),
-    }
+    return dict(head, truncated=truncated, text="\n".join(lines))
 
 
 @server.tool(description="One clip's transcript, with timings. Usually you "
@@ -365,15 +462,29 @@ def list_people() -> list:
 def unidentified_voices(limit: int = 10) -> list:
     import pipeline
     out = []
+    import speaker_store
     for v in pipeline.labelling_queue(limit=limit):
-        out.append({
+        cands = [{"name": c["name"], "score": c["score"]}
+                 for c in v["candidates"]]
+        row = {
             "id": v["person_id"],
             "minutes": round(v["seconds"] / 60, 1),
             "clips": v["clips"],
-            "closest_named": [{"name": c["name"], "score": c["score"]}
-                              for c in v["candidates"]],
+            "closest_named": cands,
             "said": v["text"][:400],
-        })
+        }
+        if not cands:
+            # An empty list reads as "there are no named people to compare
+            # against", which is false and invites a guess. Measured on this
+            # archive, every one of the eight voices in the queue had its top
+            # three shown at 0.35-0.47 against a different-people p99 of
+            # 0.572: an ordering of noise, presented as candidates.
+            row["no_candidate"] = (
+                f"nothing scores at or above {speaker_store.MATCH_LOW}, which "
+                f"is where a comparison starts meaning anything on this "
+                f"archive. Identify this voice from what it says, not from a "
+                f"ranking.")
+        out.append(row)
     return out
 
 
@@ -542,7 +653,8 @@ def unreviewed_conversations(limit: int = 20) -> list:
     import agent_runner, index_db
     done = agent_runner.reviewed_clips()
     out = []
-    for conv in reversed(index_db.conversations(300, SCAN_CLIPS)):
+    for conv in reversed(index_db.conversations(index_db.CONVERSATION_GAP,
+                                                SCAN_CLIPS)):
         first = conv["clips"][0] if conv.get("clips") else None
         if not first:
             continue

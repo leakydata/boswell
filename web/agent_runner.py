@@ -159,7 +159,18 @@ RECALL_MIN_SCORE = 0.55
 # agent was reviewing exactly that and correctly answering "nothing to
 # record" every time, so it produced nothing at all over a whole day. Batches
 # are widened to the surrounding conversation before the model sees them.
-CONTEXT_GAP = 300.0        # same gap the recordings view groups conversations by
+# The gap that ends a conversation. Imported rather than restated: this was a
+# local 300.0 under a comment claiming it was "the same gap the recordings view
+# groups conversations by", and the view used 60. The consequence was not
+# cosmetic -- widening produced a 371-clip conversation, MAX_CHARS kept the
+# last 16,000 characters of it, and the model reviewed the tail of an evening
+# while the comment said it was reading a conversation.
+def _conversation_gap():
+    import index_db
+    return float(index_db.CONVERSATION_GAP)
+
+
+CONTEXT_GAP = _conversation_gap()
 # How far back to look for the conversation a clip belongs to.
 #
 # This was 400 clips, which is the last two or three hours on a recorder that

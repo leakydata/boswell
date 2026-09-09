@@ -1602,7 +1602,7 @@ async def _resolve_known():
 
 async def _consolidate_settled():
     now = time.time()
-    convs = index_db.conversations(300, 400)
+    convs = index_db.conversations(index_db.CONVERSATION_GAP, 400)
     for cv in convs:
         clips = cv.get("clips") or []
         if len(clips) < 2 or (now - (cv.get("end") or 0)) < SETTLE_SECONDS:
@@ -4407,7 +4407,7 @@ async def api_consolidate_all(min_clips: int = 3, limit: int = 400):
     # way to say otherwise -- so "re-diarize every conversation in the archive"
     # quietly meant the newest 400 clips of nearly two thousand, and the voices
     # in everything older stayed as they were. Nothing said which it had done.
-    groups = [cv["clips"] for cv in index_db.conversations(300, limit)
+    groups = [cv["clips"] for cv in index_db.conversations(index_db.CONVERSATION_GAP, limit)
               if len(cv.get("clips") or []) >= min_clips]
     if not groups:
         raise HTTPException(400, "no conversations big enough to be worth it")

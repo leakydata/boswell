@@ -372,19 +372,40 @@ def sync():
 
 # ---------------------------------------------------------------- reading
 
-def list_clips(limit=1000, device=None):
+def list_clips(limit=1000, device=None, since=None, until=None):
     """`device` narrows to one recorder. The string "none" asks for the clips
     with no recorder recorded, which is a real group -- everything from before
-    device ids existed -- and not the same as asking for everything."""
+    device ids existed -- and not the same as asking for everything.
+
+    `since`/`until` are epoch seconds against capture time. They exist because
+    `limit` is a **clip budget**, not a count of anything a person asked for:
+    "the last 400 clips" is three hours on a recorder that never stops, and one
+    350-clip evening eats the whole window. Every caller that wanted "the
+    conversation containing this clip" was really asking a question about a
+    time, and answering it by budget made a clip from this afternoon
+    unreachable while the clip itself opened fine.
+    """
     c = _conn()
+    where, args = [], []
     if device == "none":
-        rows = c.execute("""SELECT * FROM clips WHERE device_id IS NULL
-                            ORDER BY modified DESC LIMIT ?""", (limit,))
+        where.append("device_id IS NULL")
     elif device:
-        rows = c.execute("""SELECT * FROM clips WHERE device_id = ?
-                            ORDER BY modified DESC LIMIT ?""", (device, limit))
-    else:
-        rows = c.execute("""SELECT * FROM clips ORDER BY modified DESC LIMIT ?""", (limit,))
+        where.append("device_id = ?")
+        args.append(device)
+    # Capture time where the device clock witnessed it, arrival otherwise --
+    # the same COALESCE the grouping sorts on, so a filter cannot select a
+    # different set from the one the grouping then orders.
+    if since is not None:
+        where.append("COALESCE(started, modified) >= ?")
+        args.append(float(since))
+    if until is not None:
+        where.append("COALESCE(started, modified) <= ?")
+        args.append(float(until))
+    sql = "SELECT * FROM clips"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY modified DESC LIMIT ?"
+    rows = c.execute(sql, (*args, limit))
     return [{"name": r["name"], "seconds": r["seconds"], "modified": r["modified"],
              "status": r["status"],
              "has_speech": None if r["has_speech"] is None else bool(r["has_speech"]),
@@ -556,8 +577,21 @@ def search(query, limit=200, device=None):
 # the room, which is the boundary being looked for.
 CONVERSATION_GAP = 60
 
+# This is the only conversation boundary in the program. It was not: the
+# recordings view used this constant, server.py grouped at 300 in two places,
+# both MCP read tools passed 300, and agent_runner carried its own CONTEXT_GAP
+# of 300 under a comment claiming it was "the same gap the recordings view
+# groups conversations by". At 300 the whole of one evening is a single
+# 371-clip, 183-minute conversation covering six unrelated subjects; at 60 the
+# same evening is a set of conversations with a p90 of twelve minutes. Every
+# caller that means "a conversation" now takes this value.
+#
+# `threads.HARD_GAP` is a different question -- where a subject changes
+# *inside* one conversation -- and is deliberately not this number.
 
-def conversations(gap_seconds=CONVERSATION_GAP, limit=400, device=None):
+
+def conversations(gap_seconds=CONVERSATION_GAP, limit=400, device=None,
+                  since=None, until=None):
     """Group clips into conversations.
 
     A 30-second clip is a storage unit, not a human one. What someone
@@ -577,7 +611,7 @@ def conversations(gap_seconds=CONVERSATION_GAP, limit=400, device=None):
     device, which is what they were -- everything predating device ids came
     from the only recorder there was.
     """
-    clips = list_clips(limit, device=device)
+    clips = list_clips(limit, device=device, since=since, until=until)
     # Order by when each clip STARTED, not when it finished.
     #
     # modified is the end of the audio, and clips are not all the same length:

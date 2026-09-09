@@ -210,3 +210,146 @@ def test_a_partly_read_conversation_says_so():
     fn = fn[:fn.index("\ndef ")]
     assert "already_reviewed" in fn
     assert "REVIEWED_SHARE" in fn
+
+
+# ---- what the read path can reach -----------------------------------------
+
+
+def test_a_conversation_is_addressed_by_time_not_by_a_clip_budget():
+    """`limit` on index_db.conversations is a clip budget, and 400 clips is
+    about three hours on a recorder that never stops -- one 350-clip evening
+    consumes almost the whole window. Measured: get_conversation on a clip
+    from this afternoon answered `no conversation contains omi_1788904400.wav`
+    while get_clip on the same name returned its transcript in full. The data
+    was never missing; the grouping could not reach it.
+    """
+    src = read("host/boswell_mcp.py")
+    assert "gap_seconds=300, limit=400" not in src
+    fn = src[src.index("def _conversation_of("):]
+    fn = fn[:fn.index("\ndef ")]
+    assert "since=" in fn and "until=" in fn, "still grouping by budget"
+
+    import index_db
+    import inspect
+    assert "since" in inspect.signature(index_db.conversations).parameters
+    assert "since" in inspect.signature(index_db.list_clips).parameters
+
+
+def test_every_listed_conversation_can_be_opened():
+    """The property the round-trip needs, and the cheapest test that would
+    have caught it: list_conversations names first_clip and its description
+    points at get_conversation, but a conversation whose first clip fell
+    outside the window listed and would not open.
+    """
+    for cv in boswell_mcp.list_conversations(limit=8):
+        first = cv.get("first_clip")
+        if not first:
+            continue
+        got = boswell_mcp.get_conversation(first, max_chars=200)
+        assert "error" not in got, \
+            f"{first} was listed but {got.get('error')!r}"
+
+
+def test_one_conversation_gap_shared_by_everything_that_means_one():
+    """It was four numbers: index_db said 60, server.py grouped at 300 in two
+    places, both MCP read tools passed 300, and agent_runner carried its own
+    CONTEXT_GAP of 300 under a comment claiming it was "the same gap the
+    recordings view groups conversations by". Measured on this archive, 60
+    gives 533 conversations with a p90 of twelve minutes; 300 gives 173 and a
+    single 371-clip, 183-minute block covering six unrelated subjects.
+    """
+    import agent_runner
+    import index_db
+    assert agent_runner.CONTEXT_GAP == float(index_db.CONVERSATION_GAP)
+    for f in ("web/server.py", "host/boswell_mcp.py", "web/agent_runner.py"):
+        src = read(f)
+        assert "conversations(300" not in src and "gap_seconds=300" not in src, \
+            f"{f} still carries its own conversation gap"
+
+
+def test_identified_is_a_fraction_because_a_boolean_lied():
+    """`identified` went true on the first named line. Measured on tonight's
+    18:45 block it read as solved over 2,191 segments of which 200 carried a
+    name -- 9.1% -- and the server instructions tell a model to check that
+    field before attributing a quote. It was also computed from the first 40
+    clips of a 367-clip conversation.
+    """
+    src = read("host/boswell_mcp.py")
+    assert '"identified": identified' not in src
+    assert 'clips", [])[:40]' not in src, "coverage from 11% of the evidence"
+    cov = boswell_mcp._speaker_coverage([])
+    for field in ("named_segments", "unnamed_segments", "identified_fraction"):
+        assert field in cov
+
+
+def test_a_long_conversation_comes_back_in_sections():
+    """threads.sections() exists to prevent exactly the wall get_conversation
+    was returning -- 2,026 lines over 193 minutes covering dogs, a trade show,
+    a commentary channel, robotics tutorials and two AI videos. It found 28
+    clean breaks in that same material and they were discarded.
+    """
+    src = read("host/boswell_mcp.py")
+    fn = src[src.index("def get_conversation("):]
+    fn = fn[:fn.index("\n@server.tool")]
+    assert "import threads" in fn and "for_conversation" in fn
+    assert "sections_total" in fn
+
+
+# ---- what may be offered, and what may be recorded ------------------------
+
+
+def test_no_name_is_offered_below_the_measured_noise_floor():
+    """speaker_store's own figures: same person p10 0.715, different people
+    p99 0.572, MATCH_LOW 0.55. The queue was offering its top three whatever
+    they scored -- measured at 0.35, 0.37 and 0.47, with voice 57's three
+    closest being Nathan Jones, Dave Rubin and Sam Witteveen, which ranks
+    nothing. After the floor, 0 of 8 voices in the queue offer a name.
+    """
+    src = read("web/pipeline.py")
+    fn = src[src.index("def labelling_queue("):]
+    fn = fn[:fn.index("\ndef ")]
+    assert "sdb.MATCH_LOW" in fn, "candidates are not floored"
+    assert "KIND_MEDIA" in fn, "a voice off a screen can be offered as the wearer"
+
+    import pipeline
+    import speaker_store
+    for v in pipeline.labelling_queue(limit=10):
+        for c in v["candidates"]:
+            assert c["score"] >= speaker_store.MATCH_LOW, \
+                f"{c['name']} offered at {c['score']}"
+
+
+def test_an_item_needs_speech_from_somebody_who_can_be_named():
+    """Marking a voice `media` labels but does not gate: 64 of 86 voices in
+    this archive carry no kind at all, and the host of the AI video that got
+    summarised into the personal archive was never named -- it was SPEAKER_00,
+    which every name-matching filter lets through.
+
+    Measured over everything the agent has written: the one item that should
+    never have been kept came from clips 13.1% named-person; every item worth
+    keeping came from clips at 99.7% or better.
+    """
+    import tools_impl
+    assert tools_impl.NAMED_SHARE_MIN == 0.25
+    # Topic labels stay allowed -- saying what was playing is honest.
+    assert "topics" not in tools_impl.GATED_KINDS
+    for k in ("notes", "tasks", "events", "facts"):
+        assert k in tools_impl.GATED_KINDS
+
+    for fn in ("def add_note", "def add_task", "def add_calendar_event",
+               "def remember_fact"):
+        src = read("host/tools_impl.py")
+        body = src[src.index(fn):]
+        body = body[:body.index("\ndef ", 10)]
+        assert "_attributable(" in body, f"{fn} is not gated"
+
+
+def test_the_refusal_says_what_to_do_instead():
+    import tools_impl
+    real = tools_impl._context_clips
+    try:
+        tools_impl.set_context(["nonexistent_probe.wav"])
+        # No transcripts to read is not a reason to refuse.
+        assert tools_impl._attributable("notes") is None
+    finally:
+        tools_impl.set_context(real)

@@ -67,6 +67,98 @@ def set_context(clips):
     _context_clips = list(clips or [])
 
 
+# The share of attributed speech that must come from a named person in the
+# room before an item may be recorded about it.
+#
+# Measured over everything the agent has ever written to this archive. The one
+# item that should never have been kept -- a full summary of a YouTuber's
+# opinions on AI, filed as a note in a personal archive -- came from clips
+# whose speech was 13.1% named person, 0% named media and 86.9% unnamed. Every
+# item worth keeping came from clips at 99.7% or better. Nothing in between
+# has been observed, so this sits far from both sides rather than close to the
+# one example.
+#
+# Why not simply exclude speakers whose kind is media: because that label does
+# not gate anything it has not been applied to. Of 86 voices in this archive
+# 64 carry no kind at all, and the host of that AI video was never named --
+# it was SPEAKER_00, which is why every existing filter, all of which match on
+# names, let it through. Unnamed speech has to count against an item, not be
+# invisible to the check.
+NAMED_SHARE_MIN = 0.25
+
+# Recording what a conversation was *about* is exempt. A topic tag on a video
+# is honest and useful -- it says what was playing -- and does not claim
+# anybody said, planned or committed to anything.
+GATED_KINDS = ("notes", "tasks", "events", "facts")
+
+
+def _speech_mix(clips):
+    """(named person, named media, unnamed) segment counts over some clips."""
+    import sys
+    here = os.path.dirname(os.path.abspath(__file__))
+    web = os.path.join(here, "..", "web")
+    if web not in sys.path:
+        sys.path.insert(0, web)
+    import pipeline
+    import speaker_store
+    c = speaker_store._conn()
+    try:
+        media = {p["name"] for p in speaker_store.people(c)
+                 if p.get("name") and p.get("kind") in
+                 (speaker_store.KIND_MEDIA, speaker_store.KIND_IGNORED)}
+    finally:
+        c.close()
+    person = off_screen = unnamed = 0
+    for name in clips:
+        tp = pipeline.transcript_path(name)
+        if not os.path.exists(tp):
+            continue
+        try:
+            t = json.load(open(tp))
+        except Exception:
+            continue
+        table = t.get("speakers") or {}
+        for seg in t.get("segments") or []:
+            who = seg.get("speaker_name") or \
+                (table.get(seg.get("speaker")) or {}).get("name")
+            if not who:
+                unnamed += 1
+            elif who in media:
+                off_screen += 1
+            else:
+                person += 1
+    return person, off_screen, unnamed
+
+
+def _attributable(kind):
+    """Whether the clips in context are somebody's speech or something playing.
+
+    Returns None when it may be recorded, or a refusal a model can act on.
+    Best effort: if the transcripts cannot be read the write goes through, as
+    it did before this existed.
+    """
+    if kind not in GATED_KINDS or not _context_clips:
+        return None
+    try:
+        person, media, unnamed = _speech_mix(_context_clips)
+    except Exception:
+        return None
+    total = person + media + unnamed
+    if not total:
+        return None
+    share = person / total
+    if share >= NAMED_SHARE_MIN:
+        return None
+    return {"ok": False, "error":
+            f"only {share:.0%} of the speech in these clips is from a named "
+            f"person ({person} segments named, {media} from a voice marked "
+            f"media, {unnamed} unnamed). That is the shape of something "
+            f"playing nearby rather than a conversation, and a personal "
+            f"archive should not carry it as a fact, task, event or note. "
+            f"Use tag_topics to say what was playing, or name the voice "
+            f"first if somebody in the room was actually speaking."}
+
+
 def _append(kind, record):
     os.makedirs(STORE, exist_ok=True)
     record = dict(record)
@@ -105,18 +197,27 @@ def _append(kind, record):
 
 def add_note(title, body, tags=None):
     """Save a note extracted from conversation."""
+    blocked = _attributable("notes")
+    if blocked:
+        return blocked
     r = _append("notes", {"title": title, "body": body, "tags": tags or []})
     return {"ok": True, "saved": "note", "title": r["title"]}
 
 
 def add_task(text, due=None, owner=None):
     """Save an action item / to-do."""
+    blocked = _attributable("tasks")
+    if blocked:
+        return blocked
     r = _append("tasks", {"text": text, "due": due, "owner": owner})
     return {"ok": True, "saved": "task", "text": r["text"]}
 
 
 def add_calendar_event(title, start, end=None, attendees=None):
     """Save a calendar event mentioned in conversation."""
+    blocked = _attributable("events")
+    if blocked:
+        return blocked
     r = _append("events", {"title": title, "start": start, "end": end,
                            "attendees": attendees or []})
     return {"ok": True, "saved": "event", "title": r["title"], "start": r["start"]}
@@ -143,6 +244,9 @@ UNRESOLVED = re.compile(r"^\s*(SPEAKER|speaker)[ _-]?\d+\s*$")
 
 def remember_fact(subject, fact):
     """Save a durable fact about a person or project."""
+    blocked = _attributable("facts")
+    if blocked:
+        return blocked
     if UNRESOLVED.match(subject or ""):
         return {"ok": False, "error":
                 f"{subject!r} is a diarizer label, not a person -- it means a "
