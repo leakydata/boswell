@@ -378,3 +378,72 @@ def test_unreadable_transcripts_are_not_a_reason_to_refuse():
         assert tools_impl._attributable("notes", "Nathan Jones") is None
     finally:
         tools_impl.set_context(real)
+
+
+def test_a_named_voice_is_not_trusted_until_it_is_classified():
+    """Naming happens by itself and classifying does not. A voice gets a name
+    the moment somebody labels a cluster and its kind stays empty, so the
+    named-but-unclassified list grows on its own -- measured over one evening
+    it went from 14 to 16, two more YouTubers, both immediately trusted as
+    people in the room. Defaulting unclassified to "person" widens the hole
+    every night the recorder runs.
+    """
+    import tools_impl
+    real = tools_impl._context_clips
+    try:
+        tools_impl.set_context([])
+        r = tools_impl._attributable("facts", "Dave Rubin")   # named, no kind
+        assert r and "never been classified" in r["error"]
+        assert "set_voice_kind(person_id=" in r["error"], \
+            "the refusal does not say how to settle it"
+        # A voice nobody enrolled is not a person either.
+        r = tools_impl._attributable("facts", "Somebody Not Enrolled")
+        assert r and "is enrolled" in r["error"]
+    finally:
+        tools_impl.set_context(real)
+
+
+def test_naming_and_classifying_happen_in_one_call():
+    tools = tools_read = {t.name: t for t in
+                          asyncio.run(boswell_mcp.server.list_tools())}
+    assert "kind" in (tools_read["name_voice"].input_schema
+                      .get("required") or []), \
+        "a voice can still be named without saying what it is"
+    assert "unclassified_voices" in tools, "the backlog is invisible"
+
+
+def test_the_settle_sweep_looks_back_a_day_not_a_clip_budget():
+    # The last survivor of the 400-clip mistake, in the web path. If the sweep
+    # is down for an evening, work that fell off the back is never consolidated.
+    src = read("web/server.py")
+    fn = src[src.index("async def _consolidate_settled("):]
+    fn = fn[:fn.index("\n\n\n")]
+    assert "CONSOLIDATE_WINDOW" in fn and "since=" in fn
+    assert ", 400)" not in fn
+
+
+def test_video_content_has_a_lane_rather_than_a_refusal():
+    """Nathan narrating over videos is his normal mode, not an edge case, and
+    he asked for this out loud: "I just want a way to have AI take notes from
+    videos that I watch instead of just listening to them". The pipeline that
+    was polluting the personal archive is the one that can serve it -- the
+    same pass, a second destination.
+    """
+    import agent_runner
+    import tools_impl
+    assert "media" in agent_runner.KINDS and "media" in tools_impl.KINDS
+    assert "add_media_note" in tools_impl.REGISTRY
+    # And it is not gated on said_by, because nobody in the room said it.
+    assert "media" not in tools_impl.GATED_KINDS
+    names = [t["function"]["name"] for t in tools_impl.SCHEMAS]
+    assert "add_media_note" in names
+    schema = next(t["function"] for t in tools_impl.SCHEMAS
+                  if t["function"]["name"] == "add_media_note")
+    assert "said_by" not in schema["parameters"]["properties"]
+
+    assert "record_media_note" in {t.name for t in
+                                   asyncio.run(boswell_mcp.server.list_tools())}
+    # The prompt has to say there are two lanes, or the model writes neither.
+    prompt = read("web/agent_runner.py")
+    assert "two lanes" in prompt
+    assert "mostly video is not empty" in prompt

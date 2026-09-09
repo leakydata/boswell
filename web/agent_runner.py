@@ -25,7 +25,14 @@ STORE = os.path.join(DATA, "agent")
 # The only files the agent store contains. Every entry point resolves a kind
 # through this: `kind` arrives from a query string, which may contain slashes,
 # and it used to be joined straight into a path and passed to os.remove().
-KINDS = ("tasks", "events", "notes", "facts", "topics")
+# "media" is a lane, not a category of personal record.
+#
+# Nathan narrates over videos -- it is his normal mode, not an edge case --
+# and the pipeline that was polluting the archive with a YouTuber's opinions
+# is the same pipeline that can take notes on them. The defect and the feature
+# were always one thing pointed at two destinations. Everything in `media` is
+# about something that was playing; nothing in it is a claim about him.
+KINDS = ("tasks", "events", "notes", "facts", "topics", "media")
 
 
 def _store_lock():
@@ -195,6 +202,12 @@ Record only what was actually said and is worth keeping:
 - a meeting, deadline or date mentioned -> add_calendar_event
 - a durable fact about a person/project -> remember_fact
 - context worth keeping that is none of the above -> add_note
+- what a video or podcast said          -> add_media_note
+
+There are two lanes and they do not mix. add_task, add_calendar_event,
+remember_fact and add_note are about people in the room and take `said_by`.
+add_media_note is about what was playing and takes none, because nobody in
+the room said it.
 
 Rules:
 - Never invent details. If it was not said, do not record it.
@@ -209,7 +222,10 @@ Rules:
 - Lines marked [MEDIA] are audio playing near the microphone -- video,
   podcast, music -- not people in the room. Never record a task, fact or
   event from them, and never attribute anything to a [MEDIA] speaker. They
-  are shown only so you can follow what the real speakers are reacting to.
+  are shown only so you can follow what the real speakers are reacting to --
+  and so you can take notes on them with add_media_note, which is a thing he
+  asked for out loud: "I just want a way to have AI take notes from videos
+  that I watch instead of just listening to them."
 - A speaker shown as SPEAKER_xx has not been identified. That label is a
   position in this recording only and means a different voice in the next
   one, so it is never the subject of a fact and never the owner of a task.
@@ -226,8 +242,11 @@ Rules:
   middle of a tutorial -- a reaction, an idea, something he wants built --
   and they are worth recording precisely because he said them while watching.
   Judge each line by who said it, never the clip by its overall mix.
-- Every record_* call takes `said_by`: the name on the line the words came
-  from. That is what separates his sentence from the video's around it. If
+- A conversation that is mostly video is not empty. It has two things in it:
+  what the video said, which is an add_media_note, and whatever he said back,
+  which is judged line by line like anything else. Write both.
+- Every record_* call except add_media_note takes `said_by`: the name on the
+  line the words came from. That is what separates his sentence from the video's around it. If
   the line you want to record is not attributed to a named person, do not
   record it -- name the voice, or use tag_topics to say what was playing.
 

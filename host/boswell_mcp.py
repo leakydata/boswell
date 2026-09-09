@@ -607,6 +607,21 @@ def record_note(title: str, body: str, said_by: str, clips: list,
                   tags=tags or [], said_by=said_by)
 
 
+@server.tool(description="Save what a video, podcast or stream said -- the "
+                         "media lane. Use it for anything a voice marked "
+                         "media said, and for an unnamed voice plainly "
+                         "addressing an audience rather than the room. "
+                         "Nothing recorded here becomes a fact, task or event "
+                         "about anybody, so it is the right place for the "
+                         "content the wearer is watching rather than "
+                         "something to be suppressed. `source` is the channel "
+                         "or presenter if the transcript names one.")
+def record_media_note(title: str, body: str, clips: list,
+                      source: str = None, tags: list = None) -> dict:
+    return _write("add_media_note", clips, title=title, body=body,
+                  source=source, tags=tags or [])
+
+
 @server.tool(description="Label a conversation with the subjects it covered, "
                          "so later conversations on the same subject can be "
                          "found with it. Short plain labels, not sentences.")
@@ -872,11 +887,51 @@ def list_sounds(limit: int = 40) -> list:
 
 @server.tool(description="Put a name to a recurring voice, from the person_id "
                          "in unidentified_voices. Every voiceprint gathered "
-                         "under that cluster becomes a labelled reference.")
-def name_voice(person_id: int, name: str) -> dict:
+                         "under that cluster becomes a labelled reference. "
+                         "`kind` is required and says what the voice is -- "
+                         "'person' in the room, 'media' off a screen, or "
+                         "'ignored'. Naming without it leaves a voice trusted "
+                         "as a person by default, and most new voices in this "
+                         "archive are videos.")
+def name_voice(person_id: int, name: str, kind: str) -> dict:
     if not (name or "").strip():
         return {"ok": False, "error": "need a name"}
-    return _api(f"/api/voices/{int(person_id)}/name", {"name": name.strip()})
+    if kind not in ("person", "media", "ignored"):
+        return {"ok": False,
+                "error": "kind must be 'person', 'media' or 'ignored'"}
+    named = _api(f"/api/voices/{int(person_id)}/name", {"name": name.strip()})
+    if isinstance(named, dict) and named.get("ok") is False:
+        return named
+    # Both halves or neither. A name applied while the kind write fails is
+    # exactly the state this argument exists to prevent.
+    classified = _api(f"/api/voices/{int(person_id)}/kind", {"kind": kind})
+    if isinstance(classified, dict) and classified.get("ok") is False:
+        return dict(classified, named=True,
+                    error="named, but not classified: " +
+                          str(classified.get("error")))
+    return {"ok": True, "person_id": int(person_id), "name": name.strip(),
+            "kind": kind}
+
+
+@server.tool(description="Voices that have a name but have never been said to "
+                         "be a person or a video. Nothing they say can be "
+                         "recorded until that is settled, and the list grows "
+                         "on its own because naming is automatic and "
+                         "classifying is not -- so this is the queue that "
+                         "keeps extraction working.")
+def unclassified_voices() -> list:
+    import speaker_store
+    c = speaker_store._conn()
+    try:
+        rows = [{"person_id": p["id"], "name": p["name"],
+                 "speech_seconds": round(p.get("seconds") or 0, 1),
+                 "voiceprints": p.get("prints")}
+                for p in speaker_store.people(c)
+                if p.get("name") and not p.get("kind")]
+    finally:
+        c.close()
+    rows.sort(key=lambda r: -(r["speech_seconds"] or 0))
+    return rows or [{"note": "every named voice is classified"}]
 
 
 @server.tool(description="Say whether a voice is a person in the room, audio "

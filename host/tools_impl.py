@@ -18,7 +18,7 @@ STORE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                      "..", "data", "agent")
 STORE = os.path.normpath(STORE)
 
-KINDS = ("tasks", "events", "notes", "facts", "topics")
+KINDS = ("tasks", "events", "notes", "facts", "topics", "media")
 
 
 def _store_path(kind):
@@ -100,22 +100,31 @@ GATED_KINDS = ("notes", "tasks", "events", "facts")
 UNRESOLVED = re.compile(r"^\s*(SPEAKER|speaker)[ _-]?\d+\s*$")
 
 
-def _named_speakers(clips):
-    """(people, off_screen) -- the names actually heard in these clips."""
+def _voice_kinds():
+    """name -> (kind, person_id) for every enrolled voice."""
+    import sys
+    here = os.path.dirname(os.path.abspath(__file__))
+    web = os.path.join(here, "..", "web")
+    if web not in sys.path:
+        sys.path.insert(0, web)
+    import speaker_store
+    c = speaker_store._conn()
+    try:
+        return {p["name"]: (p.get("kind"), p["id"])
+                for p in speaker_store.people(c) if p.get("name")}
+    finally:
+        c.close()
+
+
+def _speakers_in(clips):
+    """The names actually heard in these clips."""
     import sys
     here = os.path.dirname(os.path.abspath(__file__))
     web = os.path.join(here, "..", "web")
     if web not in sys.path:
         sys.path.insert(0, web)
     import pipeline
-    import speaker_store
-    c = speaker_store._conn()
-    try:
-        kind = {p["name"]: p.get("kind") for p in speaker_store.people(c)
-                if p.get("name")}
-    finally:
-        c.close()
-    people, off_screen = set(), set()
+    out = set()
     for name in clips:
         tp = pipeline.transcript_path(name)
         if not os.path.exists(tp):
@@ -128,14 +137,9 @@ def _named_speakers(clips):
         for seg in t.get("segments") or []:
             who = seg.get("speaker_name") or \
                 (table.get(seg.get("speaker")) or {}).get("name")
-            if not who:
-                continue
-            if kind.get(who) in (speaker_store.KIND_MEDIA,
-                                 speaker_store.KIND_IGNORED):
-                off_screen.add(who)
-            else:
-                people.add(who)
-    return people, off_screen
+            if who:
+                out.add(who)
+    return out
 
 
 def _attributable(kind, said_by):
@@ -161,21 +165,51 @@ def _attributable(kind, said_by):
                 f"different voice in every recording. If somebody in the room "
                 f"said this, name the voice first; if it was a video, use "
                 f"tag_topics to say what was playing."}
+    kinds = None
+    try:
+        kinds = _voice_kinds()
+    except Exception:
+        pass
+    if kinds is not None:
+        kind, person_id = kinds.get(said_by, (None, None))
+        if person_id is None:
+            return {"ok": False, "error":
+                    f"no voice named {said_by!r} is enrolled. Use the name "
+                    f"exactly as the transcript line shows it, or name the "
+                    f"voice first with name_voice."}
+        if kind in ("media", "ignored"):
+            return {"ok": False, "error":
+                    f"{said_by} is marked as audio off a screen. Nothing a "
+                    f"video says is a fact, task or event in a personal "
+                    f"archive -- use tag_topics to record what was playing."}
+        if not kind:
+            # Unclassified is untrusted, and this is the difference between a
+            # silent wrong-accept and a visible prompt.
+            #
+            # Naming happens by itself and classifying does not: a voice gets
+            # a name the moment somebody labels a cluster, and its kind stays
+            # empty. Measured over one evening the named-but-unclassified list
+            # grew from 14 to 16 -- two more YouTubers, both immediately
+            # trusted as people in the room. Defaulting an unclassified voice
+            # to "person" means the hole widens every night the recorder runs.
+            return {"ok": False, "error":
+                    f"{said_by} has a name but has never been classified as a "
+                    f"person in the room or audio off a screen, so nothing "
+                    f"said by that voice can be trusted as somebody's own "
+                    f"words yet. Settle it first: "
+                    f"set_voice_kind(person_id={person_id}, "
+                    f"kind='person'|'media'|'ignored')."}
+
     if not _context_clips:
         return None
     try:
-        people, off_screen = _named_speakers(_context_clips)
+        here = _speakers_in(_context_clips)
     except Exception:
         return None
-    if said_by in off_screen:
-        return {"ok": False, "error":
-                f"{said_by} is marked as audio off a screen. Nothing a video "
-                f"says is a fact, task or event in a personal archive -- use "
-                f"tag_topics to record what was playing."}
-    if people and said_by not in people:
+    if here and said_by not in here:
         return {"ok": False, "error":
                 f"{said_by} does not speak in these clips. Named speakers "
-                f"here: {sorted(people)}. Pass the clips the words are "
+                f"here: {sorted(here)}. Pass the clips the words are "
                 f"actually in, or the name as the transcript shows it."}
     return None
 
@@ -224,6 +258,20 @@ def add_note(title, body, said_by=None, tags=None):
     r = _append("notes", {"title": title, "body": body, "said_by": said_by,
                           "tags": tags or []})
     return {"ok": True, "saved": "note", "title": r["title"]}
+
+
+def add_media_note(title, body, source=None, tags=None):
+    """Save what a video, podcast or stream said -- the media lane.
+
+    Not gated by `said_by`, because the point is content nobody in the room
+    said. `source` is the channel or presenter if the transcript names one,
+    and is often absent: most media voices in this archive are still an
+    unnamed SPEAKER_xx, which is precisely why they used to reach the personal
+    store. Provenance is the clips, which are attached like everything else.
+    """
+    r = _append("media", {"title": title, "body": body,
+                          "source": source, "tags": tags or []})
+    return {"ok": True, "saved": "media note", "title": r["title"]}
 
 
 def add_task(text, said_by=None, due=None, owner=None):
@@ -416,6 +464,7 @@ def tag_topics(topics):
 
 REGISTRY = {
     "add_note": add_note,
+    "add_media_note": add_media_note,
     "add_task": add_task,
     "add_calendar_event": add_calendar_event,
     "remember_fact": remember_fact,
@@ -459,6 +508,19 @@ SCHEMAS = [
             "said_by": {"type": "string", "description": "The name on the transcript line these words came from. Required: this archive contains video playing near the microphone, often in the same clips as the wearer talking back at it, so who said a thing is not recoverable from the clip it is in."},
             "tags": {"type": "array", "items": {"type": "string"}}},
             "required": ["title", "body", "said_by"]}}},
+    {"type": "function", "function": {
+        "name": "add_media_note",
+        "description": "Save what a video, podcast or stream said. Use this "
+                       "for anything a [MEDIA] speaker said, and for an "
+                       "unnamed voice that is plainly addressing an audience "
+                       "rather than the room. It is a separate lane: nothing "
+                       "here becomes a fact, task or event about anybody.",
+        "parameters": {"type": "object", "properties": {
+            "title": {"type": "string", "description": "What was playing, in a few words"},
+            "body": {"type": "string", "description": "What it said that is worth keeping"},
+            "source": {"type": "string", "description": "Channel or presenter if the transcript names one, else omit"},
+            "tags": {"type": "array", "items": {"type": "string"}}},
+            "required": ["title", "body"]}}},
     {"type": "function", "function": {
         "name": "add_task",
         "description": "Save an action item someone committed to or was assigned.",

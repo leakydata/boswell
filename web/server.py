@@ -1600,9 +1600,21 @@ async def _resolve_known():
                                   + (f", {n} clip(s) relabelled" if n else "")))
 
 
+# How far back the settle sweep looks. A day, expressed as a day.
+#
+# This was a 400-clip budget, which is about three hours on a recorder that
+# never stops -- the last survivor of the same mistake that made a clip from
+# this afternoon unreachable to the read tools. It is not three hours of
+# intent: the sweep wants "conversations that have finished recently", and if
+# it is down for an evening the work that fell off the back of the budget is
+# never consolidated at all.
+CONSOLIDATE_WINDOW = 24 * 3600
+
+
 async def _consolidate_settled():
     now = time.time()
-    convs = index_db.conversations(index_db.CONVERSATION_GAP, 400)
+    convs = index_db.conversations(index_db.CONVERSATION_GAP, 20000,
+                                   since=now - CONSOLIDATE_WINDOW)
     for cv in convs:
         clips = cv.get("clips") or []
         if len(clips) < 2 or (now - (cv.get("end") or 0)) < SETTLE_SECONDS:
