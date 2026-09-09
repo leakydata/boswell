@@ -1060,12 +1060,29 @@ def _best_unknown(v, c, impure=False):
     Audited: this blocks 143 of 1785 mergeable pairs, about 8%. Small enough to
     be worth the caution, and measured rather than assumed.
     """
+    # Every unnamed cluster, whatever kind it carries.
+    #
+    # This used to exclude KIND_MEDIA, and the effect was that tagging a voice
+    # "it's a video" quietly ended it. An unnamed media cluster is in neither
+    # path: _references admits named people only, and this excluded it -- so
+    # every later occurrence of that same voice arrived as a fresh stranger.
+    # Tag fifty video voices and you get fifty clusters today and fifty more
+    # next week, and naming one of them later renames one fragment of it.
+    #
+    # Nathan put it exactly: he will not use a label that means "doesn't
+    # matter" if it stops the voice being labelled properly some other day.
+    # He was right, and that was the behaviour. KIND_IGNORED never had it --
+    # its own docstring promises the opposite, that the next occurrence joins
+    # the cluster and is dismissed with it -- so this is media being made to
+    # behave the way ignored already did and the way the button implies.
+    #
+    # What media must not do is confer a name, and it still cannot: that is
+    # _references' job and it reads names, not kinds.
     rows = c.execute("""
         SELECT v.person_id, v.vec FROM voiceprints v
         JOIN people p ON p.id = v.person_id
-        WHERE p.name IS NULL AND (p.kind IS NULL OR p.kind != ?)
-          AND v.impure = ?
-    """, (KIND_MEDIA, 1 if impure else 0)).fetchall()
+        WHERE p.name IS NULL AND v.impure = ?
+    """, (1 if impure else 0,)).fetchall()
     if not rows:
         return None, 0.0
     M = np.stack([_unpack(r["vec"]) for r in rows])

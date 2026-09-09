@@ -2642,3 +2642,37 @@ def test_a_card_says_who_said_it():
     fn = fn[:fn.index("\nlet armClear")]
     assert "it.said_by" in fn
     assert "it.source" in fn, "a media note does not show where it came from"
+
+
+def test_tagging_a_voice_as_video_is_never_a_dead_end():
+    """Nathan's objection, and it was correct: he will not use a label that
+    means "doesn't matter" if it stops the voice being labelled properly some
+    other day.
+
+    That was the behaviour. An unnamed cluster tagged KIND_MEDIA sat in
+    neither path -- _references admits named people only, and _best_unknown
+    excluded media -- so every later occurrence of the same voice arrived as
+    a fresh stranger. Tag fifty video voices and you get fifty more clusters
+    next week, and naming one later renames one fragment. KIND_IGNORED never
+    had this: its docstring promises the next occurrence joins the cluster.
+    """
+    src = _read("web/speaker_store.py")
+    fn = src[src.index("def _best_unknown("):]
+    fn = fn[:fn.index("\ndef ")]
+    sql = fn[fn.index("SELECT v.person_id"):fn.index('"""', fn.index("SELECT v.person_id"))]
+    assert "kind" not in sql, "an unnamed cluster is excluded by its kind again"
+    assert "p.name IS NULL" in sql, "a named person is a reference, not a cluster"
+
+    # And it still cannot confer a name -- that is _references' job, and it
+    # reads names rather than kinds.
+    ref = src[src.index("def _references("):]
+    ref = ref[:ref.index("\ndef ")]
+    assert "name IS NOT NULL" in ref or "Named people only" in ref
+
+
+def test_the_labelling_buttons_do_not_promise_finality():
+    # "no name now, and none later" was wrong even before the fix: setting the
+    # kind back to None returns the cluster with everything it collected.
+    src = _read("web/static/index.html")
+    assert "none later" not in src
+    assert "naming it later labels everything it gathered" in src

@@ -4119,7 +4119,8 @@ function renderVoiceDetail(){
   media.textContent = v.kind === "media" ? "Not a video" : "It's a video";
   media.title = v.kind === "media"
     ? "Put this back in the queue as an unidentified person"
-    : "Tag as something off a screen — no name needed";
+    : "Tag as something off a screen — no name needed. It keeps collecting "
+      + "this voice, so naming it later labels everything it gathered";
   media.onclick = async () => {
     media.disabled = true;
     try{
@@ -4139,8 +4140,9 @@ function renderVoiceDetail(){
   skip.textContent = wasIgnored ? "Put back in the queue" : "Not worth naming";
   skip.title = wasIgnored
     ? "Return this voice to the queue with everything it has collected"
-    : "A TV, a video, a stranger — no name now, and none later. "
-      + "Keeps the recordings, adds no person, makes no voiceprint.";
+    : "A TV, a video, a stranger. Keeps every recording and every "
+      + "voiceprint, goes on collecting this voice, and can be named later "
+      + "— naming it then labels everything it has gathered since.";
   skip.onclick = async () => {
     skip.disabled = true;
     try{
