@@ -533,6 +533,11 @@ button.who.wholine{cursor:pointer;font-family:var(--mono)}
 .item .k.events{background:color-mix(in srgb,var(--warn) 18%,transparent);color:var(--warn)}
 .item .k.notes{background:var(--sunk);color:var(--muted)}
 .item .k.facts{background:color-mix(in srgb,var(--ok) 18%,transparent);color:var(--ok)}
+.item .k.topics{background:var(--sunk);color:var(--muted)}
+/* The media lane reads as a different kind of thing, because it is: nothing
+   in it is a claim about anybody in the room. */
+.item .k.media{background:color-mix(in srgb,var(--muted) 14%,transparent);
+  color:var(--muted);border:1px dashed var(--rule)}
 .item .t1{font-weight:600;font-size:15px;margin-bottom:3px}
 .item .t2{font-size:14px;color:var(--ink-2)}
 .item .meta{font-family:var(--mono);font-size:11px;color:var(--faint);margin-top:6px}
@@ -3556,13 +3561,30 @@ async function loadItems(){
     for (const it of items){
       const d = document.createElement("div");
       d.className = "item";
-      const title = it.title || it.text || it.subject || "(untitled)";
-      const body  = it.body || it.fact || [it.start, it.due, it.owner].filter(Boolean).join(" · ") || "";
+      /* Every kind carries its subject in a different field, and a row whose
+         field is missing from this list renders as "(untitled)". That is what
+         happened to topics, which keep theirs in `topics` and so showed as
+         untitled for every one of them -- the label was there all along and
+         nothing displayed it. */
+      const title = it.title || it.text || it.subject
+                 || (it.topics && it.topics.length ? it.topics.join(" · ") : "")
+                 || "(untitled)";
+      const body  = it.body || it.fact
+                 || [it.start, it.due, it.owner].filter(Boolean).join(" · ") || "";
+      /* Who said it, and where it came from. said_by is what separates his own
+         words from a video's in the same clips, so it belongs on the card
+         rather than only in the file. */
+      const meta = [it._recorded_at || ""];
+      if (it.said_by) meta.push("said by " + it.said_by);
+      if (it.source)  meta.push("from " + it.source);
+      const n = it._clips_total || (it._clips ? it._clips.length : 0);
+      if (n) meta.push(n === 1 ? "1 clip" : `${n} clips`);
+      if (it.tags && it.tags.length) meta.push(it.tags.join(", "));
       d.innerHTML =
-        `<div class="t1"><span class="k ${it._kind}">${it._kind.replace(/s$/,"")}</span>${esc(title)}</div>` +
+        `<div class="t1"><span class="k ${it._kind}">${it._kind === "media"
+            ? "video" : it._kind.replace(/s$/,"")}</span>${esc(title)}</div>` +
         (body ? `<div class="t2">${esc(body)}</div>` : "") +
-        `<div class="meta">${esc(it._recorded_at || "")}` +
-        (it.tags && it.tags.length ? " · " + esc(it.tags.join(", ")) : "") + `</div>`;
+        `<div class="meta">${esc(meta.filter(Boolean).join(" · "))}</div>`;
       const rm = document.createElement("button");
       rm.className = "rm";
       rm.textContent = "Remove";

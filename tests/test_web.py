@@ -2614,3 +2614,31 @@ def test_the_mcp_binds_to_loopback_by_default():
     # Exposure is a deliberate act, not a default.
     src = _read("host/boswell_mcp.py")
     assert 'ap.add_argument("--host", default="127.0.0.1")' in src
+
+
+def test_every_item_kind_has_something_to_show_as_a_title():
+    """The card reads `title || text || subject`, and each kind keeps its
+    subject in a different field. A topic row keeps its labels in `topics`,
+    which was in none of those -- so every topic ever recorded displayed as
+    "(untitled)" while the labels sat in the file. The media lane was about to
+    be the next one, and facts already relied on `subject`.
+    """
+    src = _read("web/static/index.html")
+    fn = src[src.index("async function loadItems()"):]
+    fn = fn[:fn.index("\nlet armClear")]
+    for field in ("it.title", "it.text", "it.subject", "it.topics"):
+        assert field in fn, f"a row whose subject is in {field} renders untitled"
+    # And the two newest kinds are styled rather than falling back to nothing.
+    for kind in ("topics", "media"):
+        assert f".item .k.{kind}{{" in src.replace(" ", "") or \
+               f".item .k.{kind}{{" in src, f"{kind} has no badge"
+
+
+def test_a_card_says_who_said_it():
+    # said_by is what separates his own words from a video's in the same
+    # clips, so it belongs on the card and not only in the file.
+    src = _read("web/static/index.html")
+    fn = src[src.index("async function loadItems()"):]
+    fn = fn[:fn.index("\nlet armClear")]
+    assert "it.said_by" in fn
+    assert "it.source" in fn, "a media note does not show where it came from"
