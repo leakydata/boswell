@@ -51,12 +51,16 @@ def _load_env_file():
 
 _load_env_file()
 
+import tempfile
+import zipfile
+
 import atomicio
 import numpy as np
 import soundfile as sf
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
+from starlette.background import BackgroundTask
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "host"))
 from ble_capture import (AUDIO_UUID, CTRL_UUID, INFO_UUID, DEVICE_NAME,
@@ -3651,12 +3655,88 @@ async def api_index_rebuild():
 
 
 @app.get("/api/audio/{name}")
-async def api_audio(name: str):
-    safe_clip(name)
-    path = os.path.join(DATA, name)
+async def api_audio(name: str, download: bool = False):
+    path = safe_clip(name)
     if not os.path.exists(path):
         raise HTTPException(404, "no such clip")
-    return FileResponse(path, media_type="audio/wav")
+    # The player and the save are the same bytes; only the disposition
+    # differs. Asking for it as a download rather than a second endpoint
+    # keeps one route that can serve a clip, so range requests, caching and
+    # the path check cannot drift apart between playing and keeping.
+    headers = ({"Content-Disposition": f'attachment; filename="{name}"'}
+               if download else None)
+    return FileResponse(path, media_type="audio/wav", headers=headers)
+
+
+@app.post("/api/download")
+async def api_download(body: dict):
+    """Bundle chosen recordings into one zip, with a manifest of when.
+
+    A folder of clips named by epoch is already in order, but nothing in it
+    says what it is six months later. The manifest is what turns a bundle
+    into something readable by someone who was not here -- which is the
+    whole point of being able to take audio out of the archive at all.
+
+    Written to a temp file rather than held in memory: these are 940 kB a
+    clip and a morning is seventy of them.
+    """
+    names = body.get("names") or []
+    if not names:
+        raise HTTPException(400, "nothing to download")
+    if len(names) > 5000:
+        raise HTTPException(400, "too many at once")
+
+    found = []
+    for n in names:
+        path = safe_clip(n)
+        if os.path.exists(path):
+            found.append((n, path))
+    if not found:
+        raise HTTPException(404, "none of those recordings exist")
+
+    rows = {}
+    try:
+        rows = index_db.clips_by_name([n for n, _ in found])
+    except Exception:
+        pass                      # a manifest without times still beats none
+
+    def when(name, path):
+        row = rows.get(name) or {}
+        t = row.get("started") or row.get("modified")
+        if not t:
+            t = os.path.getmtime(path)
+        known = row.get("time_known")
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t))
+        return t, stamp + ("" if known is not False else " (arrival time)")
+
+    found.sort(key=lambda nb: when(nb[0], nb[1])[0])
+
+    fd, tmp = tempfile.mkstemp(prefix="boswell_", suffix=".zip")
+    os.close(fd)
+    try:
+        with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED,
+                             compresslevel=1) as z:
+            lines = ["Boswell recordings",
+                     f"exported {time.strftime('%Y-%m-%d %H:%M:%S')}",
+                     f"{len(found)} clip(s)", "",
+                     "clip\tcaptured (local time)\tseconds"]
+            for name, path in found:
+                _, stamp = when(name, path)
+                secs = (rows.get(name) or {}).get("seconds")
+                lines.append(f"{name}\t{stamp}\t{secs if secs else ''}")
+                z.write(path, name)
+                tp = pipeline.transcript_path(name)
+                if os.path.exists(tp):
+                    z.write(tp, f"transcripts/{os.path.basename(tp)}")
+            z.writestr("manifest.txt", "\n".join(lines) + "\n")
+    except Exception:
+        os.unlink(tmp)
+        raise
+
+    first = when(found[0][0], found[0][1])[1][:10]
+    fname = f"boswell_{first}_{len(found)}clips.zip"
+    return FileResponse(tmp, media_type="application/zip", filename=fname,
+                        background=BackgroundTask(os.unlink, tmp))
 
 
 @app.post("/api/transcribe/{name}")
