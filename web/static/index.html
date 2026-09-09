@@ -8387,6 +8387,40 @@ function paintStuck(s, st){
   /* One failure is a missed advertisement window, which is ordinary. */
   if (!f || (f.consecutive || 0) < 3){ bar.hidden = true; return; }
 
+  /* A reset that has not been contradicted yet is not an ongoing fault.
+     `sync_failing` only clears on a sync that *succeeds*, and sync is
+     attempted once per session cycle -- so a healthy recorder streaming for
+     an hour after a successful reset would keep the alarm up for that whole
+     hour, with a failure count that stopped rising and a clock that says the
+     fault is current. That is the failure this project keeps finding, with
+     the sign flipped: a thing that works looking like a thing that stopped.
+
+     If nothing has failed since the reset, the honest report is that it was
+     dealt with and the next sync will confirm -- and the alarm returns by
+     itself, louder, if the next one does fail. */
+  const lastFail = f.last_at || f.since;
+  if (f.healed_at && lastFail && f.healed_at >= lastFail){
+    bar.hidden = true; return;
+  }
+
+  /* Sync is attempted once per session cycle, and a session runs for as long
+     as the device keeps streaming -- one observed here lasted 1h22m. So a
+     failure followed by a long healthy session leaves this reading "audio is
+     not being collected" for an hour and a half while audio is, in fact,
+     being collected: live, which is the main path. The backlog is real but
+     it is not urgent, and an alarm that cries during normal operation is one
+     nobody reads the day it matters.
+
+     While capture is actually recording, the bar is held back unless there
+     is something worth waking somebody for: a ring known to hold real audio,
+     or a reading old enough that nobody can say what is in there. The fault
+     that started all this passes both -- 2.4 hours stale -- so it still
+     shouts. */
+  const backlog  = (ring && ring.held_seconds) || 0;
+  const readAge  = ring ? ring.age_seconds : null;
+  const worthIt  = backlog > 300 || readAge == null || readAge > 3600;
+  if (s.state === "recording" && !worthIt){ bar.hidden = true; return; }
+
   const mins = (sec) => sec == null ? null
       : sec < 90 ? `${Math.round(sec)} seconds`
       : sec < 5400 ? `${Math.round(sec / 60)} minutes`
@@ -8405,13 +8439,24 @@ function paintStuck(s, st){
   }
   /* What was actually done about it, so a bar that stays up for a while is
      not mistaken for one nobody is acting on. */
+  /* Reaching here with a reset already behind us means the reset did not
+     hold -- which is worth saying differently, because it is the case where
+     nobody should keep waiting for the machine to sort itself out. */
   let sub = f.healed
-      ? `The Bluetooth stack has been reset ${f.healed} time`
-        + `${f.healed === 1 ? "" : "s"} to clear this automatically`
+      ? `The Bluetooth stack was reset ${f.healed} time`
+        + `${f.healed === 1 ? "" : "s"}`
         + (f.healed_at
-            ? `, last at ${new Date(f.healed_at * 1000).toLocaleTimeString()}.`
-            : ".")
-      : `Waiting for the recorder to come back in range.`;
+            ? ` (last at ${new Date(f.healed_at * 1000).toLocaleTimeString()})`
+            : "")
+        + ` and sync has failed again since, so this is not clearing itself.`
+      : (s.state === "recording"
+          /* Live capture working and offload failing is the whole shape of
+             this fault, and saying "waiting for it to come back in range"
+             while it is plainly in range and recording is the kind of wrong
+             sentence that teaches people to ignore the bar. */
+          ? `Live recording is working; it is the recorded backlog on the `
+            + `device that is not coming across.`
+          : `Waiting for the recorder to come back in range.`);
   if (f.heal_error) sub += ` Automatic reset failed: ${f.heal_error}`;
   sub += ` Last error: ${f.last_error || "unknown"}.`;
   if (f.consecutive >= 8 && !f.healed){

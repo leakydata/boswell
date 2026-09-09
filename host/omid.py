@@ -82,7 +82,11 @@ LAST = {"stats": {}, "session": None}
 # Consecutive failed syncs. Zeroed by any sync that completes, including one
 # that finds nothing waiting -- reaching the ring and being told it is empty
 # is a working sync.
-SYNC_FAIL = {"n": 0, "last": None, "at": None}
+# `at` is the most recent failure; `first` is when the run of them
+# started. Publishing one figure as both read as "failing since"
+# while actually being "last failed at", so a run of failures an hour
+# old announced itself as having started seconds ago.
+SYNC_FAIL = {"n": 0, "last": None, "at": None, "first": None}
 
 # Resetting the host Bluetooth stack when sync alone is failing.
 #
@@ -230,7 +234,8 @@ def publish(**fields):
             fields["sync_failing"] = {
                 "consecutive": SYNC_FAIL["n"],
                 "last_error": SYNC_FAIL["last"],
-                "since": SYNC_FAIL["at"],
+                "since": SYNC_FAIL["first"] or SYNC_FAIL["at"],
+                "last_at": SYNC_FAIL["at"],
                 # So the interface can say "it is being dealt with" rather
                 # than only "it is broken".
                 "healed": HEAL["n"],
@@ -408,6 +413,7 @@ async def one_session(address, quiet=False, dev=None):
                 done=done, total=total))
         SYNC_FAIL["n"] = 0
         SYNC_FAIL["last"] = None
+        SYNC_FAIL["first"] = None
         if took:
             sink = omi_sync.drain_spool(device_id, quiet=True)
             n = sink.clips if sink else 0
@@ -440,6 +446,8 @@ async def one_session(address, quiet=False, dev=None):
         SYNC_FAIL["n"] += 1
         SYNC_FAIL["last"] = f"{type(e).__name__}: {e}".strip().rstrip(":")
         SYNC_FAIL["at"] = time.time()
+        if SYNC_FAIL["first"] is None:
+            SYNC_FAIL["first"] = SYNC_FAIL["at"]
         # Counting the failures was the whole of the response until now: the
         # figure went into the status file and the same call was retried
         # forever. When live audio is still arriving, the fault is this

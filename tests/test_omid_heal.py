@@ -123,3 +123,36 @@ def test_status_carries_what_was_done_about_it():
     assert sf.get("consecutive") == 5
     assert sf.get("healed") == 2
     assert sf.get("healed_at")
+
+
+def test_since_is_the_first_failure_not_the_latest():
+    """"4 attempts have failed since 1:19pm" must mean the run started then.
+
+    `at` is rewritten on every failure, so publishing it as `since` said a
+    run of failures an hour old had started seconds ago -- and the banner
+    reading it put a fresh timestamp on a stale fault.
+    """
+    omid.SYNC_FAIL.update({"n": 0, "last": None, "at": None, "first": None})
+
+    t0 = time.time() - 3600
+    omid.SYNC_FAIL["at"] = t0
+    omid.SYNC_FAIL["first"] = t0          # what the failure path does
+    omid.SYNC_FAIL["n"] = 1
+
+    later = time.time()
+    omid.SYNC_FAIL["at"] = later
+    if omid.SYNC_FAIL["first"] is None:
+        omid.SYNC_FAIL["first"] = later
+    omid.SYNC_FAIL["n"] = 2
+
+    assert omid.SYNC_FAIL["first"] == t0, "first failure was overwritten"
+    assert omid.SYNC_FAIL["at"] == later
+
+
+def test_a_working_sync_forgets_when_it_started():
+    streaming()
+    omid.SYNC_FAIL.update({"n": 5, "at": time.time(), "first": time.time()})
+    omid.SYNC_FAIL["n"] = 0
+    omid.SYNC_FAIL["first"] = None        # what the success path does
+    assert not omid._should_heal()
+    assert omid.SYNC_FAIL["first"] is None
