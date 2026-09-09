@@ -78,6 +78,11 @@ stopping = False
 # useful.
 LAST = {"stats": {}, "session": None}
 
+# Consecutive failed syncs. Zeroed by any sync that completes, including one
+# that finds nothing waiting -- reaching the ring and being told it is empty
+# is a working sync.
+SYNC_FAIL = {"n": 0, "last": None, "at": None}
+
 
 def _restore_last():
     """Seed what was last known from the status file this daemon wrote before.
@@ -108,10 +113,41 @@ def _restore_last():
 _restore_last()
 
 
+# How old a ring reading may be before it is reported as unknown rather than
+# as a number.
+#
+# The storage figure is only written by a sync that reached the device, so a
+# run of failed syncs leaves the last good reading sitting there looking
+# current. That is this project's oldest failure wearing new clothes -- a
+# twenty-one-hour-old storage line beside a battery reading a minute old,
+# with nothing to tell them apart. Observed again: a panel reporting 80.6
+# seconds held, read at 09:14, while the device had been out of range from
+# 09:50 to 10:25 recording to that same ring and every sync since had failed.
+RING_STALE_AFTER = 20 * 60
+
+
 def publish(**fields):
     fields["at"] = time.time()
     fields.setdefault("stats", LAST["stats"] or None)
     fields["last_session"] = LAST["session"]
+    # Never a reason a run fails, so it is all best effort.
+    try:
+        st = fields.get("stats") or {}
+        ring = st.get("storage")
+        if isinstance(ring, dict) and ring.get("at"):
+            age = time.time() - ring["at"]
+            ring["age_seconds"] = round(age)
+            # Said out loud rather than left to the reader to work out from a
+            # timestamp they have to compare against now.
+            ring["stale"] = age > RING_STALE_AFTER
+        if SYNC_FAIL["n"]:
+            fields["sync_failing"] = {
+                "consecutive": SYNC_FAIL["n"],
+                "last_error": SYNC_FAIL["last"],
+                "since": SYNC_FAIL["at"],
+            }
+    except Exception:
+        pass
     try:
         atomicio.write_json(STATUS, fields)
     except Exception:
@@ -279,6 +315,8 @@ async def one_session(address, quiet=False, dev=None):
             progress=lambda done, total: publish(
                 state="syncing", address=address, stats=stats,
                 done=done, total=total))
+        SYNC_FAIL["n"] = 0
+        SYNC_FAIL["last"] = None
         if took:
             sink = omi_sync.drain_spool(device_id, quiet=True)
             n = sink.clips if sink else 0
@@ -300,6 +338,17 @@ async def one_session(address, quiet=False, dev=None):
         # backlog will still be there next time; the conversation happening
         # now will not.
         print(f"sync: {type(e).__name__}: {e}", flush=True)
+        # Kept where the interface can read it. A sync that fails is not a
+        # reason to skip the live stream -- but a sync that has failed every
+        # attempt for an hour is the difference between "the backlog will
+        # still be there next time" and "the backlog can no longer be
+        # collected", and only one of those is worth telling somebody about.
+        # Observed: 35 minutes of audio recorded out of range, then every
+        # sync since failing on connect or on the ring query, while the panel
+        # showed a held-seconds figure read before any of it happened.
+        SYNC_FAIL["n"] += 1
+        SYNC_FAIL["last"] = f"{type(e).__name__}: {e}".strip().rstrip(":")
+        SYNC_FAIL["at"] = time.time()
         # That handle is spent. A sighting names a D-Bus object BlueZ made
         # when it saw the device, and BlueZ drops the object once the device
         # goes -- so handing it to the stream after it has already failed

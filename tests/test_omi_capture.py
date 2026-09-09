@@ -942,3 +942,43 @@ def test_stored_audio_with_no_timestamp_is_kept_not_dropped():
 
     src = read_file("host/omid.py")
     assert "placed by arrival" in src
+
+
+def _omid_src():
+    import os
+    here = os.path.dirname(__file__)
+    with open(os.path.join(here, "..", "host", "omid.py")) as f:
+        return f.read()
+
+
+def test_a_ring_reading_says_how_old_it_is():
+    """The storage figure is written only by a sync that reached the device,
+    so a run of failed syncs leaves the last good reading looking current.
+
+    Observed 2026-09-09: the panel reported 80.6 seconds held, read at 09:14,
+    while the device had been out of range from 09:50 to 10:25 recording into
+    that same ring and every sync since had failed. The number was not wrong
+    when it was taken; it was answering a question about an hour earlier.
+    """
+    src = _omid_src()
+    assert "RING_STALE_AFTER" in src
+    fn = src[src.index("def publish("):]
+    fn = fn[:fn.index("\ndef ")]
+    assert "age_seconds" in fn and '"stale"' in fn
+
+
+def test_a_sync_that_keeps_failing_is_reported():
+    """One failed sync is not news -- the backlog will still be there next
+    time. A sync that has failed every attempt for an hour is a different
+    fact, and it was only ever visible in the journal.
+    """
+    src = _omid_src()
+    assert "SYNC_FAIL" in src
+    fn = src[src.index("def publish("):]
+    fn = fn[:fn.index("\ndef ")]
+    assert "sync_failing" in fn
+    assert "consecutive" in fn
+    # And any sync that reaches the ring clears it, including an empty one.
+    body = src[src.index("spool, took = await omi_sync.sync("):]
+    body = body[:body.index("except Exception")]
+    assert 'SYNC_FAIL["n"] = 0' in body
