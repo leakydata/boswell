@@ -1497,6 +1497,22 @@ async def rotator():
 SETTLE_SECONDS = 150.0
 AUTO_CONSOLIDATE_EVERY = 120.0
 
+# How often to file diarized voices nobody has accounted for into clusters.
+#
+# Its own cadence, because it is the expensive one: it walks every transcript
+# in the archive, which is 27 seconds at five thousand clips and grows. On the
+# two-minute consolidate loop that would be a fifth of the machine's time
+# spent re-reading files that have not changed.
+#
+# It had no cadence at all before this -- `scan_voices` ran only when somebody
+# pressed a button in the interface, and nobody did. 1,961 voice slots holding
+# 8.08 hours of speech were sitting unenrolled: not waiting in the labelling
+# queue to be named, but never offered to it. That is where everybody in
+# Nathan's life other than himself and his partner had gone. A queue that
+# fills only when you remember to fill it is the same failure as a status
+# line that only updates when you ask.
+AUTO_ENROL_EVERY = 900.0
+
 
 BACKUP_DIR = os.path.join(DATA, "backups")
 BACKUP_KEEP = 10
@@ -1575,6 +1591,11 @@ async def auto_consolidator():
         try:
             if PREFS.get("auto_consolidate", True) and not _bulk["running"]:
                 await _consolidate_settled()
+                # Enrol before resolving. _resolve_known can only absorb a
+                # cluster that exists, so running it without this was asking
+                # "is this unnamed voice somebody I know" about voices that
+                # had never been filed as unnamed voices in the first place.
+                await _enrol_new_voices()
                 # Identity has to be re-earned daily, so a voice named this
                 # morning is what recognises this afternoon's recording of the
                 # same person. Doing that only when somebody presses a button
@@ -1584,6 +1605,25 @@ async def auto_consolidator():
         except Exception as e:
             device.event("log", text=f"auto-consolidate: {str(e)[:100]}")
         await asyncio.sleep(AUTO_CONSOLIDATE_EVERY)
+
+
+_last_enrol = [0.0]
+
+
+async def _enrol_new_voices():
+    """File diarized voices nobody has accounted for, on a slow cadence.
+
+    Idempotent -- it skips voices already stored and voices already named, so
+    a pass with nothing new costs a directory walk and files nothing.
+    """
+    if worker.busy or time.time() - _last_enrol[0] < AUTO_ENROL_EVERY:
+        return
+    _last_enrol[0] = time.time()
+    loop = asyncio.get_running_loop()
+    st = await loop.run_in_executor(None, pipeline.scan_voices)
+    if st.get("clustered"):
+        device.event("log", text=(f"enrolled {st['clustered']} voice(s), "
+                                  f"{st.get('new_clusters', 0)} new"))
 
 
 async def _resolve_known():

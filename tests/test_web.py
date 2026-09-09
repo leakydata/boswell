@@ -2676,3 +2676,36 @@ def test_the_labelling_buttons_do_not_promise_finality():
     src = _read("web/static/index.html")
     assert "none later" not in src
     assert "naming it later labels everything it gathered" in src
+
+
+def test_voices_are_enrolled_without_anybody_pressing_a_button():
+    """`scan_voices` ran only from the interface, and nobody pressed it.
+    Measured before it was first run by hand: 1,961 voice slots holding 8.08
+    hours of speech sat unenrolled -- not waiting in the labelling queue to be
+    named, but never offered to it. Every person in the archive other than
+    Nathan and his partner was in there.
+    """
+    src = _read("web/server.py")
+    assert "async def _enrol_new_voices" in src
+    loop = src[src.index("            if PREFS.get(\"auto_consolidate\""):]
+    loop = loop[:loop.index("        except Exception")]
+    # Order matters: resolving asks "is this unnamed voice somebody I know",
+    # which can only answer for clusters that exist.
+    assert loop.index("await _enrol_new_voices()") < \
+        loop.index("await _resolve_known()")
+
+    fn = src[src.index("async def _enrol_new_voices"):]
+    fn = fn[:fn.index("\nasync def ")]
+    assert "worker.busy" in fn, "it competes with transcription"
+    assert "AUTO_ENROL_EVERY" in fn, "it runs on the consolidate cadence"
+
+
+def test_enrolment_has_its_own_slower_cadence():
+    # It walks every transcript in the archive -- 27 seconds at five thousand
+    # clips -- so on the two-minute consolidate loop it would be a fifth of
+    # the machine's time re-reading files that have not changed.
+    import re
+    src = _read("web/server.py")
+    enrol = float(re.search(r"AUTO_ENROL_EVERY = ([0-9.]+)", src).group(1))
+    cons = float(re.search(r"AUTO_CONSOLIDATE_EVERY = ([0-9.]+)", src).group(1))
+    assert enrol > cons * 4, "enrolment runs nearly as often as consolidation"
