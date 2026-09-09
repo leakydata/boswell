@@ -208,3 +208,17 @@ def test_claude_needs_a_key_like_any_other_hosted_backend():
     finally:
         if saved is not None:
             os.environ["ANTHROPIC_API_KEY"] = saved
+
+
+def test_openrouter_offers_the_best_value_model_first():
+    """A review is a reading job: a fixed ~2,800-token prefix of system prompt
+    and tool schemas, then the transcript. That shape rewards a cheap
+    long-context model far more than a frontier one. Measured on one real
+    113-clip conversation, deepseek-v4-pro cost $0.008 against roughly five
+    cents for the same work on Opus 5.
+    """
+    assert llm.OPENROUTER_MODELS[0] == "deepseek/deepseek-v4-pro"
+    # Claude stays on the list -- it is the better reader when it is worth it.
+    assert any(m.startswith("anthropic/") for m in llm.OPENROUTER_MODELS)
+    # And the old name still means what it said.
+    assert all(m.startswith("anthropic/") for m in llm.CLAUDE_VIA_OPENROUTER)

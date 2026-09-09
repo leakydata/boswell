@@ -60,12 +60,28 @@ BACKENDS = ("local",) + tuple(ENDPOINTS) + ("anthropic",)
 # more than judgement.
 CLAUDE_MODELS = ("claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5")
 CLAUDE_DEFAULT = "claude-opus-5"
-# The same models through OpenRouter, at the time of writing for the same
-# per-token price. Worth listing because a lot of people arriving at this
-# project already have an OpenRouter key and no Anthropic one, and this is
-# the difference between reading the next paragraph and not.
-CLAUDE_VIA_OPENROUTER = ("anthropic/claude-opus-5", "anthropic/claude-sonnet-5",
-                         "anthropic/claude-haiku-4.5")
+# What to offer on OpenRouter, best value first.
+#
+# Reviewing a conversation is a reading job with a fixed ~2,800-token prefix
+# of system prompt and tool schemas, and the transcript after it. That shape
+# rewards a cheap long-context model far more than it rewards a frontier one:
+# measured per-token at the time of writing, deepseek-v4-pro is $0.96/$1.91
+# per million against Opus 5's $5/$25 -- about five times cheaper to read and
+# thirteen times cheaper to write, which takes a conversation from roughly
+# five cents to one, and the whole archive from ten dollars to two. It carries
+# a million tokens of context and does tool calling, which is all this loop
+# asks of a model.
+#
+# The Claude entries stay because they are the better reader when a
+# conversation is worth it, and because a lot of people arriving at this
+# project have an OpenRouter key and no Anthropic one.
+OPENROUTER_MODELS = ("deepseek/deepseek-v4-pro",
+                     "anthropic/claude-opus-5", "anthropic/claude-sonnet-5",
+                     "anthropic/claude-haiku-4.5")
+# The old name, kept pointing at the Claude half so nothing that meant
+# "Claude through OpenRouter" silently starts meaning something else.
+CLAUDE_VIA_OPENROUTER = tuple(m for m in OPENROUTER_MODELS
+                              if m.startswith("anthropic/"))
 # Room for a full round of tool calls. Thinking is billed and counted inside
 # this, so it is not the size of the answer.
 CLAUDE_MAX_TOKENS = 16000

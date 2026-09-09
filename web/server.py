@@ -4196,7 +4196,7 @@ async def api_agent_config(body: dict):
         if want == "anthropic" and agent.model not in llm.CLAUDE_MODELS:
             agent.model = llm.CLAUDE_DEFAULT
         elif want == "openrouter" and "/" not in (agent.model or ""):
-            agent.model = llm.CLAUDE_VIA_OPENROUTER[0]
+            agent.model = llm.OPENROUTER_MODELS[0]
         elif want == "local" and "/" in (agent.model or ""):
             import agent_runner as _ar
             agent.model = _ar.DEFAULT_MODEL
@@ -4296,8 +4296,8 @@ async def api_models(backend: str = "local"):
         # list -- it is the shortest route to Claude reviewing conversations
         # for somebody who already has this key and no Anthropic one. Any
         # other model can still be set through the API.
-        return {"models": list(llm.CLAUDE_VIA_OPENROUTER),
-                "default": llm.CLAUDE_VIA_OPENROUTER[0]}
+        return {"models": list(llm.OPENROUTER_MODELS),
+                "default": llm.OPENROUTER_MODELS[0]}
     if backend != "local":
         return {"models": []}
     try:
