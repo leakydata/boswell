@@ -447,3 +447,50 @@ def test_video_content_has_a_lane_rather_than_a_refusal():
     prompt = read("web/agent_runner.py")
     assert "two lanes" in prompt
     assert "mostly video is not empty" in prompt
+
+
+def test_no_phrase_detector_ships_in_this_codebase():
+    """A keyword scan for broadcast script misfires on this archive's own
+    work vocabulary. "subscribe" is an equipment-subscription word here --
+    "this is inventory and has subscribed", "these both had false
+    subscribes", "see how it says subscribed?" -- so a detector built on it
+    would fire hardest on the most valuable material in the archive. The
+    measurements that used one were scaffolding and stayed out of the tree.
+    """
+    for f in ("web/pipeline.py", "web/agent_runner.py", "host/tools_impl.py",
+              "host/boswell_mcp.py", "web/semantic.py", "web/threads.py"):
+        # Comments may quote an example -- that is how the evidence for any of
+        # this gets written down. What must not exist is matching code.
+        code = "\n".join(l for l in read(f).splitlines()
+                         if not l.lstrip().startswith("#"))
+        for phrase in ("thanks for watching", "please do subscribe",
+                       "hit the bell", "welcome back to"):
+            assert phrase.lower() not in code.lower(), \
+                f"{f} scans for broadcast wording"
+        assert "re.compile" not in code or "subscrib" not in code.lower(), \
+            f"{f} builds a pattern over broadcast vocabulary"
+
+
+def test_a_reference_set_can_be_checked_against_itself():
+    """A reference is voiceprints that are supposed to be one person. If two
+    were merged, its own pairs disagree and every later match inherits it --
+    and the question "is the wearer's reference drifting?" had been getting
+    argued rather than measured. He is 37.8% of all segments on 588
+    voiceprints, so it mattered; measured, his median is 0.850 against the
+    0.863 one person scores here, while two much smaller references are
+    genuinely mixed.
+    """
+    tools = {t.name for t in asyncio.run(boswell_mcp.server.list_tools())}
+    assert "voice_health" in tools
+    rows = boswell_mcp.voice_health(min_prints=12)
+    assert rows, "nothing measured"
+    assert rows == sorted(rows, key=lambda r: r["median"]), \
+        "the worst reference is not first"
+    for r in rows:
+        assert 0 <= r["median"] <= 1.0001
+        assert r["verdict"]
+    # It reads the vectors, not a stored flag that can go stale.
+    src = read("host/boswell_mcp.py")
+    fn = src[src.index("def voice_health("):]
+    fn = fn[:fn.index("\n@server.tool")]
+    assert "FROM voiceprints" in fn and "np.median" in fn

@@ -913,6 +913,58 @@ def name_voice(person_id: int, name: str, kind: str) -> dict:
             "kind": kind}
 
 
+@server.tool(description="How well each named voice's reference set agrees "
+                         "with itself. A reference is a set of voiceprints "
+                         "that are supposed to be one person; if two people "
+                         "were merged into it, its pairs disagree and every "
+                         "later match inherits the mistake. Compare `median` "
+                         "against 0.863, which is what one person scores on "
+                         "this archive.")
+def voice_health(min_prints: int = 12) -> list:
+    """Measured, not inferred. This exists because the question "is the
+    wearer's reference drifting?" was being answered by argument -- he is
+    37.8% of all segments and carries 588 voiceprints, so it mattered -- and
+    the answer turned out to be no while two much smaller references were
+    genuinely mixed.
+    """
+    import numpy as np
+    import speaker_store as ss
+    c = ss._conn()
+    try:
+        out = []
+        for p in ss.people(c):
+            if not p.get("name") or (p.get("prints") or 0) < min_prints:
+                continue
+            rows = c.execute(
+                "SELECT vec FROM voiceprints WHERE person_id=? AND vec IS NOT NULL",
+                (p["id"],)).fetchall()
+            vecs = [ss._unpack(r["vec"]) for r in rows]
+            vecs = [np.asarray(v, dtype=float) for v in vecs if v is not None]
+            if len(vecs) < min_prints:
+                continue
+            M = np.stack(vecs)
+            M = M / np.linalg.norm(M, axis=1, keepdims=True)
+            pairs = (M @ M.T)[np.triu_indices(len(M), k=1)]
+            median = float(np.median(pairs))
+            out.append({
+                "name": p["name"], "person_id": p["id"],
+                "kind": p.get("kind") or "unclassified",
+                "voiceprints": len(vecs),
+                "median": round(median, 3),
+                "p10": round(float(np.percentile(pairs, 10)), 3),
+                "share_below_match_low": round(float(np.mean(pairs < ss.MATCH_LOW)), 3),
+                # One person medians 0.863 here; different people median 0.107.
+                # A reference sitting between the two holds more than one voice.
+                "verdict": ("looks like one person" if median >= 0.75 else
+                            "mixed -- probably more than one voice"
+                            if median < 0.60 else "worth listening to"),
+            })
+    finally:
+        c.close()
+    out.sort(key=lambda r: r["median"])
+    return out
+
+
 @server.tool(description="Voices that have a name but have never been said to "
                          "be a person or a video. Nothing they say can be "
                          "recorded until that is settled, and the list grows "
