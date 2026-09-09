@@ -176,9 +176,12 @@ def test_a_fact_cannot_be_filed_under_a_diarizer_label():
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "host"))
     import tools_impl
     for label in ("SPEAKER_00", "SPEAKER_12", "speaker_3", "  SPEAKER_01 "):
-        r = tools_impl.remember_fact(label, "is a firmware engineer")
+        # said_by is supplied and valid, so the refusal can only be about the
+        # subject -- otherwise this passes for the wrong reason.
+        r = tools_impl.remember_fact(label, "is a firmware engineer",
+                                     said_by="Nathan Jones")
         assert r["ok"] is False, f"{label} was accepted as a person"
-        assert "add_note" in r["error"], "it does not say what to do instead"
+        assert "diarizer label" in r["error"] and "add_note" in r["error"]
     # A person, or a project, is still a subject.
     for good in ("Nathan", "Boswell", "SPEAKER SYSTEM", "Speaker Corp"):
         assert not tools_impl.UNRESOLVED.match(good)

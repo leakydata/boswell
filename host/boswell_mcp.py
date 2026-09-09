@@ -79,7 +79,11 @@ server = MCPServer(
         "because that filter works by name and an un-named podcast host "
         "arrives looking like somebody in the room. When you meet one, "
         "set_voice_kind('media') or name_voice fixes it for every later "
-        "review too. Prefer search_units over search: a transcript line is "
+        "review too. The wearer talks at the screen while videos play, so "
+        "his words and a video's are interleaved in the same clips and the "
+        "video usually does most of the talking -- never read \"mostly "
+        "video\" as \"nothing here\", and judge each line by who said it "
+        "rather than the clip by its mix. Prefer search_units over search: a transcript line is "
         "whatever fell inside one 30-second clip, median seven words, while "
         "a unit is the sentence with the clip boundary undone. list_marks "
         "is where the user pressed the button on purpose, which is worth "
@@ -529,6 +533,8 @@ def _trim_clips(item):
 # here instead, for a model that can weigh who is speaking and whether a
 # sentence is worth keeping at all.
 
+SAID_BY_NOTE = (' `said_by` is the name on the transcript line the words came from -- required, because this archive has video playing near the microphone and often in the same clips as somebody talking back at it, so who said a thing is not recoverable from the clip it is in.')
+
 _ctx = __import__("threading").Lock()
 
 
@@ -571,31 +577,34 @@ def _write(fn_name, clips, **kw):
 
 
 @server.tool(description="Record a durable fact about a person or project. "
-                         "Pass the clip name(s) it came from.")
-def record_fact(subject: str, fact: str, clips: list) -> dict:
-    return _write("remember_fact", clips, subject=subject, fact=fact)
+                         "Pass the clip name(s) it came from." + SAID_BY_NOTE)
+def record_fact(subject: str, fact: str, said_by: str, clips: list) -> dict:
+    return _write("remember_fact", clips, subject=subject, fact=fact,
+                  said_by=said_by)
 
 
 @server.tool(description="Record an action item someone committed to. `due` is "
                          "free text or a date. Pass the clip name(s) it came from.")
-def record_task(text: str, clips: list, due: str = None,
+def record_task(text: str, said_by: str, clips: list, due: str = None,
                 owner: str = None) -> dict:
-    return _write("add_task", clips, text=text, due=due, owner=owner)
+    return _write("add_task", clips, text=text, due=due, owner=owner,
+                  said_by=said_by)
 
 
 @server.tool(description="Record a meeting or deadline mentioned in "
-                         "conversation. Pass the clip name(s) it came from.")
-def record_event(title: str, start: str, clips: list, end: str = None,
-                 attendees: list = None) -> dict:
+                         "conversation. Pass the clip name(s) it came from." + SAID_BY_NOTE)
+def record_event(title: str, start: str, said_by: str, clips: list,
+                 end: str = None, attendees: list = None) -> dict:
     return _write("add_calendar_event", clips, title=title, start=start,
-                  end=end, attendees=attendees or [])
+                  end=end, attendees=attendees or [], said_by=said_by)
 
 
 @server.tool(description="Record context worth keeping that is not a fact, "
-                         "task or event. Pass the clip name(s) it came from.")
-def record_note(title: str, body: str, clips: list,
+                         "task or event. Pass the clip name(s) it came from." + SAID_BY_NOTE)
+def record_note(title: str, body: str, said_by: str, clips: list,
                 tags: list = None) -> dict:
-    return _write("add_note", clips, title=title, body=body, tags=tags or [])
+    return _write("add_note", clips, title=title, body=body,
+                  tags=tags or [], said_by=said_by)
 
 
 @server.tool(description="Label a conversation with the subjects it covered, "

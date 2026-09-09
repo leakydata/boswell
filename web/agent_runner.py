@@ -219,6 +219,17 @@ Rules:
   claims -- addressing an audience, selling something, explaining at length
   with no one answering -- as media, and record it as a note about what was
   playing, if at all.
+- **The wearer talks at the screen.** He watches videos and comments back at
+  them, so his words and a video's are interleaved in the same clips and the
+  video usually does most of the talking. Do not read "mostly video" as
+  "nothing here". Some of the most useful things he says are one line in the
+  middle of a tutorial -- a reaction, an idea, something he wants built --
+  and they are worth recording precisely because he said them while watching.
+  Judge each line by who said it, never the clip by its overall mix.
+- Every record_* call takes `said_by`: the name on the line the words came
+  from. That is what separates his sentence from the video's around it. If
+  the line you want to record is not attributed to a named person, do not
+  record it -- name the voice, or use tag_topics to say what was playing.
 
 You may be shown ALREADY KNOWN entries retrieved from earlier conversations.
 They are what you have recorded before. Use them:

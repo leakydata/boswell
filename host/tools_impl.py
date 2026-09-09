@@ -67,33 +67,41 @@ def set_context(clips):
     _context_clips = list(clips or [])
 
 
-# The share of attributed speech that must come from a named person in the
-# room before an item may be recorded about it.
+# Who has to have said something before it may be recorded about them.
 #
-# Measured over everything the agent has ever written to this archive. The one
-# item that should never have been kept -- a full summary of a YouTuber's
-# opinions on AI, filed as a note in a personal archive -- came from clips
-# whose speech was 13.1% named person, 0% named media and 86.9% unnamed. Every
-# item worth keeping came from clips at 99.7% or better. Nothing in between
-# has been observed, so this sits far from both sides rather than close to the
-# one example.
+# The first version of this counted the *mix of the clips*: refuse when less
+# than a quarter of the speech in them came from a named person. It was built
+# on a real measurement -- the one item that should never have been kept came
+# from clips 13.1% named-person, every good item from 99.7% or better -- and
+# it was the wrong shape, which the measurement could not show because the
+# archive had no example of the case that matters.
 #
-# Why not simply exclude speakers whose kind is media: because that label does
-# not gate anything it has not been applied to. Of 86 voices in this archive
-# 64 carry no kind at all, and the host of that AI video was never named --
-# it was SPEAKER_00, which is why every existing filter, all of which match on
-# names, let it through. Unnamed speech has to count against an item, not be
-# invisible to the check.
-NAMED_SHARE_MIN = 0.25
-
-# Recording what a conversation was *about* is exempt. A topic tag on a video
-# is honest and useful -- it says what was playing -- and does not claim
-# anybody said, planned or committed to anything.
+# The case that matters: Nathan talks at the screen while a video plays. His
+# own words and the video's are in the same clips, and the video does most of
+# the talking. Measured on the conversation where he said "I just want a way
+# to have AI take notes from videos that I watch instead of just listening to
+# them" -- the most useful sentence in the archive that evening, and the one
+# thing a note-taker should not miss -- the clips are 4.0% named person. The
+# mix rule refused it. A rule that blocks the owner's own dictated request
+# because a robotics tutorial was louder is not a safety rule, it is a bug
+# with a threshold.
+#
+# So the unit of evidence is the line, not the clip. An item names the person
+# whose words it came from, and that person has to be somebody the archive can
+# name and not a voice off a screen. The model has just read the transcript
+# with speaker labels on every line; it is the one thing here that knows.
+#
+# The same reasoning as `clips`: provenance required rather than optional. An
+# item that cannot say who said it is not attributable, and the store already
+# has one round of history of what that produces.
 GATED_KINDS = ("notes", "tasks", "events", "facts")
 
+# Diarizer labels. A position in one recording, a different voice in the next.
+UNRESOLVED = re.compile(r"^\s*(SPEAKER|speaker)[ _-]?\d+\s*$")
 
-def _speech_mix(clips):
-    """(named person, named media, unnamed) segment counts over some clips."""
+
+def _named_speakers(clips):
+    """(people, off_screen) -- the names actually heard in these clips."""
     import sys
     here = os.path.dirname(os.path.abspath(__file__))
     web = os.path.join(here, "..", "web")
@@ -103,12 +111,11 @@ def _speech_mix(clips):
     import speaker_store
     c = speaker_store._conn()
     try:
-        media = {p["name"] for p in speaker_store.people(c)
-                 if p.get("name") and p.get("kind") in
-                 (speaker_store.KIND_MEDIA, speaker_store.KIND_IGNORED)}
+        kind = {p["name"]: p.get("kind") for p in speaker_store.people(c)
+                if p.get("name")}
     finally:
         c.close()
-    person = off_screen = unnamed = 0
+    people, off_screen = set(), set()
     for name in clips:
         tp = pipeline.transcript_path(name)
         if not os.path.exists(tp):
@@ -122,41 +129,55 @@ def _speech_mix(clips):
             who = seg.get("speaker_name") or \
                 (table.get(seg.get("speaker")) or {}).get("name")
             if not who:
-                unnamed += 1
-            elif who in media:
-                off_screen += 1
+                continue
+            if kind.get(who) in (speaker_store.KIND_MEDIA,
+                                 speaker_store.KIND_IGNORED):
+                off_screen.add(who)
             else:
-                person += 1
-    return person, off_screen, unnamed
+                people.add(who)
+    return people, off_screen
 
 
-def _attributable(kind):
-    """Whether the clips in context are somebody's speech or something playing.
+def _attributable(kind, said_by):
+    """Whether `said_by` is somebody who can be quoted from these clips.
 
-    Returns None when it may be recorded, or a refusal a model can act on.
-    Best effort: if the transcripts cannot be read the write goes through, as
-    it did before this existed.
+    Returns None when the item may be recorded, or a refusal a model can act
+    on. Best effort on the reading: if the transcripts cannot be read the
+    write goes through, as it did before this existed.
     """
-    if kind not in GATED_KINDS or not _context_clips:
+    if kind not in GATED_KINDS:
+        return None
+    said_by = (said_by or "").strip()
+    if not said_by:
+        return {"ok": False, "error":
+                "said_by is required -- the name of the person whose words "
+                "this came from, as shown on the transcript line. This "
+                "archive is full of video playing near the microphone, and "
+                "an item that cannot say who said it cannot be told apart "
+                "from something a podcast host asserted."}
+    if UNRESOLVED.match(said_by):
+        return {"ok": False, "error":
+                f"{said_by!r} is a diarizer label, not a person: it means a "
+                f"different voice in every recording. If somebody in the room "
+                f"said this, name the voice first; if it was a video, use "
+                f"tag_topics to say what was playing."}
+    if not _context_clips:
         return None
     try:
-        person, media, unnamed = _speech_mix(_context_clips)
+        people, off_screen = _named_speakers(_context_clips)
     except Exception:
         return None
-    total = person + media + unnamed
-    if not total:
-        return None
-    share = person / total
-    if share >= NAMED_SHARE_MIN:
-        return None
-    return {"ok": False, "error":
-            f"only {share:.0%} of the speech in these clips is from a named "
-            f"person ({person} segments named, {media} from a voice marked "
-            f"media, {unnamed} unnamed). That is the shape of something "
-            f"playing nearby rather than a conversation, and a personal "
-            f"archive should not carry it as a fact, task, event or note. "
-            f"Use tag_topics to say what was playing, or name the voice "
-            f"first if somebody in the room was actually speaking."}
+    if said_by in off_screen:
+        return {"ok": False, "error":
+                f"{said_by} is marked as audio off a screen. Nothing a video "
+                f"says is a fact, task or event in a personal archive -- use "
+                f"tag_topics to record what was playing."}
+    if people and said_by not in people:
+        return {"ok": False, "error":
+                f"{said_by} does not speak in these clips. Named speakers "
+                f"here: {sorted(people)}. Pass the clips the words are "
+                f"actually in, or the name as the transcript shows it."}
+    return None
 
 
 def _append(kind, record):
@@ -195,31 +216,33 @@ def _append(kind, record):
     return record
 
 
-def add_note(title, body, tags=None):
+def add_note(title, body, said_by=None, tags=None):
     """Save a note extracted from conversation."""
-    blocked = _attributable("notes")
+    blocked = _attributable("notes", said_by)
     if blocked:
         return blocked
-    r = _append("notes", {"title": title, "body": body, "tags": tags or []})
+    r = _append("notes", {"title": title, "body": body, "said_by": said_by,
+                          "tags": tags or []})
     return {"ok": True, "saved": "note", "title": r["title"]}
 
 
-def add_task(text, due=None, owner=None):
+def add_task(text, said_by=None, due=None, owner=None):
     """Save an action item / to-do."""
-    blocked = _attributable("tasks")
+    blocked = _attributable("tasks", said_by)
     if blocked:
         return blocked
-    r = _append("tasks", {"text": text, "due": due, "owner": owner})
+    r = _append("tasks", {"text": text, "due": due,
+                          "owner": owner or said_by, "said_by": said_by})
     return {"ok": True, "saved": "task", "text": r["text"]}
 
 
-def add_calendar_event(title, start, end=None, attendees=None):
+def add_calendar_event(title, start, said_by=None, end=None, attendees=None):
     """Save a calendar event mentioned in conversation."""
-    blocked = _attributable("events")
+    blocked = _attributable("events", said_by)
     if blocked:
         return blocked
     r = _append("events", {"title": title, "start": start, "end": end,
-                           "attendees": attendees or []})
+                           "said_by": said_by, "attendees": attendees or []})
     return {"ok": True, "saved": "event", "title": r["title"], "start": r["start"]}
 
 
@@ -242,9 +265,14 @@ def add_calendar_event(title, start, end=None, attendees=None):
 UNRESOLVED = re.compile(r"^\s*(SPEAKER|speaker)[ _-]?\d+\s*$")
 
 
-def remember_fact(subject, fact):
-    """Save a durable fact about a person or project."""
-    blocked = _attributable("facts")
+def remember_fact(subject, fact, said_by=None):
+    """Save a durable fact about a person or project.
+
+    `subject` is who the fact is about; `said_by` is who said it. They are
+    often different and both matter: "Blase is moving in March" said by Blase
+    is a fact, and said by a podcast is not.
+    """
+    blocked = _attributable("facts", said_by)
     if blocked:
         return blocked
     if UNRESOLVED.match(subject or ""):
@@ -253,7 +281,8 @@ def remember_fact(subject, fact):
                 "different voice in every recording, so a fact filed under it "
                 "cannot be found again. Name the person, or if the voice is "
                 "unidentified use add_note instead."}
-    r = _append("facts", {"subject": subject, "fact": fact})
+    r = _append("facts", {"subject": subject, "fact": fact,
+                          "said_by": said_by})
     return {"ok": True, "saved": "fact", "subject": r["subject"]}
 
 
@@ -427,16 +456,18 @@ SCHEMAS = [
         "parameters": {"type": "object", "properties": {
             "title": {"type": "string", "description": "Short title"},
             "body": {"type": "string", "description": "The note content"},
+            "said_by": {"type": "string", "description": "The name on the transcript line these words came from. Required: this archive contains video playing near the microphone, often in the same clips as the wearer talking back at it, so who said a thing is not recoverable from the clip it is in."},
             "tags": {"type": "array", "items": {"type": "string"}}},
-            "required": ["title", "body"]}}},
+            "required": ["title", "body", "said_by"]}}},
     {"type": "function", "function": {
         "name": "add_task",
         "description": "Save an action item someone committed to or was assigned.",
         "parameters": {"type": "object", "properties": {
             "text": {"type": "string", "description": "What needs doing"},
             "due": {"type": "string", "description": "Due date if stated, else omit"},
-            "owner": {"type": "string", "description": "Who owns it, by speaker name"}},
-            "required": ["text"]}}},
+            "owner": {"type": "string", "description": "Who owns it, by speaker name"},
+            "said_by": {"type": "string", "description": "The name on the transcript line these words came from. Required: this archive contains video playing near the microphone, often in the same clips as the wearer talking back at it, so who said a thing is not recoverable from the clip it is in."}},
+            "required": ["text", "said_by"]}}},
     {"type": "function", "function": {
         "name": "add_calendar_event",
         "description": "Save a meeting or deadline that was scheduled or referenced.",
@@ -444,13 +475,15 @@ SCHEMAS = [
             "title": {"type": "string"},
             "start": {"type": "string", "description": "ISO date/time or description"},
             "end": {"type": "string"},
-            "attendees": {"type": "array", "items": {"type": "string"}}},
-            "required": ["title", "start"]}}},
+            "attendees": {"type": "array", "items": {"type": "string"}},
+            "said_by": {"type": "string", "description": "The name on the transcript line these words came from. Required: this archive contains video playing near the microphone, often in the same clips as the wearer talking back at it, so who said a thing is not recoverable from the clip it is in."}},
+            "required": ["title", "start", "said_by"]}}},
     {"type": "function", "function": {
         "name": "remember_fact",
         "description": "Save a durable fact about a person, project, or preference worth recalling later.",
         "parameters": {"type": "object", "properties": {
             "subject": {"type": "string", "description": "Person or project the fact is about"},
-            "fact": {"type": "string"}},
-            "required": ["subject", "fact"]}}},
+            "fact": {"type": "string"},
+            "said_by": {"type": "string", "description": "The name on the transcript line these words came from. Required: this archive contains video playing near the microphone, often in the same clips as the wearer talking back at it, so who said a thing is not recoverable from the clip it is in."}},
+            "required": ["subject", "fact", "said_by"]}}},
 ]

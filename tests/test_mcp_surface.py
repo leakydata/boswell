@@ -319,37 +319,62 @@ def test_no_name_is_offered_below_the_measured_noise_floor():
                 f"{c['name']} offered at {c['score']}"
 
 
-def test_an_item_needs_speech_from_somebody_who_can_be_named():
-    """Marking a voice `media` labels but does not gate: 64 of 86 voices in
-    this archive carry no kind at all, and the host of the AI video that got
-    summarised into the personal archive was never named -- it was SPEAKER_00,
-    which every name-matching filter lets through.
+def test_an_item_names_who_said_it_not_how_loud_the_room_was():
+    """The first gate here counted the mix of the clips: refuse when less than
+    a quarter of the speech in them came from a named person. It was built on
+    a real measurement -- the one bad item at 13.1% named-person, every good
+    item at 99.7% -- and it was the wrong shape, which the measurement could
+    not show because the archive held no example of the case that matters.
 
-    Measured over everything the agent has written: the one item that should
-    never have been kept came from clips 13.1% named-person; every item worth
-    keeping came from clips at 99.7% or better.
+    The case that matters: the wearer talks at the screen. His words and a
+    video's are interleaved in the same clips and the video does most of the
+    talking. Measured on the conversation containing "I just want a way to
+    have AI take notes from videos that I watch" -- 4.0% named person. The mix
+    rule refused the owner's own dictated request because a robotics tutorial
+    was louder.
     """
     import tools_impl
-    assert tools_impl.NAMED_SHARE_MIN == 0.25
-    # Topic labels stay allowed -- saying what was playing is honest.
+    assert not hasattr(tools_impl, "NAMED_SHARE_MIN"), \
+        "still judging a clip by its mix"
     assert "topics" not in tools_impl.GATED_KINDS
     for k in ("notes", "tasks", "events", "facts"):
         assert k in tools_impl.GATED_KINDS
 
+    src = read("host/tools_impl.py")
     for fn in ("def add_note", "def add_task", "def add_calendar_event",
                "def remember_fact"):
-        src = read("host/tools_impl.py")
         body = src[src.index(fn):]
         body = body[:body.index("\ndef ", 10)]
+        assert "said_by" in body, f"{fn} does not record who said it"
         assert "_attributable(" in body, f"{fn} is not gated"
 
+    # And the model is required to supply it, not merely allowed to.
+    for t in tools_impl.SCHEMAS:
+        f = t["function"]
+        if f["name"] in ("add_note", "add_task", "add_calendar_event",
+                         "remember_fact"):
+            assert "said_by" in f["parameters"]["required"]
 
-def test_the_refusal_says_what_to_do_instead():
+
+def test_the_gate_admits_a_sentence_spoken_over_a_video():
+    import tools_impl
+    real = tools_impl._context_clips
+    try:
+        tools_impl.set_context([])          # no clips: only the name is judged
+        assert tools_impl._attributable("tasks", "Nathan Jones") is None
+        for bad, why in (("", "required"),
+                         ("SPEAKER_02", "diarizer label")):
+            r = tools_impl._attributable("tasks", bad)
+            assert r and why in r["error"], f"{bad!r} was not refused"
+    finally:
+        tools_impl.set_context(real)
+
+
+def test_unreadable_transcripts_are_not_a_reason_to_refuse():
     import tools_impl
     real = tools_impl._context_clips
     try:
         tools_impl.set_context(["nonexistent_probe.wav"])
-        # No transcripts to read is not a reason to refuse.
-        assert tools_impl._attributable("notes") is None
+        assert tools_impl._attributable("notes", "Nathan Jones") is None
     finally:
         tools_impl.set_context(real)
