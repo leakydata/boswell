@@ -88,7 +88,16 @@ private, nothing leaves. It wants a GPU to be quick and a model on disk.
 Claude is a real translation rather than a header swap and gets its own
 backend; OpenAI and OpenRouter share one adapter, and OpenRouter serves the
 same Claude models at the same per-token price if that is the key you already
-have. Transcripts are sent to be read, which is the trade. Measured on this
+have. On OpenRouter the list is offered best-value first, and the default is
+**DeepSeek v4 Pro**: reviewing a conversation is a reading job with a fixed
+~2,800-token prefix of system prompt and tool schemas and a transcript after
+it, and that shape rewards a cheap long-context model far more than a frontier
+one. Measured per-token at the time of writing it is $0.96/$1.91 per million
+against Opus 5's $5/$25 — about five times cheaper to read and thirteen times
+cheaper to write, taking a conversation from roughly five cents to one and the
+whole archive from ten dollars to two. It carries a million tokens of context
+and does tool calling, which is all this loop asks. The Claude entries stay
+because they are the better reader when a conversation is worth it. Transcripts are sent to be read, which is the trade. Measured on this
 archive, the fixed prefix — system prompt plus tool schemas — dominates: about
 five cents a conversation on Opus 5, roughly ten dollars for the whole archive.
 
@@ -100,6 +109,25 @@ and already writes: `record_fact`, `record_task`, `record_event`,
 reading. Every writer takes the clips the item came from, and refuses without
 them: an item that cannot be traced back to what was said is how the store
 once ended up with 74 facts nobody could check.
+
+**And every writer takes `said_by`.** A fact, task, event or note is refused
+unless it names the person whose words it came from, as that person appears on
+the transcript line. This archive is full of video playing near the
+microphone, so an item that cannot say who said it cannot be told apart from
+something a podcast host asserted. Four things are refused: an empty
+`said_by`; a diarizer label like `SPEAKER_01`, which means a different voice in
+every recording; a voice whose kind is `media` or `ignored`; and a voice
+nobody has classified yet, on the grounds that an unclassified voice is an
+open question rather than a person. The refusal says what to do about it —
+name the voice, or set its kind — so a model can act on it instead of guessing.
+
+An earlier version of this gate judged the *clip* instead, refusing anything
+from a recording that was mostly unnamed speech. It was measured against the
+live archive and thrown away: the owner talks at the screen while videos play,
+so his own words and a video's are interleaved in the same clips and the video
+usually does most of the talking. That rule blocked his own dictated request
+at 4% named-person. Judge the line by who said it, never the clip by how loud
+the room was.
 
 Reading and the agent store come straight from the archive's databases, so an
 agent on this machine needs no tunnel and no token. The half that only the
@@ -796,6 +824,16 @@ uv run host/agent.py data/voice.wav
 uv run web/server.py     # then open http://localhost:8740
 ```
 
+**8740, not 8000.** Port 8000 is what every other development server reaches
+for first, and an always-on recorder that has been running since Tuesday
+should not lose a coin toss to whatever was started this afternoon. Set
+`BOSWELL_PORT` to move it, or `BOSWELL_URL` to point the tools at a server
+somewhere else entirely; the number is named once in `web/netcfg.py` because
+the server's bind and the MCP bridge's loopback are in different processes and
+a literal in both is a disagreement waiting to happen — the MCP server is
+spawned by whatever uses its tools, so it never sees the service's
+environment.
+
 A local service that owns the Bluetooth link and serves the interface. It
 connects to the board on startup, so a restart resumes capture without
 intervention.
@@ -828,9 +866,19 @@ the lot automatically on reconnect.
 
 **Recordings** — grouped into conversations by default, because a 30-second
 clip is a storage unit and not a human one. Contiguous clips are gathered and a
-gap longer than five minutes starts a new conversation, so the list reads as
+gap longer than a minute starts a new conversation, so the list reads as
 "11:00, 2.5 minutes, Nathan and Blase" rather than as five fragments. Flat and
 by-day views are also available.
+
+That minute is `index_db.CONVERSATION_GAP`, and it is the only conversation
+boundary in the program. It was not: the recordings view used the constant
+while the server grouped at five minutes in two places, both MCP read tools
+passed five, and the agent carried its own copy under a comment claiming it
+matched the view. At five minutes a whole evening is one 371-clip, 183-minute
+"conversation" spanning six unrelated subjects; at one minute the same evening
+is a set with a p90 of twelve minutes. Where a subject changes *inside* one
+conversation is a different question, answered by `threads.HARD_GAP`, and is
+deliberately not this number.
 
 Search runs over **every segment** on the server and returns the matching lines
 with timestamps, so a word spoken thirty seconds into a conversation is
@@ -840,12 +888,23 @@ full-text search and was not.
 Any selection, or a whole conversation, can be exported as plain text; single
 clips also export as JSON or SRT.
 
+**Downloading the audio** is separate from exporting the words, and it is the
+half you cannot reconstruct if the archive is lost. A clip saves from its
+detail view; a multi-select saves as one zip, built server-side because
+seventy separate browser downloads is not a thing anyone sits through. The zip
+carries a `manifest.txt` naming each clip and when it was captured — a folder
+of files named by epoch says nothing six months later — and marks which
+timestamps are real. That distinction matters here: audio offloaded from a
+device's ring knows the time it was *recorded*, while live-streamed clips know
+only the time they *arrived*.
+
 Every clip, newest first, with a preview of what was said.
 Clips are written every 30 seconds and transcribed automatically; nothing needs
 a tap per clip.
 
 Filter by content (all, with voice, silent) and by date (any time, today, last
-seven days, older). **Select** turns on multi-select for deleting in bulk, with
+seven days, older), and choose how many to show per page — 25 through 200, or
+all of them. **Select** turns on multi-select for deleting in bulk, with
 *Select all shown* respecting whichever filters are active — so "delete every
 silent clip older than a week" is three taps. Deleting recordings never touches
 enrolled voices; those live in their own files.
@@ -1175,6 +1234,43 @@ above, `drift.py` for the day-to-day collapse, `embedders.py` to test whether
 another model behaves differently, `capture_path.py` for whether the microphone
 is at fault.
 
+### What kind of voice it is
+
+Separate from naming, and layered above it: every voice carries a **kind** —
+`person`, `media`, `ignored`, or nothing yet. It lives on the voice, not on
+the clip, so classifying one voice settles every recording it has ever
+appeared in and every one it appears in later.
+
+| kind | means | in the queue? | still collects? |
+|---|---|---|---|
+| **person** | somebody in the room | yes, until named | yes |
+| **media** | a voice off a screen, worth recognising | hidden by default | **yes** |
+| **ignored** | a TV in the next room, a stranger on a phone | hidden | **yes** |
+| *(unset)* | not yet decided | yes | yes |
+
+**A kind never stops a voice being collected**, and that rule was bought the
+hard way. Tagging a voice "it's a video" used to quietly end it: `_references`
+admits named people only, and the unknown-cluster path excluded media, so an
+unnamed media voice was in neither — every later occurrence arrived as a fresh
+stranger. Tag fifty video voices and you get fifty clusters today and fifty
+more next week, and naming one later renames a single fragment of it.
+
+The objection that fixed it was the owner's, and it is the right way to think
+about the whole feature: he would not use a label meaning "doesn't matter" if
+it stopped that voice being labelled properly some other day. So nothing is
+deleted and nothing stops accumulating. A voice set aside today can be named
+next month and the evidence is intact — naming it then labels everything it
+gathered in the meantime.
+
+What a kind *does* change is trust. Media can never confer a name (that is
+`_references`' job, and it reads names, not kinds), speech from a media voice
+is never written down as something the wearer said or committed to, and a
+voice with no kind yet is not trusted for extraction either — an unclassified
+voice is an open question, not a person.
+
+Set it from the voice queue, or over the tools with
+`set_voice_kind(person_id, kind)`.
+
 ## Custom words
 
 Names, jargon and drug names are what a general transcriber gets wrong, so the
@@ -1349,6 +1445,52 @@ everything unprocessed.
 **Only one connection at a time.** While `omid` holds the device, the Omi
 phone app cannot, and the reverse. This is a replacement for that app, not a
 companion to it.
+
+### When the backlog stops coming across
+
+There is one failure here that looks exactly like nothing being wrong, and it
+is worth describing because it cost a morning. Live capture keeps writing
+clips, the panel keeps saying *recording*, and meanwhile every attempt to read
+the device's ring fails — `TimeoutError`, "the device did not answer the ring
+query", `org.bluez.Error.InProgress`, "failed to discover services", and
+`BleakDeviceNotFoundError` on a device that is connected. Hours of recorded
+audio sit on the device, safe but uncollected, and nothing says so.
+
+The cause is usually not the device, the battery, the distance or the
+firmware. It is stale connection state on the *host* — the kernel and
+`bluetoothd` disagreeing about what is connected, which shows up as
+`bluetoothd: No matching connection for device`. A `systemctl restart
+bluetooth` clears it in about fifteen seconds. Measured on the occasion that
+prompted this: after the reset the ring answered in 0.1 s and 29,112 packets
+came over at 89 kB/s, against 26 kB/s while the stack was sick.
+
+Two things now happen without anyone watching.
+
+**`omid` resets the stack itself.** The gate is the interesting part, because
+sync failing on its own is just the ordinary sound of a recorder being
+somewhere else, and bouncing the adapter twice an hour all day for that costs
+every other Bluetooth device on the machine and fixes nothing. A wedged stack
+has a specific signature — **live audio still arriving while sync alone
+fails**; if the recorder were out of range, both would fail. So a reset needs
+recent frames as well as repeated failures, and is rate-limited besides,
+because a cure that did not work must not become a loop.
+
+**The interface says so**, across the whole page rather than as a figure on a
+device panel, because "why are my clips not showing" is not a question anyone
+asks on the device panel. The ring reading goes stale at exactly the moment it
+starts mattering — it comes from the sync that is failing — so the age of the
+reading is part of the sentence rather than a caveat behind it: *"81 seconds,
+when it was last reachable, 2.4 hours ago"*, not *"81 seconds"*.
+
+Two traps worth knowing if you ever debug this by hand. The RSSI in
+`bluetoothctl info` is a cached advertisement value, not the live link; it
+read −87 dBm while the actual connection was −61 dBm, which is healthy, and
+sent a whole investigation down a signal-strength blind alley. Read the real
+one from the controller with `hcitool cmd 0x05 0x0005 <handle-lo> <handle-hi>`
+— the last byte is signed dBm. And recovered clips are written with the time
+they were *captured*, so they never appear as new files, do not turn up in a
+search for recent modification times, and sort into the past in the interface.
+A successful recovery can look like it did nothing.
 
 Offloaded audio carries real timestamps -- the device stamps what it stores.
 Its live stream does not, carrying only a packet counter, so those clips are
