@@ -793,7 +793,7 @@ uv run host/agent.py data/voice.wav
 ### Web UI
 
 ```bash
-uv run web/server.py     # then open http://localhost:8000
+uv run web/server.py     # then open http://localhost:8740
 ```
 
 A local service that owns the Bluetooth link and serves the interface. It

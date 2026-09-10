@@ -7,7 +7,7 @@ This is the shape the phone app takes. It decodes nothing and stores nothing —
 frames go up exactly as the board emitted them, and control writes come down
 as two opaque bytes. Everything that needs a GPU stays on the server.
 
-    uv run host/relay.py --server ws://10.0.0.19:8000 --token $BOSWELL_TOKEN
+    uv run host/relay.py --server ws://10.0.0.19:8740 --token $BOSWELL_TOKEN
 """
 
 import argparse
@@ -126,6 +126,6 @@ async def relay(args):
 
 
 ap = argparse.ArgumentParser()
-ap.add_argument("--server", default="ws://localhost:8000")
+ap.add_argument("--server", default="ws://localhost:8740")
 ap.add_argument("--token", default="")
 sys.exit(asyncio.run(relay(ap.parse_args())))

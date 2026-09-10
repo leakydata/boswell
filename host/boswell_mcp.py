@@ -745,8 +745,12 @@ def mark_reviewed(clip: str, note: str = None, clips: list = None) -> dict:
 
 
 def _base():
-    return os.environ.get("BOSWELL_URL") or \
-        f"http://127.0.0.1:{os.environ.get('BOSWELL_PORT', '8000')}"
+    # Named in web/netcfg.py rather than repeated here: this process is
+    # spawned by whatever is using the tools, so it never sees the systemd
+    # unit's environment, and a default that drifts from the server's leaves
+    # every tool reporting "connection refused" at a healthy server.
+    import netcfg
+    return netcfg.base_url()
 
 
 def _api(path, body=None, method=None, timeout=120):

@@ -8,7 +8,7 @@ every piece of device state and every action is expressed as JSON over a
 WebSocket, and the browser holds no logic that a native client could not
 reimplement in a few dozen lines.
 
-    uv run web/server.py          then open http://localhost:8000
+    uv run web/server.py          then open http://localhost:8740
 """
 
 import io
@@ -55,6 +55,7 @@ import tempfile
 import zipfile
 
 import atomicio
+import netcfg
 import numpy as np
 import soundfile as sf
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -5279,5 +5280,5 @@ if __name__ == "__main__":
     import uvicorn
     # Honours BOSWELL_HOST so the warning above is actionable: setting it to
     # 127.0.0.1 actually keeps the service on this machine.
-    uvicorn.run(app, host=_BIND, port=int(os.environ.get("BOSWELL_PORT", "8000")),
+    uvicorn.run(app, host=_BIND, port=netcfg.port(),
                 log_level="warning")

@@ -208,7 +208,7 @@ with accessibility and correctness findings, many still open.
 ## 8. How to work
 
 - `./run_tests.sh` before and after. It is fast, ~3 seconds.
-- The server runs as `systemctl --user restart boswell.service` on port 8000.
+- The server runs as `systemctl --user restart boswell.service` on port 8740.
   There is live hardware attached; the device may be recording. Do not send
   device commands (`arm`, `dfu`, `clear_buffer`) as part of testing the
   interface.
