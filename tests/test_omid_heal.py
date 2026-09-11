@@ -156,3 +156,85 @@ def test_a_working_sync_forgets_when_it_started():
     omid.SYNC_FAIL["first"] = None        # what the success path does
     assert not omid._should_heal()
     assert omid.SYNC_FAIL["first"] is None
+
+
+# --- presence, the half of the gate that was too narrow ------------------
+#
+# Overnight 2026-09-10 the gate refused to reset for eleven hours while 8.2
+# hours of audio sat on a device on the desk. It asked for recent frames as
+# proof the recorder was there, and the stack was sick enough to break the
+# live session too -- so the only evidence left was the shape of the
+# failures, and the gate was not reading it.
+
+class _E(Exception):
+    pass
+
+
+def _err(name):
+    return type(name, (Exception,), {})()
+
+
+def test_a_connect_that_timed_out_proves_the_device_was_there():
+    """bleak times out only after a scan has found it."""
+    omid.SEEN.update({"at": None, "how": None})
+    omid.note_failure_seen(_err("TimeoutError"))
+    assert omid.SEEN["at"], "TimeoutError should count as presence"
+
+
+def test_dropping_at_service_discovery_proves_it_too():
+    """You cannot fail to discover services on a device you never reached.
+    109 of these were logged overnight and all were ignored."""
+    omid.SEEN.update({"at": None, "how": None})
+    omid.note_failure_seen(_err("BleakError"))
+    assert omid.SEEN["at"]
+
+
+def test_device_not_found_is_the_one_error_that_means_absent():
+    omid.SEEN.update({"at": None, "how": None})
+    omid.note_failure_seen(_err("BleakDeviceNotFoundError"))
+    assert omid.SEEN["at"] is None, "not-found must never imply presence"
+
+
+def test_the_overnight_failure_now_heals():
+    """Repeated sync failures, no frames for hours, but the device keeps
+    being found and lost. This is the case that stranded 8.2 hours."""
+    omid.SYNC_FAIL.update({"n": 0, "last": None, "at": None, "first": None})
+    omid.HEAL.update({"at": None, "n": 0, "last": None})
+    omid.SEEN.update({"at": None, "how": None})
+    omid.LAST["session"] = None                      # nothing streaming
+
+    omid.SYNC_FAIL["n"] = 20
+    omid.note_failure_seen(_err("BleakError"))       # failed at discovery
+    assert omid._should_heal(), "a present-but-unreachable device must heal"
+
+
+def test_genuinely_away_still_does_not_heal():
+    """The case the gate exists to protect: out of range all day. Only
+    not-found errors, so no presence is ever recorded."""
+    omid.SYNC_FAIL.update({"n": 0, "last": None, "at": None, "first": None})
+    omid.HEAL.update({"at": None, "n": 0, "last": None})
+    omid.SEEN.update({"at": None, "how": None})
+    omid.LAST["session"] = None
+
+    omid.SYNC_FAIL["n"] = 200
+    for _ in range(50):
+        omid.note_failure_seen(_err("BleakDeviceNotFoundError"))
+    assert not omid._should_heal(), "must not bounce the adapter all day"
+
+
+def test_presence_goes_stale():
+    """Seen once hours ago is not seen now."""
+    omid.SYNC_FAIL.update({"n": 20, "at": None, "first": None})
+    omid.HEAL.update({"at": None, "n": 0, "last": None})
+    omid.LAST["session"] = None
+    omid.SEEN.update({"at": time.time() - omid.HEAL_FRAMES_WITHIN - 60,
+                      "how": "advertising"})
+    assert not omid._should_heal()
+    omid.SEEN["at"] = time.time()
+    assert omid._should_heal()
+
+
+def test_an_advertisement_is_presence():
+    omid.SEEN.update({"at": None, "how": None})
+    omid.note_seen("advertising")
+    assert omid.SEEN["how"] == "advertising" and omid.SEEN["at"]

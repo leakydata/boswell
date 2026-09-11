@@ -113,6 +113,37 @@ HEAL_FRAMES_WITHIN = 20 * 60      # a session must have delivered audio since
 
 HEAL = {"at": None, "n": 0, "last": None}
 
+# The device was demonstrably there, whether or not audio arrived.
+#
+# The gate below used recent frames as its proof of presence, and that was
+# too narrow. Overnight on 2026-09-10 the host's stack was wedged badly
+# enough that the *live* session failed too -- 294 device-not-found in eleven
+# hours, seventeen sessions delivering frames -- so the gate read "recorder
+# is away", refused to reset, and 8.2 hours of audio sat on a device that was
+# lying on the desk. It fired twice in eleven hours against a thirty-minute
+# rate limit, and the second one fixed it immediately.
+#
+# The evidence it was throwing away: 360 failures that could only happen to a
+# device that had been found. bleak raises BleakDeviceNotFoundError when a
+# scan never saw it; everything else -- a connect that timed out, a link that
+# dropped at service discovery, a GATT error, a ring query that went
+# unanswered -- happens *after* the device is in hand. So absence has exactly
+# one name, and every other failure is presence.
+ABSENT = ("BleakDeviceNotFoundError",)
+
+SEEN = {"at": None, "how": None}
+
+
+def note_seen(how):
+    SEEN["at"] = time.time()
+    SEEN["how"] = how
+
+
+def note_failure_seen(e):
+    """Record presence from the kind of failure, not from its success."""
+    if type(e).__name__ not in ABSENT:
+        note_seen(f"{type(e).__name__} after contact")
+
 
 def _streaming_recently():
     """Did a live session actually receive audio in the last few minutes?
@@ -128,12 +159,24 @@ def _streaming_recently():
     return bool(ended) and (time.time() - ended) < HEAL_FRAMES_WITHIN
 
 
+def _device_seen_recently():
+    """Is the recorder demonstrably present, by any evidence at all?
+
+    Frames are the strongest signal and the original one. They are not the
+    only one: a stack sick enough to break sync can break the live session
+    too, and refusing to act then is the case that stranded eleven hours.
+    """
+    if _streaming_recently():
+        return True
+    return bool(SEEN["at"]) and (time.time() - SEEN["at"]) < HEAL_FRAMES_WITHIN
+
+
 def _should_heal():
     if SYNC_FAIL["n"] < HEAL_AFTER:
         return False
     if HEAL["at"] and (time.time() - HEAL["at"]) < HEAL_EVERY:
         return False
-    return _streaming_recently()
+    return _device_seen_recently()
 
 
 def _heal_bluetooth():
@@ -241,6 +284,11 @@ def publish(**fields):
                 "healed": HEAL["n"],
                 "healed_at": HEAL["at"],
                 "heal_error": HEAL["last"],
+                # Why the daemon does or does not think a reset is the right
+                # answer -- the figure that explains an alarm that is not
+                # clearing itself.
+                "seen_at": SEEN["at"],
+                "seen_how": SEEN["how"],
             }
     except Exception:
         pass
@@ -448,6 +496,7 @@ async def one_session(address, quiet=False, dev=None):
         SYNC_FAIL["at"] = time.time()
         if SYNC_FAIL["first"] is None:
             SYNC_FAIL["first"] = SYNC_FAIL["at"]
+        note_failure_seen(e)
         # Counting the failures was the whole of the response until now: the
         # figure went into the status file and the same call was retried
         # forever. When live audio is still arriving, the fault is this
@@ -807,6 +856,7 @@ async def run(address=None, quiet=False):
                                else "waiting"), address=addr)
             except Exception as e:
                 print(f"session: {type(e).__name__}: {e}", flush=True)
+                note_failure_seen(e)
                 # A device that told us it was powering down did not fail.
                 # Reporting "lost the link" for a deliberate long press is
                 # how somebody comes to chase a fault that is a switch.
@@ -830,6 +880,7 @@ async def run(address=None, quiet=False):
             sighted = await wait_until_advertising(addr, wait)
             if sighted is not None:
                 print("saw it advertise -- connecting now", flush=True)
+                note_seen("advertising")
                 tries = 0
                 # Advertising again means somebody switched it back on. The
                 # flag has to clear here rather than on the next successful
