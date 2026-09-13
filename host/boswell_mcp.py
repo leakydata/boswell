@@ -96,6 +96,30 @@ def _fmt_time(ts):
     return time.strftime("%Y-%m-%d %H:%M", time.localtime(ts)) if ts else "?"
 
 
+def _epoch(d, end_of_day=False):
+    """A YYYY-MM-DD from a caller as local epoch seconds, or None.
+
+    `until` is inclusive of the day it names -- someone asking for "up to
+    Friday" means all of Friday, and taking midnight would silently drop it.
+    """
+    if not d:
+        return None
+    try:
+        t = time.mktime(time.strptime(str(d)[:10], "%Y-%m-%d"))
+    except ValueError:
+        return None
+    return t + 86399 if end_of_day else t
+
+
+def _in_range(start, end, since, until):
+    """Whether something spanning start..end touches the window at all."""
+    if since is not None and (end or start or 0) < since:
+        return False
+    if until is not None and (start or end or 0) > until:
+        return False
+    return True
+
+
 def _when(clip, ts=None):
     """When a clip was recorded, asked of the index when the caller has no
     timestamp to hand. Results that arrived by meaning rather than by keyword
@@ -138,13 +162,26 @@ def stats() -> dict:
 
 
 @server.tool(description="Search everything said, by keyword. Returns matching "
-                         "lines with their clip, time and speaker.")
-def search(query: str, limit: int = 30) -> list:
+                         "lines with their clip, time and speaker. `since` and "
+                         "`until` are YYYY-MM-DD and both inclusive, so a "
+                         "question about one day or one week can be answered "
+                         "without reading past it.")
+def search(query: str, limit: int = 30, since: str = None,
+           until: str = None) -> list:
     import index_db
+    lo, hi = _epoch(since), _epoch(until, end_of_day=True)
+    # A date window narrows what survives, so ask the index for more than the
+    # caller wants when one is set -- otherwise the first `limit` hits are
+    # picked before the dates are considered and a good match outside the
+    # window quietly costs a slot.
+    fetch = limit * 8 if (lo or hi) else limit
     # index_db.search groups its hits by clip: one entry per clip, with the
     # matching lines under "hits". Flatten it -- a model wants the lines.
     out = []
-    for clip in index_db.search(query, limit=limit):
+    for clip in index_db.search(query, limit=fetch):
+        when = clip.get("modified")
+        if (lo or hi) and not _in_range(when, when, lo, hi):
+            continue
         for h in clip.get("hits", []):
             out.append({"clip": clip.get("name"),
                         "when": _fmt_time(clip.get("modified")),
@@ -271,10 +308,18 @@ def _speaker_coverage(clips, sample=None):
                          "attributed to a name. `limit` counts conversations. "
                          "`identified_fraction` is the share of segments "
                          "carrying a name -- check it before quoting anyone, "
-                         "because most of this archive is unnamed voices.")
-def list_conversations(limit: int = 20) -> list:
+                         "because most of this archive is unnamed voices. "
+                         "`since` and `until` are YYYY-MM-DD and both "
+                         "inclusive; a conversation counts if any of it falls "
+                         "inside the window.")
+def list_conversations(limit: int = 20, since: str = None,
+                       until: str = None) -> list:
     import index_db
     convs = index_db.conversations(index_db.CONVERSATION_GAP, SCAN_CLIPS)
+    lo, hi = _epoch(since), _epoch(until, end_of_day=True)
+    if lo or hi:
+        convs = [c for c in convs
+                 if _in_range(c.get("start"), c.get("end"), lo, hi)]
     out = []
     for cv in convs[:limit]:
         clips = cv.get("clips") or []
@@ -806,16 +851,8 @@ def search_units(query: str, limit: int = 15, person: str = None,
                  until: str = None) -> list:
     import units
 
-    def epoch(d):
-        if not d:
-            return None
-        try:
-            return time.mktime(time.strptime(d[:10], "%Y-%m-%d"))
-        except ValueError:
-            return None
-
     r = units.search(query, limit=limit, name=person, sound=sound,
-                     since=epoch(since), until=epoch(until))
+                     since=_epoch(since), until=_epoch(until, end_of_day=True))
     if r.get("error"):
         return [{"error": r["error"],
                  "hint": "keyword search via `search` still works"}]
