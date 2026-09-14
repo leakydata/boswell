@@ -586,7 +586,7 @@ CONVERSATION_GAP = 60
 # same evening is a set of conversations with a p90 of twelve minutes. Every
 # caller that means "a conversation" now takes this value.
 #
-# `threads.HARD_GAP` is a different question -- where a subject changes
+# `threads.sections(hard_gap=...)` is a different question -- where a subject changes
 # *inside* one conversation -- and is deliberately not this number.
 
 

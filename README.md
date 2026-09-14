@@ -877,8 +877,8 @@ passed five, and the agent carried its own copy under a comment claiming it
 matched the view. At five minutes a whole evening is one 371-clip, 183-minute
 "conversation" spanning six unrelated subjects; at one minute the same evening
 is a set with a p90 of twelve minutes. Where a subject changes *inside* one
-conversation is a different question, answered by `threads.HARD_GAP`, and is
-deliberately not this number.
+conversation is a different question, answered by the `hard_gap` argument to
+`threads.sections()` (180 s), and is deliberately not this number.
 
 Search runs over **every segment** on the server and returns the matching lines
 with timestamps, so a word spoken thirty seconds into a conversation is
@@ -1271,6 +1271,85 @@ voice is an open question, not a person.
 Set it from the voice queue, or over the tools with
 `set_voice_kind(person_id, kind)`.
 
+## Reading it back as sentences
+
+A thirty-second clip is a transport unit. It cuts wherever thirty seconds
+happened to land, which is usually mid-sentence, so one thought arrives as
+two or three rows with the speaker's name repeated on each — and everything
+downstream inherits the fragments. `web/threads.py` undoes that in two
+passes, kept separate because they fail differently.
+
+**Stitching** puts one person's continuing speech back together, and is
+purely mechanical: same speaker, gap under `JOIN_GAP` (2.0 s — a breath and
+a thought; four seconds is the other person deciding not to speak), nothing
+suspicious in between. A unit stops at `MAX_SECONDS` (120) or `MAX_WORDS`
+(150), because without a cap somebody reading aloud becomes one wall of text
+with no handle on it, which is the problem this exists to fix rather than
+cause. Across a clip boundary two diarized slots are called the same person
+at `SAME_VOICE` (0.60) — measured on this archive's own slots at median
+0.655, p10 0.505, so about a tenth of genuine same-person pairs stay split.
+That is deliberate: a missed join costs a seam, and a wrong one puts words
+in somebody's mouth.
+
+**Sectioning** finds where the subject changed, which is a judgement rather
+than a rule. It is TextTiling — old, cheap, and needing no model: compare the
+run of units before each gap with the run after, and score the dips by
+*depth*, how far the similarity fell from the peaks either side, rather than
+by absolute value. A conversation that stays on one subject is uniformly
+similar and one that wanders is uniformly less so, so a fixed threshold
+would cut the second to ribbons and the first not at all. It reuses the
+sentence embeddings the archive has already computed, so it costs nothing.
+
+`MIN_DEPTH` is the floor underneath the ranking, and it is the number that
+was wrong for a long time. It was 0.08, set against synthetic vectors in a
+test, and real conversation is far noisier than that. Measured over this
+archive — 3,852 gaps across 62 conversations, median depth 0.047, p90 0.241,
+p95 0.316 — 0.08 called **38% of all gaps** a change of subject, a new
+section every 1.3 minutes, and cut a single exchange into three:
+
+    [subject] 1 unit | What is that sound?
+    [subject] 1 unit | High-pitched, like, cicada sound.
+    [subject] 1 unit | I think it's coming from the air conditioner.
+
+At 0.30, a little under p95, that stays one section and an 89-unit
+conversation resolves into four. About one section per fourteen units, four
+minutes — roughly how often a subject really changes.
+
+A silence of `hard_gap` (180 s) is a boundary whatever the words did. Three
+minutes of nothing is a different sitting, and no amount of similarity across
+it means the two halves belong together. That is a separate question from
+where one *conversation* ends, which is `index_db.CONVERSATION_GAP`.
+
+Prefer `search_units` over `search`: a transcript line is whatever fell
+inside one clip, median seven words; a unit is the sentence with the clip
+boundary undone.
+
+## Searching by meaning
+
+Keyword search finds a conversation only if you remember a word from it — "the
+bit about the battery connector" finds nothing unless somebody said
+"connector", and nothing at all when the transcriber heard the word
+differently. Meaning search finds the subject and drifts past exact terms: a
+name, a part number, a figure, all of which carry little semantic weight.
+They fail in opposite directions, so the archive runs both.
+
+Segments are embedded with Ollama's `nomic-embed-text` (768 dimensions),
+local like everything else, and stored in `data/semantic.db` in a
+**sqlite-vec** `vec0` table with cosine distance. Voiceprints deliberately do
+*not* go through this: those compare against one reference vector per enrolled
+person, so that search is already trivial and an index would add moving parts
+for nothing. What grows without limit is the transcript, and that is what is
+worth indexing.
+
+`hybrid()` fuses the two rankings with **reciprocal rank fusion** — each hit
+scores `1 / (K + rank)`, K = 60 — which needs only the orderings and not the
+scores. That matters: a cosine distance and an FTS5 rank are not on any common
+scale, so any weighted sum of them would be an invented number. Something both
+methods rank highly rises above something either ranks first alone, which is
+the behaviour worth having. Fusion takes the *best* rank per clip rather than
+one contribution per matching line, so a clip with several near-matching lines
+cannot out-rank a better one by volume.
+
 ## Custom words
 
 Names, jargon and drug names are what a general transcriber gets wrong, so the
@@ -1542,11 +1621,27 @@ finish the move to Zephyr rather than a reason to fight the Arduino build.
 
 ## Roadmap
 
-- Opus encoding. See "What Omi does differently" below — the remaining
-  obstacle is the Arduino build, not the codec.
-- Step counting and activity detection — also hardware features of the
+**Done since this list was written**, kept here because the list claimed
+otherwise for a while:
+
+- **Opus encoding.** Shipped on the Zephyr firmware — `opus-1.2.1` vendored
+  under `src/lib/`, encoded in `src/codec.c`, 20 ms frames at 16 kHz. The
+  entry used to say the obstacle was the Arduino build; the Arduino sketch is
+  not the firmware this runs, so that was an obstacle to something nobody
+  uses. Boswell's Opus is byte-identical to the Omi's, which is why audio
+  from either needs no translation.
+- **Reading the archive from a model.** `host/boswell_mcp.py` and
+  `host/boswell_cli.py` — the review workflow, the writers, and the search
+  tools. See "Who does the thinking".
+
+**Still open:**
+
+- Step counting and activity detection — hardware features of the
   LSM6DS3TR-C, at almost no CPU or code cost
-- Rolling long-term memory across conversations
+- Rolling long-term memory across conversations. Partly built: facts, tasks,
+  events, notes and topics are stored and searchable, and a reviewing model
+  writes them. What does not exist is anything that carries a subject across
+  conversations — every review still starts from nothing.
 - Phone app to replace the laptop as the BLE host
 - Enclosure and dock
 
