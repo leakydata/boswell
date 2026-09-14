@@ -1513,7 +1513,7 @@ AUTO_CONSOLIDATE_EVERY = 120.0
 # pressed a button in the interface, and nobody did. 1,961 voice slots holding
 # 8.08 hours of speech were sitting unenrolled: not waiting in the labelling
 # queue to be named, but never offered to it. That is where everybody in
-# Nathan's life other than himself and his partner had gone. A queue that
+# Alex's life other than himself and his partner had gone. A queue that
 # fills only when you remember to fill it is the same failure as a status
 # line that only updates when you ask.
 AUTO_ENROL_EVERY = 900.0
@@ -3895,8 +3895,8 @@ def _rematch_clips(names=None):
             # identify() also returns the decision, the margin and the ranked
             # candidates, and patching two fields left the other three behind
             # from an earlier run. The archive had entries reading name
-            # "Nathan", score 0.965, decision "uncertain", and a candidate list
-            # whose best Nathan was 0.723 -- three different moments in one
+            # "Alex", score 0.965, decision "uncertain", and a candidate list
+            # whose best Alex was 0.723 -- three different moments in one
             # record, and the interface believing all of them at once.
             if any(rec.get(f) != cur.get(f)
                    for f in ("name", "score", "decision", "margin")):
@@ -4015,8 +4015,8 @@ async def api_conversation(body: dict):
         #
         # A diarized id only means something inside the clip it came from:
         # SPEAKER_00 here is not SPEAKER_00 in the next clip. Merging them
-        # made one clip's SPEAKER_00 being Nathan label every other clip's
-        # SPEAKER_00 as Nathan too, which put the wrong name on other
+        # made one clip's SPEAKER_00 being Alex label every other clip's
+        # SPEAKER_00 as Alex too, which put the wrong name on other
         # people's speech -- three different ids in one conversation all
         # resolved to the same person.
         clip_speakers[name] = t.get("speakers") or {}
@@ -4222,7 +4222,7 @@ async def api_split(name: str):
         # including the seconds that have just been taken out of it.
         #
         # What that cost, on the clip that exposed it: nine lines of Ryan Long
-        # and one pinned to Danny Polishchuk, split into a 24.6 s clip and a
+        # and one pinned to Jordan Lee, split into a 24.6 s clip and a
         # 5.1 s clip -- and the 24.6 s one inherited the 29.7 s vector, Danny
         # included. Enrol from that and Ryan's reference set carries five
         # seconds of somebody else for good.
@@ -5065,7 +5065,7 @@ async def api_label(body: dict):
         #
         # What it cost, on one real clip: a slot flagged suspect at coherence
         # 0.472 -- 26 seconds of the wearer and 4 of a video, pooled into one
-        # vector -- was enrolled as Nathan and again as NileRed YouTube, twice
+        # vector -- was enrolled as Alex and again as NileRed YouTube, twice
         # each. Four byte-identical references, similarity 1.0000 to one
         # another, describing two people at once and now sitting in both their
         # reference sets to drag future matches around.

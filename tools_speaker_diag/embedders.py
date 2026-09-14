@@ -16,7 +16,7 @@ of the manual labelling disappears.
 Same audio, same spans, two models, one comparison. Nothing is re-recorded and
 nothing in the store is touched; this only reads.
 
-    uv run tools_speaker_diag/embedders.py [--person Nathan] [--spans 50]
+    uv run tools_speaker_diag/embedders.py [--person Alex] [--spans 50]
 """
 import argparse
 import collections
@@ -98,7 +98,7 @@ def gather_spans(person, limit):
 
     # Stratify by calendar day, not evenly over the sorted list.
     #
-    # References pile up wherever the labelling happened: 278 of Nathan's 327
+    # References pile up wherever the labelling happened: 278 of Alex's 327
     # are from one afternoon. Sampling evenly across the list therefore draws
     # almost everything from that afternoon and reports a span of half a day,
     # which is precisely the comparison this tool exists to avoid making.
@@ -203,7 +203,7 @@ def curve(times, vecs):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--person", default="Nathan")
+    ap.add_argument("--person", default="Alex")
     ap.add_argument("--spans", type=int, default=50)
     a = ap.parse_args()
 

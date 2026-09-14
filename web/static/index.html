@@ -3447,7 +3447,7 @@ async function loadDuplicates(){
     k.textContent = c.kind.replace(/s$/, "");
     // The stored text begins with the kind, because that is embedded with it
     // on purpose. The chip beside it already says so, and printing both gave
-    // "factfact · Nathan · ...".
+    // "factfact · Alex · ...".
     t1.append(k, document.createTextNode(stripKind(c.keep.text, c.kind)));
     box.appendChild(t1);
 
@@ -7195,7 +7195,7 @@ async function renderTranscript(name){
       /* Clicking a label edits whatever produced that label.
          
          It always opened the namer for the whole voice, so a line pinned to
-         "NileRed YouTube" displayed that and then offered "Rename Nathan" --
+         "NileRed YouTube" displayed that and then offered "Rename Alex" --
          the control described one thing and did another. A pinned line goes to
          the line editor, which owns the pin; an unpinned one names the voice. */
       if (s.speaker_name){
@@ -7363,7 +7363,7 @@ $("namerSave").onclick = saveName;
       for (const a of (p.aliases || [])) aliasToName[normName(a)] = p.name;
       const b = document.createElement("button");
       /* samples is the list of voiceprint samples; count is how many.
-         Interpolating the list gave "Blase ([object Object])". */
+         Interpolating the list gave "Sam Chen ([object Object])". */
       const n = (typeof p.count === "number") ? p.count
               : (Array.isArray(p.samples) ? p.samples.length : 0);
       b.textContent = n ? `${p.name} · ${n}` : p.name;

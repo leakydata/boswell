@@ -143,7 +143,7 @@ is no second list to drift:
 ```bash
 uv run host/boswell_cli.py                      # what there is
 uv run host/boswell_cli.py unreviewed_conversations
-uv run host/boswell_cli.py search_units --query "what I owe someone" --person "Nathan Jones"
+uv run host/boswell_cli.py search_units --query "what I owe someone" --person "Alex Rivera"
 uv run host/boswell_cli.py review_conversation --clips omi_1788904400.wav
 ```
 
@@ -867,7 +867,7 @@ the lot automatically on reconnect.
 **Recordings** — grouped into conversations by default, because a 30-second
 clip is a storage unit and not a human one. Contiguous clips are gathered and a
 gap longer than a minute starts a new conversation, so the list reads as
-"11:00, 2.5 minutes, Nathan and Blase" rather than as five fragments. Flat and
+"11:00, 2.5 minutes, Alex and Sam Chen" rather than as five fragments. Flat and
 by-day views are also available.
 
 That minute is `index_db.CONVERSATION_GAP`, and it is the only conversation
@@ -1143,13 +1143,13 @@ back if the name was wrong.
 A name answers "who said this". It was also being asked to carry what kind of
 thing they are, for want of anywhere else to put it: six of the ten names in
 this archive ended in "YouTube". That makes the name wrong -- a comedian who
-appears on somebody's channel is not called "Danny Polishchuk YouTube" --
+appears on somebody's channel is not called "Jordan Lee YouTube" --
 invites two spellings of one person, and hides the category from search.
 
 So a person has a profile: a `role` (YouTuber, comedian, housemate) and a
 `note`, kept apart from `kind`, which answers a different question entirely and
 has only two useful answers. The profile touches no matching. It travels out
-through the MCP, where a reader given "Danny Polishchuk" and nothing else
+through the MCP, where a reader given "Jordan Lee" and nothing else
 cannot tell a housemate from a comedian on a channel playing in the background,
 and the difference changes what the words mean.
 
@@ -1355,8 +1355,8 @@ cannot out-rank a better one by volume.
 Names, jargon and drug names are what a general transcriber gets wrong, so the
 **People** tab takes a word list, and everyone you enrol is added to it
 automatically. Terms are applied **after** transcription. A single mangled word
-is matched fuzzily, so *"she prescribed metformen"* comes back as *"she
-prescribed Metformin"*. Runs of two or three words are re-joined only when their
+is matched fuzzily, so *"the amoxicilin script"* comes back as *"the
+Amoxicillin script"*. Runs of two or three words are re-joined only when their
 letters match a term **exactly** — *"adp cm"* becomes *"ADPCM"*, *"data slayer
 youtube"* becomes *"Data Slayer YouTube"*.
 

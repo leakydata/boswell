@@ -313,8 +313,8 @@ SPEAKER_01 said that.
 
 "Persistent speaker identification" means:
 
-SPEAKER_00 is Nathan.
-SPEAKER_01 is Dan.
+SPEAKER_00 is Alex.
+SPEAKER_01 is Sam Chen.
 
 Even if Gemma can perform diarization, do not assume it can reliably identify the same human across unrelated recordings.
 

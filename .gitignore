@@ -1,8 +1,64 @@
+# ---------------------------------------------------------------------------
+# This repository is public, and the thing it is built to produce is a
+# recording of somebody's life. The rule is that nothing derived from a real
+# archive goes in it: not the audio, not the transcripts, not the voiceprints,
+# not a screenshot of the interface with real names on the screen.
+#
+# Everything below the first heading is that rule. The rest is ordinary build
+# and tooling noise.
+# ---------------------------------------------------------------------------
+
 # secrets
 .env
+.env.*
+*.key
+*.pem
+secrets.json
+data/secrets.json
 
 # recordings, transcripts, and voiceprints of real people — never commit
 data/
+*.wav
+*.mp3
+*.m4a
+*.opus
+*.flac
+*.raw
+
+# the archive's own databases and derived stores
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+*.jsonl
+
+# screenshots of the running interface.
+#
+# A UI screenshot is a transcript. `people-tab.png` sat in this repository
+# showing the real enrolled voices -- names, sample counts, the clip each
+# reference came from. Staged demo captures are welcome, and they live in
+# docs/ and are added deliberately with `git add -f`.
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.webp
+!docs/*.jpg
+!docs/*.png
+
+# anything a tool captured from the live system
+.playwright-mcp/
+.codex/
+*.har
+*-status.json
+omi_status.json
+telemetry*.json
+
+# working notes — my own tracking, not part of the project
+.notes/
+scratch/
+scratchpad/
 
 # build outputs
 build/
@@ -19,12 +75,4 @@ build_ble/
 toolshim/
 __pycache__/
 *.pyc
-__pycache__/
-
-# working notes — my own tracking, not part of the project
-.notes/
-
-# browser automation snapshots — these capture the live interface,
-# including real names and transcript text
-.playwright-mcp/
-.codex/
+.pytest_cache/

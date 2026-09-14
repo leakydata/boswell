@@ -46,9 +46,9 @@ def test_a_name_learned_late_names_the_whole_run():
     # The voice did not change; only what was known about it did.
     out = threads.stitch([
         seg("a.wav", 0, 0.0, 3.0, "One."),
-        seg("a.wav", 1, 3.2, 6.0, "Two.", name="Nathan"),
+        seg("a.wav", 1, 3.2, 6.0, "Two.", name="Alex"),
     ])
-    assert len(out) == 1 and out[0]["name"] == "Nathan"
+    assert len(out) == 1 and out[0]["name"] == "Alex"
 
 
 def test_a_real_pause_starts_a_new_utterance():
@@ -80,9 +80,9 @@ def test_an_id_does_not_carry_across_a_clip():
 
 def test_the_same_named_person_does_carry_across_a_clip():
     out = threads.stitch([
-        seg("a.wav", 0, 0.0, 3.0, "Mine.", speaker="SPEAKER_00", name="Nathan"),
+        seg("a.wav", 0, 0.0, 3.0, "Mine.", speaker="SPEAKER_00", name="Alex"),
         seg("b.wav", 0, 3.2, 5.0, "Still mine.", speaker="SPEAKER_03",
-            name="Nathan"),
+            name="Alex"),
     ])
     assert len(out) == 1, "a resolved name should carry across clips"
 
@@ -99,8 +99,8 @@ def test_a_shaky_attribution_ends_the_run():
 
 def test_two_recorders_are_two_rooms():
     out = threads.stitch([
-        seg("a.wav", 0, 0.0, 3.0, "Here.", name="Nathan", device_id="omi"),
-        seg("b.wav", 0, 3.1, 5.0, "There.", name="Nathan", device_id="boswell"),
+        seg("a.wav", 0, 0.0, 3.0, "Here.", name="Alex", device_id="omi"),
+        seg("b.wav", 0, 3.1, 5.0, "There.", name="Alex", device_id="boswell"),
     ])
     assert len(out) == 2, "audio from two microphones was spliced together"
 
@@ -110,7 +110,7 @@ def test_one_person_talking_forever_still_gets_handles():
     # fixed rather than the fix.
     segs, t = [], 0.0
     for i in range(200):
-        segs.append(seg("a.wav", i, t, t + 2.0, "word " * 5, name="Nathan"))
+        segs.append(seg("a.wav", i, t, t + 2.0, "word " * 5, name="Alex"))
         t += 2.1
     out = threads.stitch(segs)
     assert len(out) > 1
@@ -123,7 +123,7 @@ def test_lines_with_no_shared_timeline_are_left_alone():
     file compared against an offset from another reads a 28-second gap as if
     the second line came first."""
     a = seg("a.wav", 0, 0.0, 3.0, "One.")
-    b = seg("b.wav", 0, 0.0, 3.0, "Two.", name="Nathan")
+    b = seg("b.wav", 0, 0.0, 3.0, "Two.", name="Alex")
     a["at"] = a["until"] = None
     out = threads.stitch([a, b])
     assert len(out) == 2
@@ -141,7 +141,7 @@ def test_absolute_times_come_from_the_clip_they_belong_to():
 
 
 # ----------------------------------------------------------------- sectioning
-def _unit(at, until, vec, name="Nathan", clip="a.wav", index=0):
+def _unit(at, until, vec, name="Alex", clip="a.wav", index=0):
     return {"clip": clip, "index": index, "at": at, "until": until,
             "text": "some words here", "name": name, "seconds": until - at,
             "words": 3, "parts": [{"clip": clip, "index": index}]}

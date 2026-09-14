@@ -213,7 +213,7 @@ def _conn():
     # voice from a speaker. Everything else somebody knows about a voice was
     # going into the name for want of anywhere else: six of the ten names in
     # this archive ended in "YouTube". That makes the name wrong (a comedian
-    # who appears on someone's channel is not called "Danny Polishchuk
+    # who appears on someone's channel is not called "Jordan Lee
     # YouTube"), makes two spellings of one person likely, and puts a category
     # where an identity belongs.
     #
@@ -1069,7 +1069,7 @@ def _best_unknown(v, c, impure=False):
     # Tag fifty video voices and you get fifty clusters today and fifty more
     # next week, and naming one of them later renames one fragment of it.
     #
-    # Nathan put it exactly: he will not use a label that means "doesn't
+    # Alex put it exactly: he will not use a label that means "doesn't
     # matter" if it stops the voice being labelled properly some other day.
     # He was right, and that was the behaviour. KIND_IGNORED never had it --
     # its own docstring promises the opposite, that the next occurrence joins

@@ -480,7 +480,7 @@ def get_clip(clip: str) -> dict:
 @server.tool(description="Who the system can recognise by voice, and how many "
                          "voiceprints back each of them.")
 def list_people() -> list:
-    # The profile travels with the name. A reader that gets "Danny Polishchuk"
+    # The profile travels with the name. A reader that gets "Jordan Lee"
     # and nothing else cannot tell a housemate from a comedian on a channel
     # playing in the background, and the difference changes what the words
     # mean.

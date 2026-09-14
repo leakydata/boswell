@@ -76,7 +76,7 @@ def set_context(clips):
 # it was the wrong shape, which the measurement could not show because the
 # archive had no example of the case that matters.
 #
-# The case that matters: Nathan talks at the screen while a video plays. His
+# The case that matters: Alex talks at the screen while a video plays. His
 # own words and the video's are in the same clips, and the video does most of
 # the talking. Measured on the conversation where he said "I just want a way
 # to have AI take notes from videos that I watch instead of just listening to
@@ -317,8 +317,8 @@ def remember_fact(subject, fact, said_by=None):
     """Save a durable fact about a person or project.
 
     `subject` is who the fact is about; `said_by` is who said it. They are
-    often different and both matter: "Blase is moving in March" said by Blase
-    is a fact, and said by a podcast is not.
+    often different and both matter: "Sam Chen is moving in March" said by Sam
+    Chen is a fact, and said by a podcast is not.
     """
     blocked = _attributable("facts", said_by)
     if blocked:

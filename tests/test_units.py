@@ -48,7 +48,7 @@ def test_the_swap_is_one_transaction_not_a_rename():
 
 
 def test_a_unit_carries_what_a_filter_needs():
-    # The point of metadata beside the vector: "what did Blase say about the
+    # The point of metadata beside the vector: "what did Sam Chen say about the
     # roof, while I was at the desk, last week" is three kinds of question
     # and only one of them is semantic.
     src = read_file("web/units.py")

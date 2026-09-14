@@ -381,7 +381,7 @@ class TestVocabularyTermination:
     @pytest.mark.parametrize("term,text", [
         ("Ryan Long", "ryan long ago"),
         ("Ryan Long", "Ryan Long"),
-        ("Peggy Gironde", "peggy gironde said"),
+        ("Robin Hale", "robin hale said"),
         ("NileRed YouTube", "nilered youtube video"),
         ("Data Slayer YouTube", "the data slayer youtube channel"),
     ])
@@ -416,7 +416,7 @@ class TestVocabularyTermination:
         turned "the boss well knows" into "the Boswell knows" and "ryan longed
         for it" into "Ryan Long for it". It matches letters exactly now."""
         terms = ["Boswell", "Ryan Long", "Eli", "Network Chuck YouTube",
-                 "Data Slayer YouTube", "Nathan"]
+                 "Data Slayer YouTube", "Alex"]
         assert self._apply(terms, text) == text
 
 
@@ -485,7 +485,7 @@ class TestImpureNeverEnrolls:
     """Naming a blended slot must apply the name and learn nothing.
 
     A slot flagged suspect at coherence 0.472 -- 26s of the wearer and 4s of a
-    video pooled into one vector -- was enrolled as Nathan and again as NileRed
+    video pooled into one vector -- was enrolled as Alex and again as NileRed
     YouTube, twice each: four byte-identical references describing two people,
     sitting in both reference sets. The impure gate covered origin "auto" and
     left the hand-naming path open, which is the one a person actually uses.
@@ -1449,7 +1449,7 @@ class TestASlotWithSomebodyElsePinnedInIt:
     listening disagreed about part of it and said so by pinning a name.
 
     On the clip that exposed it, nine lines were Ryan Long and one was pinned
-    Danny Polishchuk. Naming the slot enrolled 29.7 seconds as Ryan with
+    Jordan Lee. Naming the slot enrolled 29.7 seconds as Ryan with
     Danny's five inside it -- and re-diarizing the audio afterwards found two
     speakers in it, the louder matching Danny at 0.87.
     """
@@ -1462,15 +1462,15 @@ class TestASlotWithSomebodyElsePinnedInIt:
 
     def test_a_foreign_pin_is_reported(self):
         segs = [{"speaker": "SPEAKER_00", "speaker_name": None},
-                {"speaker": "SPEAKER_00", "speaker_name": "Danny Polishchuk"}]
-        assert self._f()(segs, "SPEAKER_00", "Ryan Long") == ["Danny Polishchuk"]
+                {"speaker": "SPEAKER_00", "speaker_name": "Jordan Lee"}]
+        assert self._f()(segs, "SPEAKER_00", "Ryan Long") == ["Jordan Lee"]
 
     def test_a_pin_agreeing_with_the_name_is_not(self):
         segs = [{"speaker": "SPEAKER_00", "speaker_name": "Ryan Long"}]
         assert self._f()(segs, "SPEAKER_00", "Ryan Long") == []
 
     def test_pins_in_another_slot_are_not_this_slot_s_problem(self):
-        segs = [{"speaker": "SPEAKER_01", "speaker_name": "Danny Polishchuk"}]
+        segs = [{"speaker": "SPEAKER_01", "speaker_name": "Jordan Lee"}]
         assert self._f()(segs, "SPEAKER_00", "Ryan Long") == []
 
     def test_several_are_listed_once_and_in_order(self):
@@ -1675,7 +1675,7 @@ class TestRenamingReachesTheRecordings:
 
     def test_other_people_are_left_alone(self, tmp_path, monkeypatch):
         server, data = self._rename(tmp_path, monkeypatch, {
-            "a.wav": {"speakers": {"S": {"name": "Nathan"}}, "segments": []}})
+            "a.wav": {"speakers": {"S": {"name": "Alex"}}, "segments": []}})
         assert server._rename_in_transcripts("Ryan Long", "Ryan") == 0
 
     def test_it_counts_clips_not_mentions(self, tmp_path, monkeypatch):
@@ -1815,18 +1815,18 @@ class TestLabelledStateOnTheListRow:
     def test_a_named_voice_is_indexed_by_name(self, tmp_path, monkeypatch):
         sp = self._indexed(
             tmp_path, monkeypatch,
-            {"SPEAKER_00": {"name": "Nathan Jones"}},
+            {"SPEAKER_00": {"name": "Alex Rivera"}},
             [{"speaker": "SPEAKER_00", "start": 0.0, "end": 1.0, "text": "hello"}])
-        assert sp == ["Nathan Jones"]
+        assert sp == ["Alex Rivera"]
 
     def test_a_half_named_clip_reports_both(self, tmp_path, monkeypatch):
         """The case the badge exists for: finished-looking but not finished."""
         sp = self._indexed(
             tmp_path, monkeypatch,
-            {"SPEAKER_00": {"name": "Nathan Jones"}, "SPEAKER_01": {"name": None}},
+            {"SPEAKER_00": {"name": "Alex Rivera"}, "SPEAKER_01": {"name": None}},
             [{"speaker": "SPEAKER_00", "start": 0.0, "end": 1.0, "text": "hi"},
              {"speaker": "SPEAKER_01", "start": 1.0, "end": 2.0, "text": "hello"}])
-        assert sorted(sp) == ["Nathan Jones", "unknown"]
+        assert sorted(sp) == ["Alex Rivera", "unknown"]
 
     def test_the_badge_distinguishes_three_states(self):
         page = self._page()
@@ -2054,7 +2054,7 @@ class TestMediaDoesNotBecomeYourFacts:
                  [{"speaker": "SPEAKER_00", "text": "buy the cheaper sensor"},
                   {"speaker": "SPEAKER_01", "text": "huh, I should try that"}],
                  {"SPEAKER_00": {"name": "Ryan Long"},
-                  "SPEAKER_01": {"name": "Nathan Jones"}})]
+                  "SPEAKER_01": {"name": "Alex Rivera"}})]
 
     def test_a_media_voice_is_marked(self, monkeypatch):
         ar, agent = self._agent()
@@ -2066,8 +2066,8 @@ class TestMediaDoesNotBecomeYourFacts:
         ar, agent = self._agent()
         monkeypatch.setattr(ar, "_media_names", lambda: frozenset({"Ryan Long"}))
         out = agent._render(self._batch())
-        assert "Nathan Jones: huh, I should try that" in out
-        assert "Nathan Jones [MEDIA]" not in out
+        assert "Alex Rivera: huh, I should try that" in out
+        assert "Alex Rivera [MEDIA]" not in out
 
     def test_media_speech_is_kept_not_dropped(self, monkeypatch):
         """The reaction is unrecordable without the line it answers."""
@@ -2093,7 +2093,7 @@ class TestMediaDoesNotBecomeYourFacts:
         import speaker_store
         monkeypatch.setattr(speaker_store, "people", lambda: [
             {"name": "Ryan Long", "kind": speaker_store.KIND_MEDIA, "role": ""},
-            {"name": "Nathan Jones", "kind": None, "role": "YouTuber"},
+            {"name": "Alex Rivera", "kind": None, "role": "YouTuber"},
             {"name": None, "kind": speaker_store.KIND_MEDIA, "role": ""},
         ])
         assert ar._media_names() == frozenset({"Ryan Long"})
@@ -2645,7 +2645,7 @@ def test_a_card_says_who_said_it():
 
 
 def test_tagging_a_voice_as_video_is_never_a_dead_end():
-    """Nathan's objection, and it was correct: he will not use a label that
+    """Alex's objection, and it was correct: he will not use a label that
     means "doesn't matter" if it stops the voice being labelled properly some
     other day.
 
@@ -2683,7 +2683,7 @@ def test_voices_are_enrolled_without_anybody_pressing_a_button():
     Measured before it was first run by hand: 1,961 voice slots holding 8.08
     hours of speech sat unenrolled -- not waiting in the labelling queue to be
     named, but never offered to it. Every person in the archive other than
-    Nathan and his partner was in there.
+    Alex and his partner was in there.
     """
     src = _read("web/server.py")
     assert "async def _enrol_new_voices" in src

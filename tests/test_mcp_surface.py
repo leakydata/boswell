@@ -302,7 +302,7 @@ def test_no_name_is_offered_below_the_measured_noise_floor():
     """speaker_store's own figures: same person p10 0.715, different people
     p99 0.572, MATCH_LOW 0.55. The queue was offering its top three whatever
     they scored -- measured at 0.35, 0.37 and 0.47, with voice 57's three
-    closest being Nathan Jones, Dave Rubin and Sam Witteveen, which ranks
+    closest being Alex Rivera, Dave Rubin and Sam Witteveen, which ranks
     nothing. After the floor, 0 of 8 voices in the queue offer a name.
     """
     src = read("web/pipeline.py")
@@ -361,7 +361,8 @@ def test_the_gate_admits_a_sentence_spoken_over_a_video():
     real = tools_impl._context_clips
     try:
         tools_impl.set_context([])          # no clips: only the name is judged
-        assert tools_impl._attributable("tasks", "Nathan Jones") is None
+        with _with_voices({"Alex Rivera": ("person", 1)}):
+            assert tools_impl._attributable("tasks", "Alex Rivera") is None
         for bad, why in (("", "required"),
                          ("SPEAKER_02", "diarizer label")):
             r = tools_impl._attributable("tasks", bad)
@@ -375,7 +376,8 @@ def test_unreadable_transcripts_are_not_a_reason_to_refuse():
     real = tools_impl._context_clips
     try:
         tools_impl.set_context(["nonexistent_probe.wav"])
-        assert tools_impl._attributable("notes", "Nathan Jones") is None
+        with _with_voices({"Alex Rivera": ("person", 1)}):
+            assert tools_impl._attributable("notes", "Alex Rivera") is None
     finally:
         tools_impl.set_context(real)
 
@@ -423,7 +425,7 @@ def test_the_settle_sweep_looks_back_a_day_not_a_clip_budget():
 
 
 def test_video_content_has_a_lane_rather_than_a_refusal():
-    """Nathan narrating over videos is his normal mode, not an edge case, and
+    """Alex narrating over videos is his normal mode, not an edge case, and
     he asked for this out loud: "I just want a way to have AI take notes from
     videos that I watch instead of just listening to them". The pipeline that
     was polluting the personal archive is the one that can serve it -- the
@@ -494,3 +496,26 @@ def test_a_reference_set_can_be_checked_against_itself():
     fn = src[src.index("def voice_health("):]
     fn = fn[:fn.index("\n@server.tool")]
     assert "FROM voiceprints" in fn and "np.median" in fn
+
+
+def _with_voices(mapping):
+    """Run the gate against a stated set of enrolled voices.
+
+    These tests used to name a real person from the author's live
+    speakers.db, so they passed on one machine and failed everywhere else --
+    and the only way to keep them green was to keep a real name in a public
+    repository. The gate's behaviour is what is under test; whose voice it is
+    is not.
+    """
+    import contextlib
+    import tools_impl
+
+    @contextlib.contextmanager
+    def ctx():
+        real = tools_impl._voice_kinds
+        tools_impl._voice_kinds = lambda: mapping
+        try:
+            yield
+        finally:
+            tools_impl._voice_kinds = real
+    return ctx()

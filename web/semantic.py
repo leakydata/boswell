@@ -59,9 +59,9 @@ def _connect():
     # Without this the agent reviewed every conversation from zero: it was
     # handed a system prompt and a transcript and nothing else, so it could
     # not know it had already written down the same thing. The result is
-    # visible in the store -- "Nathan has a shoulder impingement" and "Nathan
+    # visible in the store -- "Alex has a shoulder impingement" and "Alex
     # had a cortisone injection 2 weeks ago for shoulder impingement" as two
-    # unrelated facts, the same person filed under both "Nathan" and "Owner",
+    # unrelated facts, the same person filed under both "Alex" and "Owner",
     # and one goal recorded twice in different words.
     db.execute("""CREATE TABLE IF NOT EXISTS mem(
         id INTEGER PRIMARY KEY,
@@ -279,7 +279,7 @@ def hybrid(query, keyword_hits, limit=25):
 def item_text(item):
     """One line describing an agent item, for embedding and for recall.
 
-    The kind and subject are part of the text on purpose: "Nathan: has a
+    The kind and subject are part of the text on purpose: "Alex: has a
     shoulder impingement" should sit near a later conversation about his
     shoulder, and a bare fact body often does not carry who it is about.
     """

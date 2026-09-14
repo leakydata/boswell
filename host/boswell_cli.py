@@ -12,7 +12,7 @@ same arguments and the same description.
     uv run host/boswell_cli.py                       # what there is
     uv run host/boswell_cli.py unreviewed_conversations
     uv run host/boswell_cli.py search --query "the roof" --limit 5
-    uv run host/boswell_cli.py record_fact --subject Nathan \\
+    uv run host/boswell_cli.py record_fact --subject Alex \\
         --fact "prefers ..." --clips omi_1788907536.wav
 
 Answers are JSON on stdout, so `| jq` works and so does reading it directly.

@@ -125,7 +125,7 @@ and 60% headroom at the same measured peaks, and `boswell stacks` reports both.
 
 ## The fork is decided: FAT32
 
-Nathan took FAT, and the reason is the workflow he described before the
+Alex took FAT, and the reason is the workflow he described before the
 question was ever posed -- open a web page, see what is there, listen to it,
 download it. Raw sectors are the better engineering, and they are what Omi
 ships: even wear, nothing to corrupt when the battery goes. They also make

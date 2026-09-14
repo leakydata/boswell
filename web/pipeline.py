@@ -151,7 +151,7 @@ def save_speaker(name, vec, clip=None, speaker=None, seconds=None, force=False):
         # one person at a time.
         #
         # Naming used to append unconditionally, so correcting a mistake left
-        # the mistake behind: naming a slot Nathan, then NileRed, then Nathan
+        # the mistake behind: naming a slot Alex, then NileRed, then Alex
         # again produced three references, two of them contradicting each
         # other. Measured on a real slot that had been toggled twice -- four
         # byte-identical references, two under each name, the slot standing as
@@ -445,7 +445,7 @@ def labelling_queue(limit=50, include_media=False, since=None,
                 # The queue was offering its top three whatever they scored,
                 # and measured on this archive that meant 0.35, 0.37, 0.47 --
                 # against a different-people p99 of 0.572 and a same-person
-                # p10 of 0.715. Voice 57's three closest were Nathan Jones,
+                # p10 of 0.715. Voice 57's three closest were Alex Rivera,
                 # Dave Rubin and Sam Witteveen, which ranks nothing: it is the
                 # noise floor sorted. Presenting it as "closest named" invites
                 # a click that manufactures a reference, and a wrong reference
@@ -598,8 +598,8 @@ def apply_vocabulary(text, terms):
                 #
                 # This was a fuzzy match at 0.87, and a wrong rejoin does not
                 # merely mis-spell a word, it DELETES one: "the boss well knows"
-                # became "the Boswell knows", "a nathan is not a word" became
-                # "Nathan is not a word", and "ryan longed for it" became "Ryan
+                # became "the Boswell knows", "an alex is not a word" became
+                # "Alex is not a word", and "ryan longed for it" became "Ryan
                 # Long for it". Three of fourteen ordinary phrases were rewritten
                 # that way, and the risk grows with the vocabulary -- enrolled
                 # names are added to it automatically, and names are exactly the

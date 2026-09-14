@@ -180,7 +180,7 @@ def search(query, limit=25, device=None, name=None, sound=None,
     """Units closest in meaning, newest-relevant first, with filters.
 
     The filters are the point of storing metadata beside the vector: "what did
-    Blase say about the roof, while I was at the desk, last week" is three
+    Sam Chen say about the roof, while I was at the desk, last week" is three
     different kinds of question and only one of them is semantic.
     """
     import semantic

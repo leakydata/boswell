@@ -443,7 +443,7 @@ def test_media_may_name_itself_when_it_is_unmistakable(db):
     chan = db.person_id_for("NileRed YouTube")
     db.add_voiceprint(chan, vec(90), origin="manual")
     db.set_kind(chan, db.KIND_MEDIA)
-    person = db.person_id_for("Nathan")
+    person = db.person_id_for("Alex")
     db.add_voiceprint(person, vec(300), origin="manual")
 
     r = db.match(vec(90))
@@ -457,7 +457,7 @@ def test_a_middling_media_match_still_only_suggests(db):
     chan = db.person_id_for("NileRed YouTube")
     db.add_voiceprint(chan, vec(91), origin="manual")
     db.set_kind(chan, db.KIND_MEDIA)
-    other = db.person_id_for("Dan")
+    other = db.person_id_for("Sam Chen")
     db.add_voiceprint(other, vec(301), origin="manual")
 
     # close enough for a person, short of what a channel needs
@@ -472,7 +472,7 @@ def test_a_narrow_win_over_a_person_is_refused(db):
     chan = db.person_id_for("Codys Lab YouTube")
     db.add_voiceprint(chan, vec(92), origin="manual")
     db.set_kind(chan, db.KIND_MEDIA)
-    person = db.person_id_for("Nathan")
+    person = db.person_id_for("Alex")
     db.add_voiceprint(person, near(vec(92), 0.93), origin="manual")
 
     r = db.match(vec(92))

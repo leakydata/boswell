@@ -175,13 +175,22 @@ def test_a_fact_cannot_be_filed_under_a_diarizer_label():
     import sys, os
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "host"))
     import tools_impl
-    for label in ("SPEAKER_00", "SPEAKER_12", "speaker_3", "  SPEAKER_01 "):
+    # A stated set of enrolled voices, rather than whoever happens to be in
+    # the machine's live archive: this used to need a real person's name to
+    # pass, which is a test that only works for one person and a real name
+    # kept in a public repository for no reason.
+    real_kinds = tools_impl._voice_kinds
+    tools_impl._voice_kinds = lambda: {"Alex Rivera": ("person", 1)}
+    try:
+      for label in ("SPEAKER_00", "SPEAKER_12", "speaker_3", "  SPEAKER_01 "):
         # said_by is supplied and valid, so the refusal can only be about the
         # subject -- otherwise this passes for the wrong reason.
         r = tools_impl.remember_fact(label, "is a firmware engineer",
-                                     said_by="Nathan Jones")
+                                     said_by="Alex Rivera")
         assert r["ok"] is False, f"{label} was accepted as a person"
         assert "diarizer label" in r["error"] and "add_note" in r["error"]
+    finally:
+        tools_impl._voice_kinds = real_kinds
     # A person, or a project, is still a subject.
-    for good in ("Nathan", "Boswell", "SPEAKER SYSTEM", "Speaker Corp"):
+    for good in ("Alex", "Boswell", "SPEAKER SYSTEM", "Speaker Corp"):
         assert not tools_impl.UNRESOLVED.match(good)

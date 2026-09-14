@@ -27,7 +27,7 @@ STORE = os.path.join(DATA, "agent")
 # and it used to be joined straight into a path and passed to os.remove().
 # "media" is a lane, not a category of personal record.
 #
-# Nathan narrates over videos -- it is his normal mode, not an edge case --
+# Alex narrates over videos -- it is his normal mode, not an edge case --
 # and the pipeline that was polluting the archive with a YouTuber's opinions
 # is the same pipeline that can take notes on them. The defect and the feature
 # were always one thing pointed at two destinations. Everything in `media` is

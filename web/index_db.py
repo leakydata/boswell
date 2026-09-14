@@ -595,7 +595,7 @@ def conversations(gap_seconds=CONVERSATION_GAP, limit=400, device=None,
     """Group clips into conversations.
 
     A 30-second clip is a storage unit, not a human one. What someone
-    remembers is "the conversation with Blase this morning", so contiguous
+    remembers is "the conversation with Sam Chen this morning", so contiguous
     clips are grouped and a gap longer than `gap_seconds` starts a new one.
 
     Contiguous **on one recorder**. With two devices running, grouping on time
