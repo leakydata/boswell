@@ -165,16 +165,22 @@ def stats() -> dict:
                          "lines with their clip, time and speaker. `since` and "
                          "`until` are YYYY-MM-DD and both inclusive, so a "
                          "question about one day or one week can be answered "
-                         "without reading past it.")
+                         "without reading past it. `person` keeps only what "
+                         "one speaker said, and understands 'me' as well as a "
+                         "first name.")
 def search(query: str, limit: int = 30, since: str = None,
-           until: str = None) -> list:
+           until: str = None, person: str = None) -> list:
     import index_db
     lo, hi = _epoch(since), _epoch(until, end_of_day=True)
+    try:
+        person = _resolve_person(person)
+    except ValueError as e:
+        return [{"error": str(e)}]
     # A date window narrows what survives, so ask the index for more than the
     # caller wants when one is set -- otherwise the first `limit` hits are
     # picked before the dates are considered and a good match outside the
     # window quietly costs a slot.
-    fetch = limit * 8 if (lo or hi) else limit
+    fetch = limit * 8 if (lo or hi or person) else limit
     # index_db.search groups its hits by clip: one entry per clip, with the
     # matching lines under "hits". Flatten it -- a model wants the lines.
     out = []
@@ -183,14 +189,23 @@ def search(query: str, limit: int = 30, since: str = None,
         if (lo or hi) and not _in_range(when, when, lo, hi):
             continue
         for h in clip.get("hits", []):
+            who = _resolve(clip.get("name"), h.get("speaker"))
+            if person and who != person:
+                continue
             out.append({"clip": clip.get("name"),
                         "when": _fmt_time(clip.get("modified")),
                         "at": round(h.get("start") or 0, 1),
-                        "speaker": _resolve(clip.get("name"), h.get("speaker")),
+                        "speaker": who,
                         "text": (h.get("snippet") or "").replace("<mark>", "")
                                                         .replace("</mark>", "")})
             if len(out) >= limit:
                 return out
+    if not out and (person or lo or hi):
+        narrowed = [w for w, v in (("person", person), ("since", since),
+                                   ("until", until)) if v]
+        return [{"error": "nothing matched",
+                 "hint": "no line matched with " + " and ".join(narrowed)
+                         + " applied; widen or drop a filter."}]
     return out
 
 
@@ -839,6 +854,78 @@ def _api(path, body=None, method=None, timeout=120):
 # ---- searching what was actually said -------------------------------------
 
 
+#: What someone says when they mean themselves. The archive marks one person
+#: with the role "Me"; without this, "only what I said" has to be spelled out
+#: as a full legal name, which is not how anyone speaks.
+_SELF_WORDS = {"me", "myself", "i", "my", "mine", "self", "owner"}
+
+
+def _known_people():
+    """Every name the archive knows, with its role."""
+    import speaker_store
+    c = speaker_store._conn()
+    try:
+        return [(p["name"], (p.get("role") or ""))
+                for p in speaker_store.people(c) if p["name"]]
+    finally:
+        c.close()
+
+
+def _resolve_person(person):
+    """Turn what a caller typed into a name the index actually stores.
+
+    The stored filter is an exact string match, so "nathan jones", "Nathan"
+    and "me" all missed and came back looking like an empty index. Match
+    case-insensitively, accept a first name or any unambiguous fragment, and
+    let someone say "me". Returns the resolved name, or raises with the
+    candidates - which is a far better answer than silence.
+    """
+    if not person:
+        return None
+    want = str(person).strip()
+    if not want:
+        return None
+
+    people = _known_people()
+    names = [n for n, _ in people]
+
+    if want.lower() in _SELF_WORDS:
+        mine = [n for n, role in people if role.lower() == "me"]
+        if len(mine) == 1:
+            return mine[0]
+        raise ValueError(
+            "nobody in this archive is marked as 'Me', so I cannot tell who "
+            "you mean. Name them: " + ", ".join(sorted(names)[:20])
+        )
+
+    for n in names:                                   # exact, ignoring case
+        if n.lower() == want.lower():
+            return n
+
+    starts = [n for n in names if n.lower().startswith(want.lower())]
+    if len(starts) == 1:
+        return starts[0]
+
+    first = [n for n in names if n.split()[:1] and n.split()[0].lower() == want.lower()]
+    if len(first) == 1:
+        return first[0]
+
+    loose = [n for n in names if want.lower() in n.lower()]
+    if len(loose) == 1:
+        return loose[0]
+
+    candidates = starts or first or loose
+    if candidates:
+        raise ValueError(
+            f"{want!r} matches more than one person: "
+            + ", ".join(sorted(candidates))
+        )
+    raise ValueError(
+        f"nobody here is called {want!r}. Known speakers: "
+        + ", ".join(sorted(names)[:25])
+    )
+
+
 @server.tool(description="Search by meaning over whole thoughts rather than "
                          "transcript lines, with filters. A line is whatever "
                          "fell inside one 30-second clip -- median seven words "
@@ -850,6 +937,11 @@ def search_units(query: str, limit: int = 15, person: str = None,
                  sound: str = None, since: str = None,
                  until: str = None) -> list:
     import units
+
+    try:
+        person = _resolve_person(person)
+    except ValueError as e:
+        return [{"error": str(e)}]
 
     r = units.search(query, limit=limit, name=person, sound=sound,
                      since=_epoch(since), until=_epoch(until, end_of_day=True))
@@ -865,6 +957,13 @@ def search_units(query: str, limit: int = 15, person: str = None,
             "score": h.get("score"), "text": h.get("text"),
         })
     if not out:
+        narrowed = [w for w, v in (("person", person), ("sound", sound),
+                                   ("since", since), ("until", until)) if v]
+        if narrowed:
+            return [{"error": "nothing matched",
+                     "hint": "nothing matched with " + " and ".join(narrowed)
+                             + " applied. The index is fine - widen or drop "
+                               "a filter before assuming otherwise."}]
         return [{"error": "nothing matched",
                  "hint": "the unit index may be stale or empty -- "
                          "rebuild_index('units') builds it"}]
