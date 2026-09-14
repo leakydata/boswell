@@ -347,8 +347,22 @@ async def find_omi(timeout=12.0):
 
 
 async def sync(address, mark_read=True, limit_packets=None, quiet=False,
-               progress=None, dev=None, on_ring=None, on_client=None):
-    """Pull the ring to a spool file, then turn the spool into clips."""
+               progress=None, dev=None, on_ring=None, on_client=None,
+               max_seconds=None):
+    """Pull the ring to a spool file, then turn the spool into clips.
+
+    `max_seconds` bounds one visit rather than the backlog. The radio is
+    exclusive, so for as long as this holds the connection nothing is being
+    recorded live -- and a sync given no bound commits to draining the whole
+    ring however long that takes. Measured 2026-09-13 on a -84 dBm link:
+    3.0 kB/s against the usual 74-89, 355 MB waiting, an ETA of 28.9 hours,
+    and no clip written for the hour it had been trying. A weak link should
+    cost throughput, not capture.
+
+    Stopping is safe anywhere between batches: every batch is fsynced and the
+    read pointer advanced before the next is asked for, so what has been
+    taken is kept and the next visit resumes from there.
+    """
     device_id = norm_id(address)
     os.makedirs(SPOOL, exist_ok=True)
     took = 0
@@ -393,8 +407,16 @@ async def sync(address, mark_read=True, limit_packets=None, quiet=False,
         seq = info["read_seq"]
         end = seq + target
 
+        deadline = (t0 + max_seconds) if max_seconds else None
+
         with open(spool_path, "wb") as spool:
             while seq < end:
+                if deadline and time.time() >= deadline:
+                    if not quiet:
+                        print(f"  stopping this visit at {took}/{target} "
+                              f"packets -- the rest waits for the next one",
+                              flush=True)
+                    break
                 count = min(BATCH, end - seq)
                 raw, nxt = await link.read(seq, count)
                 if not raw:

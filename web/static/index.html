@@ -8416,6 +8416,24 @@ function paintStuck(s, st){
      or a reading old enough that nobody can say what is in there. The fault
      that started all this passes both -- 2.4 hours stale -- so it still
      shouts. */
+  /* A recorder that is off or out of range is not a fault to be fixed, and
+     saying "audio is not being collected" about one is alarming for no
+     reason: nothing is being lost, because a recorder that is away is not
+     recording. A flat battery overnight read as "401 failures", 379 of which
+     were the daemon correctly noticing an absent device. */
+  if (f.away){
+    const seen = f.seen_at
+        ? new Date(f.seen_at * 1000).toLocaleString() : null;
+    bar.innerHTML = `<b>The recorder has not been reachable`
+      + (seen ? ` since ${seen}` : ``) + `.</b> It is switched off, flat, or `
+      + `out of range — nothing is being lost while it is away, because it `
+      + `is not recording either.`
+      + `<span class="sub">Anything it did record is held on the device and `
+      + `collected automatically when it comes back.</span>`;
+    bar.hidden = false;
+    return;
+  }
+
   const backlog  = (ring && ring.held_seconds) || 0;
   const readAge  = ring ? ring.age_seconds : null;
   const worthIt  = backlog > 300 || readAge == null || readAge > 3600;

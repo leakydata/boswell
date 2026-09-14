@@ -107,6 +107,34 @@ SYNC_FAIL = {"n": 0, "last": None, "at": None, "first": None}
 # signature of a wedged stack is specifically **live audio still arriving
 # while sync alone fails**: if the device were out of range, both would fail.
 # So a reset needs recent frames as well as repeated sync failures.
+# How long one sync may hold the radio before giving it back.
+#
+# The radio is exclusive: while a sync runs, nothing is recorded live. An
+# unbounded sync is fine on a good link -- the whole ring drains in minutes --
+# and ruinous on a bad one. Measured 2026-09-13 at -84 dBm: 3.0 kB/s, 355 MB
+# waiting, a 28.9-hour ETA, and an hour with no clip written while it tried.
+# Twelve minutes is long enough that a healthy link clears a large backlog in
+# one or two visits, and short enough that a sick one costs throughput rather
+# than the recording.
+SYNC_MAX_SECONDS = 12 * 60
+
+# ...and how long a session may hold it while a backlog waits.
+#
+# Bounding the sync was only half of it. Sync runs *between* sessions, and a
+# session runs until the link drops -- so on a healthy link that nobody walks
+# away from, sync never gets a turn at all. Observed 2026-09-13: 12.5 hours
+# waiting on the device, a session streaming happily for hours, and not one
+# sync attempted in all of it. The backlog was not failing to transfer. It
+# was never being asked for.
+#
+# Only applied when something is actually waiting, because a reconnect costs
+# a few seconds of audio and is not worth paying on a timer for a ring that
+# is empty. The figure comes from the last ring reading, which may be stale
+# -- but a stale reading saying "twelve hours waiting" is still the best
+# evidence available that a visit is owed.
+SESSION_MAX_WITH_BACKLOG = 20 * 60
+BACKLOG_WORTH_YIELDING = 5 * 60
+
 HEAL_AFTER = 4                    # consecutive sync failures
 HEAL_EVERY = 30 * 60              # never more often than this
 HEAL_FRAMES_WITHIN = 20 * 60      # a session must have delivered audio since
@@ -258,6 +286,16 @@ _restore_last()
 # 09:50 to 10:25 recording to that same ring and every sync since had failed.
 RING_STALE_AFTER = 20 * 60
 
+# The same courtesy for the battery, which did not have it.
+#
+# The ring figure carries its own age because a stale one reads as current
+# and lies. The battery figure did not, and on 2026-09-13 it published "1%"
+# from a reading taken 61 minutes earlier while the device sat on a charger
+# at 93% -- which was believed, and became an urgent instruction to go and
+# rescue a recorder that was perfectly fine. A number with no age on it is a
+# claim about now.
+BATTERY_STALE_AFTER = 10 * 60
+
 
 def publish(**fields):
     fields["at"] = time.time()
@@ -273,6 +311,13 @@ def publish(**fields):
             # Said out loud rather than left to the reader to work out from a
             # timestamp they have to compare against now.
             ring["stale"] = age > RING_STALE_AFTER
+        # Battery, read once a session on the connection the sync holds, so
+        # it goes stale exactly when the sync starts failing -- which is when
+        # somebody is most likely to be reading it.
+        if st.get("read_at"):
+            bage = time.time() - st["read_at"]
+            st["battery_age_seconds"] = round(bage)
+            st["battery_stale"] = bage > BATTERY_STALE_AFTER
         if SYNC_FAIL["n"]:
             fields["sync_failing"] = {
                 "consecutive": SYNC_FAIL["n"],
@@ -289,6 +334,15 @@ def publish(**fields):
                 # clearing itself.
                 "seen_at": SEEN["at"],
                 "seen_how": SEEN["how"],
+                # Absent and broken are different states that produced the
+                # same sentence. On 2026-09-12 a flat battery overnight read
+                # as "401 failures" -- 379 of which were the daemon correctly
+                # observing that a switched-off recorder was not there. The
+                # count is honest and the framing was not: nothing is being
+                # lost while a recorder is away, because a recorder that is
+                # away is not recording.
+                "away": not (SEEN["at"] and
+                             (time.time() - SEEN["at"]) < HEAL_FRAMES_WITHIN),
             }
     except Exception:
         pass
@@ -452,6 +506,9 @@ async def one_session(address, quiet=False, dev=None):
     try:
         spool, took = await omi_sync.sync(
             address, quiet=quiet, dev=dev,
+            # Give the radio back on a schedule so live capture keeps its
+            # turn; whatever is left waits for the next visit.
+            max_seconds=SYNC_MAX_SECONDS,
             # Asked on the connection the sync is already holding, rather
             # than on one of its own that has to find the device again.
             on_ring=lambda info: note_ring(stats, info),
@@ -562,6 +619,20 @@ async def one_session(address, quiet=False, dev=None):
 
 
     async def on_tick(client):
+        # Give the radio back when a backlog is waiting and this session has
+        # had a fair run of it. Ending the link here is how the loop above
+        # gets to its sync: it is exclusive, so the only way to offer the
+        # ring a turn is to stop streaming for one.
+        if (time.time() - began) > SESSION_MAX_WITH_BACKLOG:
+            held = ((LAST["stats"] or {}).get("storage") or {}
+                    ).get("held_seconds") or 0
+            if held > BACKLOG_WORTH_YIELDING:
+                print(f"{held/60:.0f} min waiting on the device -- ending "
+                      f"this session so the sync can have the radio",
+                      flush=True)
+                await client.disconnect()
+                return
+
         # The ring used to be read from here, which meant every session
         # opened a second notification subscription and sent a storage
         # command one second into the audio stream -- `ring["at"]` starts at
