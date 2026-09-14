@@ -230,6 +230,15 @@ nav.tabs button[aria-selected=true]{background:var(--surface);color:var(--ink);
   padding:8px 14px;font-size:14px;border-radius:7px}
 /* The low-use filters live behind the toggle at every width; the four
    workflow filters stay out. On a phone the whole panel folds away. */
+/* Showing one stored item's recordings, and saying so. An item that says
+   "4 clips" and cannot show you them is a dead end: the whole reason to
+   record a topic is to be able to hear what it came from. */
+.pinbar{margin:0 0 10px;padding:9px 12px;border:1px solid var(--accent);
+  border-radius:8px;background:color-mix(in srgb,var(--accent) 8%,var(--surface));
+  font-size:13px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.pinbar b{color:var(--accent)}
+.item .cliplink{margin-top:8px;font-size:12px;padding:4px 10px}
+.pinbar button{margin-left:auto}
 .stuckbar{grid-column:1/-1;margin:0 0 10px;padding:10px 14px;
   border:1px solid var(--bad);border-left:4px solid var(--bad);
   border-radius:8px;background:color-mix(in srgb,var(--bad) 9%,var(--surface));
@@ -1427,6 +1436,7 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--sunk);
       </select>
       </span>
     </div>
+    <div class="pinbar" id="pinBar" hidden></div>
     <div class="toolbar2">
       <span class="count" id="clipCount"></span>
       <span class="count" id="selCount"></span>
@@ -3285,6 +3295,14 @@ on("bTidyDelete", "click", async () => {
 });
 
 /* ---- tabs ---- */
+/* Which stored item's recordings the list is pinned to, if any.
+
+   An item card said "4 clips" and stopped there. The clips were in the row
+   all along -- `_clips` carries their names -- and nothing in the interface
+   would take you to them, so a topic the reviewing model had recorded was a
+   claim you could not check by listening. */
+let pinnedClips = null;
+
 let current = null;
 let currentTab = "dev";
 function showTab(which){
@@ -3594,13 +3612,27 @@ async function loadItems(){
       if (it.said_by) meta.push("said by " + it.said_by);
       if (it.source)  meta.push("from " + it.source);
       const n = it._clips_total || (it._clips ? it._clips.length : 0);
-      if (n) meta.push(n === 1 ? "1 clip" : `${n} clips`);
       if (it.tags && it.tags.length) meta.push(it.tags.join(", "));
       d.innerHTML =
         `<div class="t1"><span class="k ${it._kind}">${it._kind === "media"
             ? "video" : it._kind.replace(/s$/,"")}</span>${esc(title)}</div>` +
         (body ? `<div class="t2">${esc(body)}</div>` : "") +
         `<div class="meta">${esc(meta.filter(Boolean).join(" · "))}</div>`;
+      /* The clip count, as the way to hear them rather than as a fact about
+         them. A button and not a link: it changes what the page is showing,
+         it does not navigate anywhere. */
+      if (n && it._clips && it._clips.length){
+        const go = document.createElement("button");
+        go.className = "cliplink";
+        go.textContent = n === 1 ? "Hear the 1 recording"
+                                 : `Hear the ${n} recordings`;
+        go.title = "Open what this was taken from";
+        go.onclick = (e) => {
+          e.stopPropagation();
+          showItemClips(it._clips, title);
+        };
+        d.appendChild(go);
+      }
       const rm = document.createElement("button");
       rm.className = "rm";
       rm.textContent = "Remove";
@@ -5753,16 +5785,26 @@ async function loadClips(){
     // -- of the ones AST was confident about, re-running with the level fixed
     // recovered real speech in two thirds. Sorted by the tagger's confidence
     // rather than by time, because that is the order worth working through.
-    const clips = all
-      .filter(c => clipFilter === "all" ? true
+    /* Pinned to one item's recordings, when arrived at from a topic or a
+       note. Applied before every other filter and instead of none of them --
+       a date filter left over from earlier browsing would otherwise hide the
+       clips somebody just asked to see. */
+    const pinned = pinnedClips
+      ? all.filter(c => pinnedClips.names.includes(c.name))
+      : null;
+    if (pinned) renderPinBar(pinned.length);
+    const clips = (pinned || all)
+      .filter(c => pinned ? true
+        : clipFilter === "all" ? true
         : clipFilter === "voice" ? c.has_speech === true
         : clipFilter === "missed" ? (c.has_speech === false &&
                                      (c.voice_tag || 0) >= MISSED_VOICE_FLOOR)
         : c.has_speech === false)
-      .filter(c => inDateRange(capTime(c)))
-      .filter(c => matchesDay(capTime(c)))
-      .filter(c => matchesLabelFilter(c.speakers))
-      .filter(c => !soundFilter || (c.sounds || []).includes(soundFilter));
+      .filter(c => pinned || inDateRange(capTime(c)))
+      .filter(c => pinned || matchesDay(capTime(c)))
+      .filter(c => pinned || matchesLabelFilter(c.speakers))
+      .filter(c => pinned || !soundFilter
+                   || (c.sounds || []).includes(soundFilter));
     /* Arrival order is not capture order: a docked dump lands this evening
        carrying this morning. The list reads in the order things happened. */
     clips.sort((a, b) => (capTime(b) ?? 0) - (capTime(a) ?? 0));
@@ -5915,6 +5957,53 @@ async function loadClips(){
 /* Which conversation a clip belongs to, asked rarely and cached: the clip
    detail can then offer the way back into the exchange it came from. */
 let convCache = null;
+function renderPinBar(shown){
+  const bar = $("pinBar");
+  if (!pinnedClips){ bar.hidden = true; return; }
+  const asked = pinnedClips.names.length;
+  const missing = asked - shown;
+  bar.innerHTML =
+    `Showing the ${shown} recording${shown === 1 ? "" : "s"} behind `
+    + `<b>${esc(pinnedClips.label)}</b>`
+    + (missing > 0
+        ? ` <span class="cd">${missing} no longer in the archive</span>` : "");
+  const b = document.createElement("button");
+  b.textContent = "Show everything";
+  b.onclick = () => { pinnedClips = null; $("pinBar").hidden = true; loadClips(); };
+  bar.appendChild(b);
+  bar.hidden = false;
+}
+
+/* Take me to what this item came from.
+
+   One conversation is the better destination when the clips are all in one:
+   it reads as speech rather than as a list of thirty-second fragments, and
+   it is what the item was actually recorded from. Clips spanning several
+   conversations -- or a conversation that has since been trimmed -- fall
+   back to the recordings list pinned to exactly those names. */
+async function showItemClips(names, label){
+  if (!names || !names.length) return;
+  pinnedClips = {names: names.slice(), label: label || "this item"};
+  showTab("rec");
+  const conv = names.length > 1 ? await convOf(names[0]) : null;
+  if (conv && names.every(n => conv.clips.includes(n))){
+    pinnedClips = null;
+    $("pinBar").hidden = true;
+    openConversation(conv);
+    return;
+  }
+  if (names.length === 1){
+    pinnedClips = null;
+    $("pinBar").hidden = true;
+    openClip(names[0]);
+    return;
+  }
+  $("detail").hidden = true;
+  $("clipList").hidden = false;
+  await loadClips();
+  window.scrollTo(0, 0);
+}
+
 async function convOf(name){
   try{
     if (!convCache) convCache = await (await fetch("/api/conversations?limit=400"
