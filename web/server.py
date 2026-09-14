@@ -1639,7 +1639,7 @@ async def _resolve_known():
     r = await loop.run_in_executor(None, pipeline.recheck_unknowns)
     if r.get("absorbed"):
         into = ", ".join(f"{k} (+{v})" for k, v in r["into"].items())
-        n = _rematch_clips()
+        n = await _rematch_async()
         device.event("log", text=(f"resolved {r['absorbed']} voice(s) "
                                   f"automatically -- {into}"
                                   + (f", {n} clip(s) relabelled" if n else "")))
@@ -3826,6 +3826,36 @@ def _rename_in_transcripts(old, new):
     return changed
 
 
+# Re-matching is the longest CPU-bound job the server does, and every caller
+# of it is an async endpoint.
+#
+# Which meant it ran on the event loop, holding the GIL, and uvicorn stopped
+# accepting connections for the whole of it. Found 2026-09-13 by stack dump:
+# the main thread sat in speaker_store.match() under api_label() for long
+# enough that the interface looked dead -- thirteen connections queued on a
+# listening socket, 1700% CPU from numpy's threads underneath, and a service
+# that systemd correctly reported as active and running.
+#
+# Naming a voice is the most ordinary thing anybody does in this interface,
+# and it took the server down. It goes to a worker thread now.
+#
+# The lock is because moving it off the loop is what makes two of them at
+# once possible for the first time: it rewrites every transcript it touches,
+# and two passes interleaving in the same files is a worse bug than the one
+# being fixed.
+_REMATCH_LOCK = threading.Lock()
+
+
+async def _rematch_async(names=None):
+    """Re-match off the event loop, one at a time."""
+    return await asyncio.to_thread(_rematch_serialised, names)
+
+
+def _rematch_serialised(names=None):
+    with _REMATCH_LOCK:
+        return _rematch_clips(names)
+
+
 def _rematch_clips(names=None):
     """Re-run speaker matching from stored voiceprint embeddings.
 
@@ -3906,7 +3936,7 @@ def _rematch_clips(names=None):
 @app.post("/api/rematch")
 async def api_rematch(body: dict | None = None):
     names = (body or {}).get("names") if isinstance(body, dict) else None
-    changed = _rematch_clips(names)
+    changed = await _rematch_async(names)
     return {"rematched": changed}
 
 
@@ -4618,7 +4648,7 @@ async def api_voices_scan():
     stats["resolved"] = re.get("absorbed", 0)
     stats["into"] = re.get("into", {})
     if re.get("absorbed"):
-        stats["clips_relabelled"] = _rematch_clips()
+        stats["clips_relabelled"] = await _rematch_async()
     device.event("log", text=(f"voice scan: {stats['clustered']} filed, "
                               f"{stats['new_clusters']} new, "
                               f"{stats['resolved']} resolved automatically"))
@@ -4638,7 +4668,7 @@ async def api_voices_recheck():
         into = ", ".join(f"{k} (+{v})" for k, v in stats["into"].items())
         device.event("log", text=(f"recheck: {stats['absorbed']} cluster(s) "
                                   f"resolved -- {into}"))
-        stats["clips_relabelled"] = _rematch_clips()
+        stats["clips_relabelled"] = await _rematch_async()
     else:
         device.event("log", text=(f"recheck: {stats['checked']} cluster(s), "
                                   f"none confident enough to resolve"))
@@ -4661,7 +4691,7 @@ async def api_ungroup(person_id: int, source_cluster: int):
         raise HTTPException(404, r.get("reason", "nothing to undo"))
     device.event("log", text=(f"put {r['moved']} voiceprint(s) back as "
                               f"unidentified voice #{r['cluster']}"))
-    r["clips_relabelled"] = _rematch_clips()
+    r["clips_relabelled"] = await _rematch_async()
     return r
 
 
@@ -4749,7 +4779,7 @@ async def api_voices_name(person_id: int, body: dict):
 
     # Names travel back through the transcripts the same way a hand label
     # does, so the clips this voice appears in stop saying SPEAKER_00.
-    changed = _rematch_clips()
+    changed = await _rematch_async()
     return {"ok": True, "name": name, "voiceprints": n, "renamed_clips": renamed,
             "merged": r.get("merged", False), "clips_relabelled": changed}
 
@@ -5076,7 +5106,7 @@ async def api_label(body: dict):
     propagated = 0
     if enrolled:
         try:
-            propagated = _rematch_clips()
+            propagated = await _rematch_async()
         except Exception as e:
             print(f"rematch after naming failed: {e}", flush=True)
 
