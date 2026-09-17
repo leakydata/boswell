@@ -296,9 +296,36 @@ RING_STALE_AFTER = 20 * 60
 # claim about now.
 BATTERY_STALE_AFTER = 10 * 60
 
+# How long the daemon may go without saying anything before it is presumed
+# stuck and exits so systemd can restart it.
+#
+# `Restart=always` has been set on this unit all along and did not help,
+# because on 2026-09-17 the daemon stopped *without stopping*: the machine's
+# Bluetooth was switched off at 13:58, the adapter's D-Bus objects died under
+# an await that had no timeout, and the loop sat in select() for five hours.
+# systemd saw a healthy service, the status file froze mid-sentence, and the
+# recorder buffered 95,484 packets with nobody collecting them. It ignored
+# SIGTERM and had to be killed.
+#
+# A hang is indistinguishable from health from the outside, so the daemon has
+# to say so itself. Every pass of the retry loop publishes -- a device that is
+# absent still produces a status write every few seconds -- so silence for
+# this long means the loop is not running, whatever `is-active` says.
+#
+# Twenty minutes, and the margin over SYNC_MAX_SECONDS is the point rather
+# than an accident: a sync visit is the longest the loop is legitimately busy,
+# and though it publishes progress throughout, a watchdog set level with it
+# would eventually restart the service underneath a transfer that was working.
+# The first draft of this was twelve minutes against a twelve-minute sync
+# budget and a test caught it.
+WATCHDOG_SILENCE = 20 * 60
+
+ALIVE = {"at": time.time()}
+
 
 def publish(**fields):
     fields["at"] = time.time()
+    ALIVE["at"] = fields["at"]
     fields.setdefault("stats", LAST["stats"] or None)
     fields["last_session"] = LAST["session"]
     # Never a reason a run fails, so it is all best effort.
@@ -856,8 +883,29 @@ async def wait_until_advertising(address, timeout):
             pass
 
 
+async def _watchdog():
+    """Exit if the retry loop has gone quiet, so systemd can restart us.
+
+    Deliberately `os._exit`: a loop wedged on a dead D-Bus connection will not
+    answer a cancellation either, and this must work in exactly the case where
+    nothing else does. What is in flight is already safe -- offloaded bytes are
+    fsynced to the spool before anything decodes them, and the next run drains
+    whatever is there.
+    """
+    while not stopping:
+        await asyncio.sleep(60)
+        quiet_for = time.time() - ALIVE["at"]
+        if quiet_for > WATCHDOG_SILENCE:
+            print(f"no progress for {quiet_for/60:.0f} minutes -- the loop is "
+                  f"stuck; exiting so the service restarts", flush=True)
+            sys.stdout.flush()
+            sys.stderr.flush()
+            os._exit(1)
+
+
 async def run(address=None, quiet=False):
     tries = 0
+    dog = asyncio.create_task(_watchdog())
     # Said once when the switch goes off, rather than on every pass: the loop
     # comes round every couple of seconds and a paused daemon should be quiet
     # in the journal, not the loudest thing in it.
@@ -963,6 +1011,7 @@ async def run(address=None, quiet=False):
         else:
             await asyncio.sleep(wait)
 
+    dog.cancel()
     publish(state="stopped")
 
 
