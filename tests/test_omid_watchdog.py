@@ -20,23 +20,46 @@ sys.path.insert(0, os.path.join(HERE, "..", "web"))
 import omid
 
 
-def test_publishing_is_what_counts_as_alive():
-    """Every pass of the retry loop publishes -- including a pass that finds
-    nothing -- so the status write is the heartbeat already being emitted."""
-    omid.ALIVE["at"] = 0
+def test_progress_is_movement_not_announcement():
+    """The first version marked the daemon alive inside publish(), and the
+    session heartbeat publishes every twenty seconds whether or not capture
+    is getting anywhere -- so a session hung on a GATT read would have gone
+    on announcing "recording" and the watchdog would never have fired."""
     import json
     import tempfile
+    omid.ALIVE["at"] = 0
     fd, tmp = tempfile.mkstemp(suffix=".json")
     os.close(fd)
     old = omid.STATUS
     try:
         omid.STATUS = tmp
-        omid.publish(state="not found", address="AA:BB")
+        omid.publish(state="recording", address="AA:BB")
     finally:
         omid.STATUS = old
         os.unlink(tmp)
-    assert omid.ALIVE["at"] > 0, "publish must mark the loop alive"
+    assert omid.ALIVE["at"] == 0, (
+        "publishing must not count as progress -- the heartbeat publishes "
+        "on a timer regardless of whether capture is moving")
+
+    omid.note_progress()
     assert time.time() - omid.ALIVE["at"] < 5
+
+
+def test_a_beat_only_counts_when_the_frame_count_moved():
+    src = open(os.path.join(HERE, "..", "host", "omid.py")).read()
+    body = "".join(l for l in src.splitlines(True)
+                   if not l.lstrip().startswith("#"))
+    i = body.index('beat["frames"] != beat_seen["frames"]')
+    assert "note_progress()" in body[i:i + 200]
+
+
+def test_the_retry_loop_counts_even_when_it_finds_nothing():
+    """A recorder that is away still produces loop passes, and those are
+    progress: the daemon is working, there is simply nothing there."""
+    src = open(os.path.join(HERE, "..", "host", "omid.py")).read()
+    run = src.index("async def run(")          # not the watchdog's own loop
+    i = src.index("while not stopping:", run)
+    assert "note_progress()" in src[i:i + 120]
 
 
 def test_the_window_clears_a_bounded_sync():

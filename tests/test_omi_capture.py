@@ -695,13 +695,25 @@ def test_syncing_is_not_announced_before_the_device_is_reached():
     src = read_file("host/omid.py")
     body = src[src.index("async def one_session"):]
     body = body[:body.index("spool, took")]
+    # The progress callback is defined in here now rather than written inline
+    # as a lambda, so its own body is the one place the string may appear.
+    # What must not exist is a publish on the path that *runs* before the
+    # sync is attempted.
+    cb = body.find("def on_sync_progress")
+    if cb != -1:
+        end = body.index("try:", cb)
+        body = body[:cb] + body[end:]
     assert 'publish(state="syncing"' not in body, \
         "syncing is still announced before the sync is attempted"
 
-    # And where it does appear, it is inside the progress callback.
-    prog = src[src.index("progress=lambda"):]
-    prog = prog[:prog.index("))")]
+    # And where it does appear, it is inside the progress callback -- which
+    # is a named function now rather than a lambda, and is still only ever
+    # called by omi_sync once packets are moving.
+    cb = src.index("def on_sync_progress")
+    prog = src[cb:src.index("\n    try:", cb)]
     assert 'state="syncing"' in prog, "nothing reports a sync in progress"
+    assert "progress=on_sync_progress" in src, \
+        "the callback is defined but never handed to the sync"
 
 
 def test_a_sync_that_is_only_being_attempted_reads_as_away():

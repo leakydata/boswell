@@ -238,3 +238,69 @@ def test_an_advertisement_is_presence():
     omid.SEEN.update({"at": None, "how": None})
     omid.note_seen("advertising")
     assert omid.SEEN["how"] == "advertising" and omid.SEEN["at"]
+
+
+# --- the cure must not cost more than the disease ------------------------
+#
+# The blunt version ran `systemctl restart bluetooth` every time, which drops
+# every BLE device on the machine. 86 times in eight days; six in the four
+# hours before the owner switched Bluetooth off to get his keyboard back,
+# which stranded five hours of audio on an unreachable recorder. It was also
+# not working by then -- firing at 10:03, 11:03 and 11:34 with the failure
+# count climbing 368, 402, 412.
+
+def test_the_first_attempt_touches_only_this_device(monkeypatch):
+    ran = []
+    monkeypatch.setattr(omid, "_run", lambda cmd, timeout=30: ran.append(cmd) or True)
+    omid.HEAL.update({"at": None, "n": 0, "last": None, "gentle": 0, "hammer": 0})
+    omid.SYNC_FAIL["n"] = 4
+    omid._heal_bluetooth("C4:B3:FD:7F:1E:91")
+    flat = [" ".join(c) for c in ran]
+    assert any("disconnect C4:B3:FD:7F:1E:91" in c for c in flat)
+    assert not any("systemctl restart bluetooth" in c for c in flat), (
+        "the first attempt must not drop the owner's keyboard")
+
+
+def test_the_hammer_is_only_reached_after_the_gentle_rung(monkeypatch):
+    ran = []
+    monkeypatch.setattr(omid, "_run", lambda cmd, timeout=30: ran.append(cmd) or True)
+    monkeypatch.setattr(omid.time, "sleep", lambda *_: None)
+    omid.HEAL.update({"at": None, "n": 0, "last": None, "gentle": 0, "hammer": 0})
+    omid.SYNC_FAIL["n"] = 4
+    omid._heal_bluetooth("AA:BB")               # rung one
+    omid._heal_bluetooth("AA:BB")               # rung two
+    assert any("systemctl restart bluetooth" in " ".join(c) for c in ran)
+
+
+def test_it_stops_hammering_when_hammering_does_not_work(monkeypatch):
+    """A remedy that has not helped after three attempts should stop costing
+    somebody their keyboard every half hour."""
+    monkeypatch.setattr(omid, "_run", lambda cmd, timeout=30: True)
+    monkeypatch.setattr(omid.time, "sleep", lambda *_: None)
+    omid.HEAL.update({"at": None, "n": 0, "last": None, "gentle": 0, "hammer": 0})
+    omid.SYNC_FAIL["n"] = 40
+    omid._heal_bluetooth("AA:BB")                        # gentle
+    for _ in range(omid.HEAL_HAMMER_LIMIT):
+        assert omid._heal_bluetooth("AA:BB") is not False
+    assert omid._heal_bluetooth("AA:BB") is False, "must give up"
+    assert "did not restore sync" in (omid.HEAL["last"] or "")
+
+
+def test_a_working_sync_resets_the_ladder():
+    """An unrelated fault days later should start at the bottom rung."""
+    src = open(os.path.join(HERE, "..", "host", "omid.py")).read()
+    body = "".join(l for l in src.splitlines(True)
+                   if not l.lstrip().startswith("#"))
+    i = body.index('SYNC_FAIL["first"] = None')
+    window = body[i:i + 320]
+    assert 'HEAL["hammer"] = 0' in window, (
+        "a sync that works must clear the hammer count")
+    assert 'HEAL["gentle"] = 0' in window, (
+        "and must let the gentle rung be tried again")
+
+
+def test_the_targeted_rung_names_the_device():
+    """A disconnect with no address is the hammer with extra steps."""
+    import inspect
+    src = inspect.getsource(omid._heal_bluetooth)
+    assert "if address and" in src

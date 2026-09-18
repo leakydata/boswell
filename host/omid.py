@@ -139,7 +139,13 @@ HEAL_AFTER = 4                    # consecutive sync failures
 HEAL_EVERY = 30 * 60              # never more often than this
 HEAL_FRAMES_WITHIN = 20 * 60      # a session must have delivered audio since
 
-HEAL = {"at": None, "n": 0, "last": None}
+# How many times the whole stack may be restarted before the daemon accepts
+# that it is not the cure. Each one costs every Bluetooth device on the
+# machine a few seconds, so an unattended loop of them is worse than the
+# fault it is chasing.
+HEAL_HAMMER_LIMIT = 3
+
+HEAL = {"at": None, "n": 0, "last": None, "gentle": 0, "hammer": 0}
 
 # The device was demonstrably there, whether or not audio arrived.
 #
@@ -207,40 +213,87 @@ def _should_heal():
     return _device_seen_recently()
 
 
-def _heal_bluetooth():
-    """Restart the host Bluetooth stack, then bounce the adapter.
+def _run(cmd, timeout=30):
+    """A shell step of the cure, reported rather than raised."""
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        if r.returncode != 0:
+            HEAL["last"] = (f"{' '.join(cmd[2:]) or cmd[0]}: "
+                            f"{(r.stderr or '').strip()[:120]}")
+            return False
+        return True
+    except Exception as e:
+        HEAL["last"] = f"{type(e).__name__}: {e}"
+        return False
 
-    Deliberately blunt, and deliberately rare. It costs every other BLE
-    device on this machine a few seconds -- a keyboard blinks out and comes
-    back -- which is worth paying to keep hours of recorded audio
-    collectable, and not worth paying on a schedule.
 
-    Failure here is reported and otherwise ignored: a daemon that cannot
-    reset the adapter should carry on recording, not exit.
+def _heal_bluetooth(address=None):
+    """Clear a stuck link, starting with the smallest thing that can work.
+
+    This used to restart the whole Bluetooth stack every time, and it cost
+    more than it was worth. `systemctl restart bluetooth` drops **every** BLE
+    device on the machine, so each attempt took the owner's keyboard out for
+    several seconds. It ran 86 times in eight days -- six of them in the four
+    hours before he gave up, switched Bluetooth off to get his keyboard back,
+    and stranded five hours of audio on a recorder that could no longer be
+    reached. The cure for losing recordings caused a loss of recordings.
+
+    It was also, by then, not working: the log shows it firing at 10:03,
+    11:03 and 11:34 with the failure count climbing through 368, 402, 412. A
+    remedy that has not helped after three attempts should stop costing
+    somebody their keyboard every half hour.
+
+    So: two rungs, and a limit.
+
+    **Rung one** disconnects this device alone. The fault this exists for is
+    a stale handle for *this* recorder -- bluetoothd logging "No matching
+    connection for device" while the kernel thinks the link is up -- and
+    dropping that one connection is the whole of the cure for it. Nothing
+    else on the machine notices.
+
+    **Rung two** is the old hammer, reached only when rung one has been tried
+    and the failures continued. It still works and is still sometimes needed;
+    it just is not the opening move any more.
+
+    And once the hammer has been swung `HEAL_HAMMER_LIMIT` times without sync
+    recovering, it stops being swung. The daemon says so instead, and the
+    interface reports a fault that is not clearing itself, which is a better
+    outcome than an unattended loop knocking out the input devices of whoever
+    is trying to use the machine.
     """
     HEAL["at"] = time.time()
     HEAL["n"] += 1
-    print(f"sync has failed {SYNC_FAIL['n']} times while audio kept "
-          f"arriving -- resetting the Bluetooth stack", flush=True)
-    for cmd in (["sudo", "-n", "systemctl", "restart", "bluetooth"],
-                ["sudo", "-n", "hciconfig", "hci0", "down"],
-                ["sudo", "-n", "hciconfig", "hci0", "up"]):
-        try:
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-            if r.returncode != 0:
-                HEAL["last"] = (f"{' '.join(cmd[2:])}: "
-                                f"{(r.stderr or '').strip()[:120]}")
-                print(f"  {cmd[2:]} -> {HEAL['last']}", flush=True)
-                # A failed restart is worth reporting; a failed adapter
-                # bounce after a good restart is not worth aborting for.
-                if "restart" in cmd:
-                    return False
-        except Exception as e:
-            HEAL["last"] = f"{type(e).__name__}: {e}"
-            print(f"  reset failed: {HEAL['last']}", flush=True)
-            return False
-        time.sleep(2)
     HEAL["last"] = None
+
+    # Rung one: this device only. Once per run of failures -- if dropping the
+    # link did not help, doing it again will not either.
+    if address and HEAL["gentle"] < 1:
+        HEAL["gentle"] += 1
+        print(f"sync has failed {SYNC_FAIL['n']} times while the recorder is "
+              f"reachable -- dropping its link (other devices unaffected)",
+              flush=True)
+        ok = _run(["bluetoothctl", "disconnect", address], timeout=20)
+        time.sleep(2)
+        print(f"  link dropped{'' if ok else ' (it was not connected)'}; "
+              f"the next sync will retry", flush=True)
+        return True
+
+    # Rung two: the whole stack, and only so many times.
+    if HEAL["hammer"] >= HEAL_HAMMER_LIMIT:
+        HEAL["last"] = (f"resetting the stack {HEAL['hammer']} times did not "
+                        f"restore sync; not doing it again")
+        print(f"  {HEAL['last']} -- leaving the radio alone", flush=True)
+        return False
+
+    HEAL["hammer"] += 1
+    print(f"sync still failing after a targeted reset -- restarting the "
+          f"Bluetooth stack ({HEAL['hammer']} of {HEAL_HAMMER_LIMIT}; this "
+          f"briefly drops every Bluetooth device)", flush=True)
+    if not _run(["sudo", "-n", "systemctl", "restart", "bluetooth"]):
+        print(f"  reset failed: {HEAL['last']}", flush=True)
+        return False
+    time.sleep(2)
+    _run(["sudo", "-n", "hciconfig", "hci0", "up"])
     print("  Bluetooth stack reset; the next sync will retry", flush=True)
     return True
 
@@ -323,9 +376,23 @@ WATCHDOG_SILENCE = 20 * 60
 ALIVE = {"at": time.time()}
 
 
+def note_progress():
+    """Something actually moved: a loop pass, or audio arriving.
+
+    Deliberately not "we published". The first version of the watchdog
+    marked the daemon alive inside publish(), and the session heartbeat
+    publishes every twenty seconds whether or not capture is getting
+    anywhere -- so a session hung on a GATT read would have gone on
+    announcing "recording", refreshing the liveness mark, and the watchdog
+    would never have fired. The heartbeat exists to tell the interface the
+    daemon is there; it is not evidence that it is working, and the two must
+    not be the same signal.
+    """
+    ALIVE["at"] = time.time()
+
+
 def publish(**fields):
     fields["at"] = time.time()
-    ALIVE["at"] = fields["at"]
     fields.setdefault("stats", LAST["stats"] or None)
     fields["last_session"] = LAST["session"]
     # Never a reason a run fails, so it is all best effort.
@@ -356,6 +423,7 @@ def publish(**fields):
                 "healed": HEAL["n"],
                 "healed_at": HEAL["at"],
                 "heal_error": HEAL["last"],
+                "heal_hammered": HEAL["hammer"],
                 # Why the daemon does or does not think a reset is the right
                 # answer -- the figure that explains an alarm that is not
                 # clearing itself.
@@ -530,6 +598,13 @@ async def one_session(address, quiet=False, dev=None):
     # from the progress callback below, which only runs once the client is
     # connected and packets are actually moving.
     publish(state="connecting", address=address, stats=stats)
+
+    def on_sync_progress(done, total):
+        # Packets moving is the clearest progress there is.
+        note_progress()
+        publish(state="syncing", address=address, stats=stats,
+                done=done, total=total)
+
     try:
         spool, took = await omi_sync.sync(
             address, quiet=quiet, dev=dev,
@@ -540,12 +615,15 @@ async def one_session(address, quiet=False, dev=None):
             # than on one of its own that has to find the device again.
             on_ring=lambda info: note_ring(stats, info),
             on_client=read_on,
-            progress=lambda done, total: publish(
-                state="syncing", address=address, stats=stats,
-                done=done, total=total))
+            progress=on_sync_progress)
         SYNC_FAIL["n"] = 0
         SYNC_FAIL["last"] = None
         SYNC_FAIL["first"] = None
+        # Whatever was stuck is unstuck, so the ladder starts from the bottom
+        # next time rather than reaching for the hammer on the first failure
+        # of an unrelated fault days later.
+        HEAL["gentle"] = 0
+        HEAL["hammer"] = 0
         if took:
             sink = omi_sync.drain_spool(device_id, quiet=True)
             n = sink.clips if sink else 0
@@ -587,7 +665,7 @@ async def one_session(address, quiet=False, dev=None):
         # machine's and it is fixable from here.
         if _should_heal():
             try:
-                await asyncio.to_thread(_heal_bluetooth)
+                await asyncio.to_thread(_heal_bluetooth, address)
             except Exception as e:
                 print(f"heal: {type(e).__name__}: {e}", flush=True)
         # That handle is spent. A sighting names a D-Bus object BlueZ made
@@ -630,6 +708,12 @@ async def one_session(address, quiet=False, dev=None):
             # owner reasonably asked why no clips were arriving.
             #
             # A thing that stopped must not look like a thing that works.
+            # Only a frame count that moved. A beat that says "recording"
+            # with the same total as twenty seconds ago is a beat from a
+            # session that has stopped recording.
+            if beat["frames"] != beat_seen["frames"]:
+                beat_seen["frames"] = beat["frames"]
+                note_progress()
             publish(state=("recording" if beat["frames"] else "connecting"),
                     address=address, stats=stats,
                     clips=beat["clips"], frames=beat["frames"])
@@ -689,6 +773,7 @@ async def one_session(address, quiet=False, dev=None):
         clear_wanted(want["id"])
 
     beat = {"clips": 0, "frames": 0}
+    beat_seen = {"frames": -1}      # what the last beat reported
     began = time.time()
     pulse = asyncio.create_task(heartbeat())
     clipper = None
@@ -916,6 +1001,7 @@ async def run(address=None, quiet=False):
     # one across later retries would be worse than looking again.
     sighted = None
     while not stopping:
+        note_progress()
         if not searching():
             # Nothing scanned, nothing connected, no backoff advanced. The
             # radio is left entirely alone so something else can have it,
