@@ -110,6 +110,36 @@ def _sounds_for(clips, index_db):
     return out
 
 
+def remove_clip(name):
+    """Drop every unit that draws on a deleted recording.
+
+    Deleting a recording removed the audio, the transcript, the keyword rows
+    and the semantic segments -- and left the units alone, which is where the
+    words actually live for `search_units`. So a conversation deleted on
+    purpose stayed fully readable through the MCP tools indefinitely: the
+    text is stored on the unit row, and unit search never checks whether the
+    clip behind it still exists.
+
+    A unit can span a clip boundary, and one whose other half survives is
+    still deleted rather than trimmed. Losing a sentence that is half gone is
+    the right trade against keeping half of something somebody asked to be
+    rid of, and `rebuild()` will make it again from whatever is left.
+    """
+    db, have_vec = _connect()
+    try:
+        rows = db.execute(
+            "SELECT id FROM unit WHERE clip = ? OR clips LIKE ?",
+            (name, f'%"{name}"%')).fetchall()
+        for r in rows:
+            if have_vec:
+                db.execute("DELETE FROM unit_vec WHERE rowid = ?", (r["id"],))
+            db.execute("DELETE FROM unit WHERE id = ?", (r["id"],))
+        db.commit()
+        return len(rows)
+    finally:
+        db.close()
+
+
 def rebuild(limit=5000, on_progress=None):
     """Rebuild the whole unit index from the transcripts, then swap it in.
 

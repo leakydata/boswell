@@ -4098,6 +4098,15 @@ def delete_clip_files(name):
         semantic.remove_clip(name)
     except Exception:
         pass
+    # Units are where the words live for search_units, and they were not
+    # being cleaned -- so a recording deleted on purpose stayed readable
+    # through the MCP tools. Deletion has to reach every store that kept a
+    # copy of what was said, not only the ones that kept a pointer to it.
+    try:
+        import units
+        units.remove_clip(name)
+    except Exception:
+        pass
     return removed
 
 

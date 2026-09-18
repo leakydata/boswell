@@ -28,17 +28,35 @@
 <style>
 :root{
   --paper:#EFF3F4; --surface:#FFFFFF; --sunk:#E4EBED;
-  --ink:#0E1417; --muted:#57666C; --faint:#8FA1A7; --rule:#D5DEE1;
+  --ink:#0E1417; --muted:#57666C; --faint:#5F7178; --rule:#D5DEE1;
   --accent:#0E6B7E; --ok:#2C7A55; --warn:#A8761B; --bad:#A83C2C;
+  /* What reads on top of --accent. White is right on the light accent
+     (6.13:1) and wrong on the dark one (2.44:1), which is the theme where
+     the accent is a pale teal. */
+  --on-accent:#FFFFFF;
   --navw:212px;
   --sans:"IBM Plex Sans",system-ui,sans-serif;
   --mono:"IBM Plex Mono",ui-monospace,monospace;
 }
+/* The dark palette, written once and reached two ways.
+   It used to live only inside the media query, so choosing Dark on a machine
+   whose OS is set to light changed `color-scheme` -- the native controls and
+   scrollbars went dark -- and left every colour on the page light. The
+   toggle appeared to do almost nothing. An explicit selector has to carry
+   the palette too, or the choice only works for people who had already made
+   it at the OS level. */
 @media (prefers-color-scheme:dark){:root:not([data-theme=light]){
   --paper:#0A1013; --surface:#121A1F; --sunk:#0E161A;
-  --ink:#E6EDEF; --muted:#8CA0A8; --faint:#64757D; --rule:#22303A;
+  --ink:#E6EDEF; --muted:#8CA0A8; --faint:#84959C; --rule:#22303A;
   --accent:#4FB3C6; --ok:#4FB37F; --warn:#D3A03F; --bad:#DB6B57;
+  --on-accent:#0A1013;
 }}
+:root[data-theme=dark]{
+  --paper:#0A1013; --surface:#121A1F; --sunk:#0E161A;
+  --ink:#E6EDEF; --muted:#8CA0A8; --faint:#84959C; --rule:#22303A;
+  --accent:#4FB3C6; --ok:#4FB37F; --warn:#D3A03F; --bad:#DB6B57;
+  --on-accent:#0A1013;
+}
 *{box-sizing:border-box}
 /* Thin, theme-aware scrollbars everywhere; the default grey bars broke the
    illusion on every page that scrolls -- which is all of them. */
@@ -144,8 +162,8 @@ button{font-family:var(--sans);font-size:13.5px;font-weight:500;padding:6px 11px
 }
 button:hover{border-color:var(--accent)}
 button:active{transform:translateY(1px)}
-button.pri{background:var(--accent);border-color:var(--accent);color:#fff;
-  font-weight:600}
+button.pri{background:var(--accent);border-color:var(--accent);
+  color:var(--on-accent);font-weight:600}
 button.dang{background:transparent;border-color:var(--bad);color:var(--bad)}
 button:disabled{opacity:.45;cursor:not-allowed}
 button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
@@ -3301,6 +3319,19 @@ on("bTidyDelete", "click", async () => {
    all along -- `_clips` carries their names -- and nothing in the interface
    would take you to them, so a topic the reviewing model had recorded was a
    claim you could not check by listening. */
+/* Which clip the detail view is *currently* opening.
+   Every await in openClip() is a chance for somebody to open a different
+   clip before the first one has finished loading. `current` was set at the
+   top and never rechecked, so opening A then B and letting A's slower
+   response land last rendered A's title, waveform and transcript while
+   `current` still said B -- and Delete reads `current`. The panel showed one
+   recording and the button pointed at another. */
+let navGen = 0;
+
+/* What Delete may act on: the clip whose content finished rendering, which
+   is not always the clip most recently asked for. */
+let deletable = null;
+
 let pinnedClips = null;
 
 let current = null;
@@ -6013,6 +6044,7 @@ async function convOf(name){
 }
 
 async function openClip(name){
+  const gen = ++navGen;
   current = name;
   followIdx = -1;
   armRevert = false;
@@ -6046,6 +6078,7 @@ async function openClip(name){
     $("dTitle").textContent = title;
     $("dTitleTop").textContent = title;
   }catch(e){ /* the filename is a fine title when the row cannot be read */ }
+  if (gen !== navGen) return;          // something else is open now
   const pl = $("player");
   pl.pause();
   pl.src = "/api/audio/" + encodeURIComponent(name);
@@ -6059,11 +6092,16 @@ async function openClip(name){
   msg(""); armDelete = false; $("bDelete").textContent = "Delete";
   const dconv = $("dConv");
   const conv = await convOf(name);
+  if (gen !== navGen) return;
   if (conv){
     dconv.hidden = false;
     dconv.onclick = () => { rememberScroll(); openConversation(conv); };
   } else dconv.hidden = true;
   await renderTranscript(name);
+  if (gen !== navGen) return;
+  /* Only now is the panel wholly this clip's, so only now may anything
+     destructive point at it. */
+  deletable = name;
 }
 
 
@@ -7853,6 +7891,10 @@ function msg(t, bad){
 let armDelete = false;
 $("bDelete").onclick = async () => {
   if (!current) return;
+  if (deletable !== current){
+    msg("Still loading this recording — try again in a moment.");
+    return;
+  }
   if (!armDelete){
     armDelete = true;
     $("bDelete").textContent = "Tap again to delete";
@@ -7866,7 +7908,8 @@ $("bDelete").onclick = async () => {
     toast("Recording deleted", "ok");
     $("player").pause();
     $("detail").hidden = true; $("clipList").hidden = false;
-    current = null; armDelete = false; $("bDelete").textContent = "Delete";
+    current = null; deletable = null;
+    armDelete = false; $("bDelete").textContent = "Delete";
     loadClips();
   } else {
     const e = await r.json().catch(()=>({}));
