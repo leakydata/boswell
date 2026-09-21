@@ -2027,7 +2027,11 @@ class TestFilteringByLabellingState:
         """"22 conversations" while hiding 66 of them is a lie by omission."""
         page = self._page()
         i = page.index("async function loadConversations(")
-        assert "of ${all.length} conversations" in page[i:i + 900]
+        # The whole function, not a fixed byte window: this asserted against
+        # the first 900 characters and broke when the fetch line grew a query
+        # string, which said nothing about the count it is here to check.
+        body = page[i:page.index("\nasync function ", i + 10)]
+        assert "of ${all.length} conversations" in body
 
 
 class TestMediaDoesNotBecomeYourFacts:
