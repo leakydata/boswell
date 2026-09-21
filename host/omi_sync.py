@@ -66,6 +66,21 @@ N_ACK, N_INFO, N_DATA, N_DONE, N_BEGIN = 0x01, 0x02, 0x03, 0x04, 0x05
 STATUS = {0: "ok", 6: "invalid command", 9: "storage not ready",
           10: "sequence out of range"}
 
+class TransferInterrupted(Exception):
+    """A batch stopped part-way, carrying what did arrive.
+
+    This exists because of the one property that shapes this whole file:
+    reading consumes. Bytes the device has handed over are gone from it
+    whatever the host does with them, so an error path that drops them on
+    the floor is not a failed transfer, it is a deletion.
+    """
+
+    def __init__(self, salvaged, reason):
+        super().__init__(reason)
+        self.salvaged = salvaged
+        self.reason = reason
+
+
 PACKET_BYTES = 444
 STAMP_BYTES = 4
 RATE = 16000
@@ -83,6 +98,10 @@ CLIP_SECONDS = 30
 # time rather than lost -- which matters more than usual, because the device
 # will not hand it over twice.
 SPOOL = os.path.join(clipwriter.DATA, "omi_spool")
+# Raw spool files that did not convert cleanly. Kept rather than deleted,
+# because the device has already let go of what is in them and nothing can
+# ask for them again.
+KEPT = os.path.join(SPOOL, "kept")
 
 # One synthetic run for everything offloaded. The packets carry absolute
 # time, so unlike the live stream they need no run to place them: device_ms
@@ -312,19 +331,45 @@ class Link:
             raise RuntimeError("the device did not answer the ring query")
         return self.info
 
+    def _whole_packets(self):
+        """Complete packets received so far, trailing fragment dropped.
+
+        A partial packet cannot be parsed and its timestamp is in the part
+        that did not arrive, so it is not worth keeping. Whole ones are.
+        """
+        n = len(self.data) // PACKET_BYTES * PACKET_BYTES
+        return bytes(self.data[:n])
+
     async def read(self, start, count, timeout=90.0):
-        """Returns the raw bytes, and the sequence the device stopped at."""
+        """Returns the raw bytes, and the sequence the device stopped at.
+
+        A batch that fails part-way raises `TransferInterrupted` carrying
+        whatever whole packets did arrive, because **reading consumes**: the
+        device advances its own read pointer as it confirms bytes sent, so
+        packets already handed over cannot be asked for again. This used to
+        raise them away. A link that dropped after four hundred packets and
+        before the done-notification lost all four hundred permanently, and
+        nothing said so -- the failure looked like a sync that achieved
+        nothing rather than one that destroyed something.
+        """
         self.data, self.done, self.ack = bytearray(), None, None
         cmd = (bytes([CMD_READ]) + struct.pack(">Q", start)
                + struct.pack(">I", count))
-        await self.c.write_gatt_char(CTRL, cmd, response=True)
-        ok = await self._wait(
-            lambda: self.done is not None or self.ack is not None, timeout)
+        try:
+            await self.c.write_gatt_char(CTRL, cmd, response=True)
+            ok = await self._wait(
+                lambda: self.done is not None or self.ack is not None, timeout)
+        except Exception as e:
+            raise TransferInterrupted(
+                self._whole_packets(), f"{type(e).__name__}: {e}") from e
         if self.ack is not None and self.ack != 0:
+            # A refusal is answered before anything is sent, so there is
+            # nothing to salvage and the ordinary error is the honest one.
             raise RuntimeError(f"device refused the read: "
                                f"{STATUS.get(self.ack, self.ack)}")
         if not ok:
-            raise RuntimeError("the device stopped sending")
+            raise TransferInterrupted(self._whole_packets(),
+                                      "the device stopped sending")
         return bytes(self.data), self.done
 
     async def advance(self, seq, timeout=8.0):
@@ -418,7 +463,31 @@ async def sync(address, mark_read=True, limit_packets=None, quiet=False,
                               flush=True)
                     break
                 count = min(BATCH, end - seq)
-                raw, nxt = await link.read(seq, count)
+                try:
+                    raw, nxt = await link.read(seq, count)
+                except TransferInterrupted as e:
+                    # Keep what arrived, then stop. The next visit resumes
+                    # from the pointer this leaves behind.
+                    if e.salvaged:
+                        spool.write(e.salvaged)
+                        spool.flush()
+                        os.fsync(spool.fileno())
+                        got = len(e.salvaged) // PACKET_BYTES
+                        seq += got
+                        took += got
+                        if mark_read:
+                            try:
+                                await link.advance(seq)
+                            except Exception:
+                                # The link is gone; the device advances on
+                                # its own as it confirms bytes sent, so the
+                                # pointer is already at least here.
+                                pass
+                    if not quiet:
+                        print(f"  transfer interrupted ({e.reason}) -- kept "
+                              f"{len(e.salvaged) // PACKET_BYTES} packet(s) "
+                              f"that had already arrived", flush=True)
+                    break
                 if not raw:
                     break
 
@@ -466,6 +535,7 @@ def drain_spool(device_id, quiet=False):
         path = os.path.join(SPOOL, name)
         with open(path, "rb") as f:
             blob = f.read()
+        bad_before = sink.bad
         for i in range(len(blob) // PACKET_BYTES):
             ts, frames = parse_packet(blob[i * PACKET_BYTES:
                                            (i + 1) * PACKET_BYTES])
@@ -483,7 +553,29 @@ def drain_spool(device_id, quiet=False):
         # Placed by when the file reached the spool, which is the closest
         # thing to a time this audio has.
         sink.flush_undated(os.path.getmtime(path))
-        os.remove(path)
+
+        # Only delete the original once its audio is somewhere else.
+        #
+        # This deleted unconditionally. `Sink.add()` swallows every decoding
+        # exception and counts it, and nothing read that count -- so a decoder
+        # regression, or a corrupt run of packets, could turn a whole consumed
+        # transfer into zero clips and then remove the only copy of bytes the
+        # device had already let go of. The trailing bytes of a partial packet
+        # were dropped by the integer division above and went the same way.
+        #
+        # A file that did not convert cleanly is kept instead, under
+        # data/omi_spool/kept/, where it costs disk and nothing else. Whatever
+        # decoded is already in the archive; this is the raw beside it.
+        leftover = len(blob) % PACKET_BYTES
+        failed = sink.bad - bad_before
+        if failed or leftover:
+            os.makedirs(KEPT, exist_ok=True)
+            dest = os.path.join(KEPT, name)
+            os.replace(path, dest)
+            print(f"  {name}: kept ({failed} packet(s) would not decode, "
+                  f"{leftover} trailing byte(s)) -> {dest}", flush=True)
+        else:
+            os.remove(path)
         if not quiet:
             print(f"  {name}: {sink.clips} clip(s) so far")
     sink.flush()

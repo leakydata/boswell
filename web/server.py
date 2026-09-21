@@ -3575,13 +3575,28 @@ async def api_semantic_rebuild():
 
 @app.get("/api/conversations")
 async def api_conversations(gap: int = 0, limit: int = 400,
-                            device: str = ""):
+                            device: str = "", since: float = 0,
+                            until: float = 0):
     """`device` is a recorder id, or "none" for the clips that name no
     recorder. `gap` is how long the recorder must hear nothing before this
     counts as a different sitting; 0 takes the measured default rather than
-    pinning a second copy of it here."""
+    pinning a second copy of it here.
+
+    `limit` counts **clips scanned before grouping**, not conversations
+    returned, which is a distinction that mattered: the interface asked for
+    400 and the caller read it as 400 conversations. At thirty seconds a clip
+    that is three hours and twenty minutes of an always-on recorder, so
+    anything older simply was not in the answer -- and because the interface
+    filtered by date afterwards, choosing an older day reported "nothing
+    matches" over an archive full of that day's recordings.
+
+    `since`/`until` are epoch seconds and are applied in the query, before
+    grouping, so a day can be asked for directly instead of being sieved out
+    of whatever the limit happened to reach.
+    """
     return index_db.conversations(gap or index_db.CONVERSATION_GAP, limit,
-                                  device=device or None)
+                                  device=device or None,
+                                  since=since or None, until=until or None)
 
 
 @app.get("/api/export/{name}")

@@ -162,3 +162,117 @@ def test_audio_stored_before_the_clock_was_set_is_filed_by_arrival(tmp_path,
         assert a["ended"] <= b["started"] + 0.01
     assert abs(sum(r["seconds"] for r in recs) - 160.0) < 0.5
     assert os.listdir(omi_sync.SPOOL) == [], "the spool was not cleared"
+
+
+# --- reading consumes, so an error must not also be a deletion -----------
+#
+# The property at the top of this file, applied to the failure path. Bytes
+# the device has handed over are gone from it whatever the host does, so
+# dropping them while unwinding an exception is not a failed transfer, it is
+# a deletion -- and one that reports itself as "the sync achieved nothing".
+
+class _FakeClient:
+    """A device that sends some packets and then stops answering."""
+
+    def __init__(self, link, packets, then):
+        self.link, self.packets, self.then = link, packets, then
+
+    async def write_gatt_char(self, _uuid, _cmd, response=True):
+        for p in self.packets:
+            self.link.on_notify(None, bytes([osy.N_DATA]) + p)
+        if self.then == "disconnect":
+            raise RuntimeError("device disconnected")
+
+
+def test_a_batch_that_stops_early_keeps_what_already_arrived():
+    import asyncio
+    link = osy.Link.__new__(osy.Link)
+    link.info = None
+    link.data = bytearray()
+    link.done = link.ack = None
+    link._begun = asyncio.Event()
+    pkts = [packet(1788530000 + i, [b"aa"]) for i in range(3)]
+    link.c = _FakeClient(link, pkts, then="silence")
+
+    async def go():
+        return await link.read(0, 400, timeout=0.15)
+
+    try:
+        asyncio.run(go())
+        assert False, "a read that never completes must not look like success"
+    except osy.TransferInterrupted as e:
+        assert len(e.salvaged) == 3 * osy.PACKET_BYTES, (
+            "three whole packets arrived and must be handed back, not "
+            "discarded -- the device has already let go of them")
+
+
+def test_a_dropped_link_keeps_what_already_arrived():
+    import asyncio
+    link = osy.Link.__new__(osy.Link)
+    link.info = None
+    link.data = bytearray()
+    link.done = link.ack = None
+    link._begun = asyncio.Event()
+    link.c = _FakeClient(link, [packet(1788530000, [b"aa"])],
+                         then="disconnect")
+    try:
+        asyncio.run(link.read(0, 400, timeout=0.15))
+        assert False, "expected TransferInterrupted"
+    except osy.TransferInterrupted as e:
+        assert len(e.salvaged) == osy.PACKET_BYTES
+
+
+def test_a_trailing_fragment_is_not_salvaged():
+    """Half a packet cannot be parsed and its timestamp is in the half that
+    did not arrive."""
+    link = osy.Link.__new__(osy.Link)
+    link.data = bytearray(packet(1788530000, [b"aa"]) + b"\x01\x02\x03")
+    assert len(link._whole_packets()) == osy.PACKET_BYTES
+
+
+def test_a_refusal_is_still_an_ordinary_error():
+    """The device answers a refusal before sending anything, so there is
+    nothing to salvage and TransferInterrupted would be misleading."""
+    import inspect
+    src = inspect.getsource(osy.Link.read)
+    refusal = src[src.index("device refused the read"):]
+    assert "TransferInterrupted" not in refusal.split("if not ok")[0]
+
+
+# --- and a file that did not convert is not deleted ----------------------
+
+def test_a_spool_that_will_not_decode_is_kept_not_deleted(tmp_path,
+                                                          monkeypatch):
+    """`Sink.add()` counts every decode failure and nothing read the count,
+    so a decoder regression could turn a consumed transfer into zero clips
+    and then remove the only copy."""
+    spool = tmp_path / "spool"
+    spool.mkdir()
+    monkeypatch.setattr(osy, "SPOOL", str(spool))
+    monkeypatch.setattr(osy, "KEPT", str(spool / "kept"))
+    monkeypatch.setattr(osy, "held_records", lambda: [])
+
+    raw = spool / "dev_1.raw"
+    # Opus frames that are not Opus, so every one fails to decode.
+    raw.write_bytes(packet(1788530000, [b"\xff\xff\xff\xff"]) * 2)
+
+    osy.drain_spool("dev", quiet=True)
+
+    assert not raw.exists(), "the file should have been moved out of the way"
+    assert (spool / "kept" / "dev_1.raw").exists(), (
+        "a transfer that would not decode must be kept -- the device has "
+        "already let go of it")
+
+
+def test_a_clean_spool_is_still_deleted(tmp_path, monkeypatch):
+    """Keeping everything would fill the disk with duplicates of the archive."""
+    spool = tmp_path / "spool"
+    spool.mkdir()
+    monkeypatch.setattr(osy, "SPOOL", str(spool))
+    monkeypatch.setattr(osy, "KEPT", str(spool / "kept"))
+    monkeypatch.setattr(osy, "held_records", lambda: [])
+    raw = spool / "dev_2.raw"
+    raw.write_bytes(b"\0" * osy.PACKET_BYTES)      # parses, no frames, no bad
+    osy.drain_spool("dev", quiet=True)
+    assert not raw.exists()
+    assert not (spool / "kept" / "dev_2.raw").exists()

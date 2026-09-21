@@ -4671,6 +4671,10 @@ function matchesLabelFilter(speakers){
 let pageSize = 50;
 const pageAt = {};
 const CLIP_FETCH_LIMIT = 20000;
+/* Clips scanned before grouping, not conversations returned. Matched to the
+   flat list's horizon so the two views cover the same archive; narrowing by
+   date happens in the query now, which is what makes that affordable. */
+const CONV_SCAN_CLIPS = 20000;
 
 /* Where the reader was before they opened something. Going back to the top of
    a list you had already scrolled through is the single most annoying thing a
@@ -5140,7 +5144,7 @@ function renderDayStrip(items){
 }
 
 async function loadConversations(el){
-  const fetched = (await (await fetch("/api/conversations?limit=400"
+  const fetched = (await (await fetch("/api/conversations?limit=" + CONV_SCAN_CLIPS + dateWindow()
                                       + deviceParam())).json());
   convCache = fetched;
   el.classList.remove("empty-now");
@@ -5583,6 +5587,25 @@ function matchesQuery(c){
   if (!query) return true;
   const hay = [c.preview || "", c.name, ...(c.speakers || [])].join(" ").toLowerCase();
   return query.split(/\s+/).every(w => hay.includes(w));
+}
+
+/* The active date filter as a query window, so the database can do it.
+
+   The conversations endpoint takes a number of *clips to scan*, not of
+   conversations to return, and the interface asked for 400 of them and then
+   filtered by date in the browser. On an always-on recorder 400 clips is
+   three hours and twenty minutes, so picking any earlier day sieved an empty
+   list out of recordings that were all from this afternoon, and said
+   "nothing matches". Asking the query for the day instead means the limit
+   is spent where the answer is. */
+function dateWindow(){
+  if (dateFilter === "all") return "";
+  const start = new Date(); start.setHours(0,0,0,0);
+  const dayStart = start.getTime() / 1000;
+  const weekStart = dayStart - 6 * 86400;
+  if (dateFilter === "today") return `&since=${dayStart}`;
+  if (dateFilter === "week")  return `&since=${weekStart}`;
+  return `&until=${weekStart}`;             // "older"
 }
 
 function inDateRange(modified){
@@ -6037,7 +6060,7 @@ async function showItemClips(names, label){
 
 async function convOf(name){
   try{
-    if (!convCache) convCache = await (await fetch("/api/conversations?limit=400"
+    if (!convCache) convCache = await (await fetch("/api/conversations?limit=" + CONV_SCAN_CLIPS + dateWindow()
                                                    + deviceParam())).json();
     return convCache.find(c => c.clips.includes(name)) || null;
   }catch(e){ return null; }
