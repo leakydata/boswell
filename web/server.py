@@ -1467,7 +1467,7 @@ def clip_info(name):
             speakers = seen
         except Exception:
             status = "error"
-    if worker.busy == name:
+    if worker.is_running(name):
         status = "running"
     edited = False
     if os.path.exists(tp):
@@ -3084,7 +3084,13 @@ async def api_transcribe_all():
 
 @app.get("/api/queue")
 async def api_queue():
-    return {"pending": worker.q.qsize(), "busy": worker.busy,
+    # Counting clips in flight as well as queued, which is what the websocket
+    # has always reported and what "how much work is left" means. With one
+    # worker the difference was at most one; with several, a poller could see
+    # zero while the last few clips were still being written.
+    return {"pending": worker.q.qsize() + len(worker._busy),
+            "busy": worker.busy,
+            "running": sorted(worker._busy),
             "auto": auto_transcribe}
 
 
@@ -3167,10 +3173,11 @@ async def api_clips(limit: int = 1000, device: str = ""):
     """
     rows = index_db.list_clips(limit, device=device or None)
     # A clip currently being transcribed is not yet reflected on disk.
-    if worker.busy:
-        for r in rows:
-            if r["name"] == worker.busy:
-                r["status"] = "running"
+    # Plural: more than one can be in flight, and `busy` only ever names one
+    # of them.
+    for r in rows:
+        if worker.is_running(r["name"]):
+            r["status"] = "running"
     return rows
 
 

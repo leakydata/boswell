@@ -46,8 +46,15 @@ def _vec_available(db):
 
 
 def _connect():
-    db = sqlite3.connect(DB)
+    # `timeout` is the busy timeout: with more than one transcription thread
+    # two clips can finish their CPU tails at once and both write here. The
+    # default five seconds is usually enough and occasionally is not, and the
+    # failure is a lost index row rather than anything visible.
+    db = sqlite3.connect(DB, timeout=30)
     db.row_factory = sqlite3.Row
+    # Readers do not block the writer and the writer does not block them,
+    # which is what makes concurrent tails cheap rather than contended.
+    db.execute("PRAGMA journal_mode=WAL")
     have_vec = _vec_available(db)
     db.execute("""CREATE TABLE IF NOT EXISTS seg(
         id INTEGER PRIMARY KEY,

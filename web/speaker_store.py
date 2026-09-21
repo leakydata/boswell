@@ -198,8 +198,12 @@ CREATE INDEX IF NOT EXISTS match_clip ON matches(clip);
 
 def _conn():
     os.makedirs(DATA, exist_ok=True)
-    c = sqlite3.connect(DB)
+    # See semantic._connect: more than one transcription thread means more
+    # than one possible writer, and this store is written on every clip that
+    # has a voice in it.
+    c = sqlite3.connect(DB, timeout=30)
     c.row_factory = sqlite3.Row
+    c.execute("PRAGMA journal_mode=WAL")
     c.execute("PRAGMA foreign_keys = ON")
     c.executescript(SCHEMA)
     cols = {r["name"] for r in c.execute("PRAGMA table_info(people)")}

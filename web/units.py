@@ -57,7 +57,7 @@ UNTRUSTED_SOUNDS = {
 
 def _connect():
     import semantic
-    db = sqlite3.connect(DB)
+    db = sqlite3.connect(DB, timeout=30)
     db.row_factory = sqlite3.Row
     # So a rebuild's long write transaction does not block readers, and so
     # they keep seeing the previous index until it commits.

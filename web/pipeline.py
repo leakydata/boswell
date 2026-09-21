@@ -1048,6 +1048,30 @@ SOUND_WHOLE_KEEP = 0.20  # or this once, looking at the clip whole
 SOUND_FLOOR = 0.02       # below this the label carries no information
 
 
+# How many clips may be in flight at once.
+#
+# Two, measured. One worker ran 21.9 clips a minute; two ran 31.0 over three
+# minutes of a real backlog, which is 1.42x. Short of the 1.98x the stage
+# timings suggest, because inference still goes through one lock and Python
+# holds one interpreter -- but it is the difference between an overnight job
+# and most of a night.
+#
+# Three is *not* measured. It was tried on a 21-clip tail after a restart,
+# which is a cold cache and too small a sample to mean anything, so the
+# number it produced is not recorded here as if it were a finding. Anyone
+# with a longer backlog can set BOSWELL_WORKERS and find out; the ceiling
+# above suggests there is little left to win.
+def _worker_count():
+    try:
+        n = int(os.environ.get("BOSWELL_WORKERS") or 2)
+    except ValueError:
+        n = 2
+    return max(1, min(n, 8))
+
+
+WORKERS = _worker_count()
+
+
 class Worker:
     def __init__(self, notify=None, on_transcript=None):
         self.q: queue.Queue = queue.Queue()
@@ -1055,7 +1079,23 @@ class Worker:
         # Called with a finished transcript so downstream consumers -- the
         # agent -- do not have to poll the filesystem for new work.
         self.on_transcript = on_transcript or (lambda *a, **k: None)
-        self.busy = None
+        # Clips in flight. More than one, because half of a clip's cost is
+        # not on the GPU.
+        #
+        # Measured over eight clips: ASR, diarization and sound tagging take
+        # 1.36s, and the rest of _process -- naming voices, writing the
+        # transcript, and the three indexes -- takes another 1.38s during
+        # which the GPU does nothing. Sampling `nvidia-smi` through a real
+        # backlog agreed: idle on eleven of twenty samples, with brief spikes
+        # between. One thread therefore spent half its time leaving the
+        # expensive hardware alone.
+        #
+        # A second thread fills those gaps with the next clip's inference.
+        # `_gpu` keeps the model calls themselves one-at-a-time, because two
+        # forward passes through one WhisperX or pyannote object is not
+        # something either promises to survive -- the overlap wanted here is
+        # one clip's tail against another's inference, not two inferences.
+        self._busy = set()
         # What is queued or in flight. Rotation, a single request, a whole
         # conversation and a bulk action can all name the same clip, and every
         # one of them used to mean another full ASR and diarization pass --
@@ -1063,16 +1103,46 @@ class Worker:
         # with an unedited one depending on which finished last.
         self._queued = set()
         self._qlock = threading.Lock()
+        self._gpu = threading.Lock()
         self._asr = None
         self._align = None
         self._diar = None
         self._sound = None
-        threading.Thread(target=self._run, daemon=True).start()
+        # Model loading is not thread-safe either, and two threads starting
+        # together would both find `self._asr` None and both load it.
+        self._loadlock = threading.Lock()
+        for _ in range(WORKERS):
+            threading.Thread(target=self._run, daemon=True).start()
+
+    @property
+    def busy(self):
+        """One clip in flight, for callers that want something to show.
+
+        Kept as a single value rather than the set, because eight places read
+        it -- for a badge, for JSON, for "is this clip being worked on" -- and
+        all of them were written when there could only be one.
+        """
+        return next(iter(self._busy), None)
+
+    @busy.setter
+    def busy(self, clip):
+        """Set what is in flight, one clip at a time.
+
+        Kept for callers -- and tests -- written when `busy` was a plain
+        attribute holding one clip or None. Assigning None clears the set,
+        which is what `busy = None` always meant.
+        """
+        self._busy = set() if clip is None else {clip}
+
+    def is_running(self, clip):
+        """Whether this particular clip is in flight. What the `busy == name`
+        comparisons actually meant, now that there can be more than one."""
+        return clip in self._busy
 
     def submit(self, clip):
         """Queue a clip. Returns False if it is already queued or running."""
         with self._qlock:
-            if clip in self._queued or self.busy == clip:
+            if clip in self._queued or clip in self._busy:
                 return False
             self._queued.add(clip)
         self.q.put(clip)
@@ -1088,16 +1158,23 @@ class Worker:
         changes; say so.
         """
         with self._qlock:
-            depth = len(self._queued) + (1 if self.busy else 0)
+            depth = len(self._queued) + len(self._busy)
         notify = getattr(self, "notify", None)
         if notify:
             notify("queue", pending=depth)
 
     def is_pending(self, clip):
         with self._qlock:
-            return clip in self._queued or self.busy == clip
+            return clip in self._queued or clip in self._busy
 
     def _load(self):
+        # Guarded, because two threads starting together would both find
+        # `self._asr` None and both load it -- twice the VRAM and twenty
+        # seconds each.
+        with self._loadlock:
+            self._load_locked()
+
+    def _load_locked(self):
         # The models are loaded once and kept.
         #
         # This used to rebuild them whenever the custom word list changed, on
@@ -1117,7 +1194,10 @@ class Worker:
             # memory and twenty seconds loading a model to sit idle. The point
             # of the cloud path is the machine that cannot hold this model at
             # all. Diarization and sound tagging still load below.
-            self._load_helpers()
+            # The unlocked form: this runs inside _load_locked, which
+            # already holds it, and threading.Lock is not reentrant -- taking
+            # it again here would deadlock the first clip of every run.
+            self._load_helpers_locked()
             return
         self.notify("log",
                     text="loading transcription models (first run, ~20s)")
@@ -1170,9 +1250,13 @@ class Worker:
             vad_options={"vad_onset": 0.200, "vad_offset": 0.150})
         self._align = whisperx.load_align_model(language_code="en",
                                                 device=compute.ASR_DEVICE)
-        self._load_helpers()
+        self._load_helpers_locked()          # the lock is already held
 
     def _load_helpers(self):
+        with self._loadlock:
+            self._load_helpers_locked()
+
+    def _load_helpers_locked(self):
         """Diarization and sound tagging: the models that are needed whether
         or not the words come from this machine."""
         if self._diar is not None or self._sound is not None:
@@ -1220,7 +1304,8 @@ class Worker:
             with self._qlock:
                 self._queued.discard(clip)
             try:
-                self.busy = clip
+                with self._qlock:
+                    self._busy.add(clip)
                 self.notify("job", clip=clip, status="running")
                 self._process(clip)
                 self.notify("job", clip=clip, status="done")
@@ -1228,7 +1313,8 @@ class Worker:
                 self.notify("job", clip=clip, status="error", error=str(e)[:200])
                 self.notify("log", text=f"transcription failed: {str(e)[:120]}")
             finally:
-                self.busy = None
+                with self._qlock:
+                    self._busy.discard(clip)
                 self._push_queue()
 
     def tag_sounds(self, audio, sr=16000):
@@ -1381,7 +1467,11 @@ class Worker:
         path = os.path.join(DATA, clip)
         audio = normalise(whisperx.load_audio(path))
 
-        res = self._words(path, audio)
+        # One clip at a time through the models. The point of the second
+        # thread is to run this clip's tail beside the next clip's inference,
+        # not to push two tensors through one model object at once.
+        with self._gpu:
+            res = self._words(path, audio)
 
         names, embeddings = {}, {}
         cloud_diarized = any(x.get("speaker") for x in res.get("segments") or [])
@@ -1395,7 +1485,8 @@ class Worker:
             embeddings = {k: v.tolist() for k, v in clean.items()}
             names = identify(clean, clip=clip) if clean else {}
         elif self._diar is not None:
-            df, emb = self._diar(audio, return_embeddings=True)
+            with self._gpu:
+                df, emb = self._diar(audio, return_embeddings=True)
             res = whisperx.assign_word_speakers(df, res)
             # pyannote returns a NaN embedding when a speaker cluster has too
             # little audio to compute a standard deviation over. Storing one
@@ -1451,7 +1542,8 @@ class Worker:
         # What was audible, speech or not. Written for every clip including
         # the ones with no transcript at all -- those are the ones it has most
         # to say about.
-        sounds = self.tag_sounds(audio)
+        with self._gpu:
+            sounds = self.tag_sounds(audio)
 
         # A tag the owner has marked wrong stays wrong. _process rewrites the
         # whole transcript, so without this a re-transcription would quietly
