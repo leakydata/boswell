@@ -1310,6 +1310,22 @@ class Worker:
                 self._process(clip)
                 self.notify("job", clip=clip, status="done")
             except Exception as e:
+                # Printed as well as notified.
+                #
+                # `notify` is wired to the websocket broadcaster, so a failure
+                # was announced to whatever browser happened to be open and to
+                # nothing else. On 2026-09-26 that hid 5,991 consecutive
+                # failures for seven hours: the queue drained normally, the
+                # sweep re-queued eight a minute, `journalctl` showed nothing
+                # but "sweep: queued 8", and the only visible symptom was a
+                # transcript count that had not moved since lunchtime.
+                #
+                # A failure nobody can see in the log is a failure nobody
+                # finds.
+                import traceback
+                print(f"transcription failed on {clip}: "
+                      f"{type(e).__name__}: {e}", flush=True)
+                traceback.print_exc()
                 self.notify("job", clip=clip, status="error", error=str(e)[:200])
                 self.notify("log", text=f"transcription failed: {str(e)[:120]}")
             finally:
