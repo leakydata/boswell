@@ -57,6 +57,20 @@ def test_a_frame_running_past_the_end_is_refused():
     assert frames == [b"abcd"], "the overrunning length must stop the walk"
 
 
+def test_the_firmwares_exact_fit_ghost_frame_is_skipped():
+    # Firmware off-by-one (write_to_storage checks MAX_WRITE_SIZE - 1): a frame
+    # that would fill the packet exactly gets only its length byte here, then
+    # stale bytes, and the real frame starts the next packet. Decoding the
+    # stale bytes either fails or adds 20 ms of noise.
+    body = b"".join(bytes([99]) + b"\xb8" + b"r" * 98 for _ in range(3))   # 300 bytes of real frames
+    room = osy.PACKET_BYTES - osy.STAMP_BYTES - len(body)
+    body += bytes([room - 1]) + b"\x2b" * (room - 1)                       # ends exactly at the end
+    p = struct.pack(">I", 1) + body
+    assert len(p) == osy.PACKET_BYTES
+    ts, frames = osy.parse_packet(p)
+    assert len(frames) == 3 and all(f[:1] == b"\xb8" for f in frames)
+
+
 def test_a_short_packet_is_refused():
     ts, frames = osy.parse_packet(b"\0" * 10)
     assert ts is None and frames == []

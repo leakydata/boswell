@@ -139,6 +139,16 @@ def parse_packet(p):
         # not a frame. So is anything claiming to run past the end.
         if n == 0 or off + 1 + n > PACKET_BYTES:
             break
+        # A frame that would end exactly at the end of the packet is never
+        # real. The firmware's write_to_storage() (lib/core/transport.c)
+        # checks against MAX_WRITE_SIZE - 1, so an exact fit is treated as an
+        # overflow: it writes that frame's length byte, leaves the rest of the
+        # buffer as stale bytes from an earlier packet, and puts the real frame
+        # first in the next packet. Measured by Boswell Phone on 112,567 stored
+        # packets: all 1,514 exact-fit "frames" were these ghosts; 815 failed to
+        # decode and 673 decoded into 20 ms of garbage.
+        if off + 1 + n == PACKET_BYTES:
+            break
         frames.append(p[off + 1:off + 1 + n])
         off += 1 + n
     return ts, frames
